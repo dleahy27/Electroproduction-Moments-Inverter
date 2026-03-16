@@ -39,3 +39,9 @@
 
 # debug information files
 *.dwo
+
+# Adding output files directory, ignores all stuff like generated root scripts etc
+OutputFiles/
+
+# Should I add input files? Possibly just generated ones
+InputFiles/Generated/
