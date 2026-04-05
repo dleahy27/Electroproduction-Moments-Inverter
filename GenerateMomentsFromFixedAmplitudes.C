@@ -14,11 +14,11 @@
 #include <utility>
 #include <vector>
 
-// Keep this file in the same directory as the optimized fitter macro.
 #include "RunGivenMoments_Chi2Amps.C"
 
+// Need to make function to write up branches for H stuff
 namespace fixed_moment_builder {
-using namespace chi2_amp_fit;
+using namespace chi2_amp_fit_opt;
 
 struct NamedLMValue {
   std::string name;
@@ -74,25 +74,33 @@ static void FillUserAmplitudes(const std::shared_ptr<EvalContext>& ctx,
 
   // Positive-reflectivity magnitudes
   set("a_T_1_1",  0.8);
-  set("a_T_1_0",  0.8);
-  set("a_T_1_m1", 0.8);
-  set("a_L_1_1",  0.8);
-  set("a_L_1_m1", 0.8);
+  set("a_T_1_0",  0.4);
+  set("a_T_1_m1", 0.5);
+  set("a_L_1_1",  0.2);
+  set("a_L_1_m1", 0.25);
 
   // Negative-reflectivity magnitudes
-  set("b_T_1_1",  0.8);
-  set("b_T_1_0",  0.8);
-  set("b_T_1_m1", 0.8);
-  set("b_L_1_1",  0.8);
-  set("b_L_1_m1", 0.8);
+  set("b_T_1_1",  0.1);
+  set("b_T_1_0",  0.6);
+  set("b_T_1_m1", 0.18);
+  set("b_L_1_1",  0.28);
+  set("b_L_1_0",  0.26);
+  set("b_L_1_m1", 0.08);
 
-  // Free phases (reference phases such as aphi_T_1_1 stay fixed at 0)
-  set("aphi_T_1_0",   +0.70);
-  set("aphi_T_1_m1",  -1.10);
-  set("aphi_L_1_m1",  +1.40);
-  set("bphi_T_1_0",   -0.90);
-  set("bphi_T_1_m1",  +0.35);
-  set("bphi_L_1_m1",  -2.10);
+  // Positive-reflectivity phases
+  set("aphi_T_1_1",  0.0);
+  set("aphi_T_1_0",  -0.3);
+  set("aphi_T_1_m1", 2.2);
+  set("aphi_L_1_1",  -1.6);
+  set("aphi_L_1_m1", -1.95);
+
+  // Negative-reflectivity phases
+  set("bphi_T_1_1",  0.0);
+  set("bphi_T_1_0",  -0.6);
+  set("bphi_T_1_m1", -0.95);
+  set("bphi_L_1_1",  1.22);
+  set("bphi_L_1_0",  -1.76);
+  set("bphi_L_1_m1", 0.4);
 
   // A very targeted ambiguity test is to duplicate this file and flip only
   // the two suspect phases, e.g.
@@ -187,17 +195,23 @@ static void PrintObservedLikeMoments(const std::shared_ptr<EvalContext>& ctx,
 
 } // namespace fixed_moment_builder
 
-void GenerateMomentsFromFixedAmplitudes(const char* outFile = "fixed_input_moments.root",
-                                        int q2bin = 1,
+void GenerateMomentsFromFixedAmplitudes(std::string outFile = "fixed_input_moments.root",
+                                        std::vector<double> Q2vals  = {1.0},
                                         double epsR4 = 1.0,
                                         bool printToScreen = true) {
   using namespace fixed_moment_builder;
-  using namespace chi2_amp_fit;
+  using namespace chi2_amp_fit_opt;
 
+  std::string outDir = "./InputFiles/Generated/";
+  auto tmp = outDir + outFile;
+  auto out = tmp.c_str();
+  std::vector<std::string> Q2name = {"Q2"};
   FitConfig cfg;
-  cfg.q2bin = q2bin;
   cfg.epsR4 = epsR4;
-  cfg.is04 = true;
+  cfg.momentsFile = tmp;
+  cfg.momentsTree = "genMoments";
+  cfg.bin = 0;
+
 
   auto ctx = BuildContext(cfg);
 
@@ -207,9 +221,14 @@ void GenerateMomentsFromFixedAmplitudes(const char* outFile = "fixed_input_momen
 
   // Pure reconstructed moments H^alpha_{LM}
   std::vector<double> Hvals(ctx->modelsRec.size(), 0.0);
+  std::vector<double> pairSin, pairCos;
+
+  BuildPhasePairTrigCache(*ctx, fullVals, pairSin, pairCos);
+
   for (size_t i = 0; i < ctx->modelsRec.size(); ++i) {
-    Hvals[i] = EvalMomentOnly(ctx->modelsRec[i], fullVals);
+    Hvals[i] = EvalMomentOnly(ctx->modelsRec[i], fullVals, pairSin, pairCos);
   }
+
 
   // R = -H4_00 / H0_00.
   double H0_00 = 0.0;
@@ -229,8 +248,11 @@ void GenerateMomentsFromFixedAmplitudes(const char* outFile = "fixed_input_momen
 
   // Standard scaled RH^alpha_{LM}
   std::vector<double> RHvals(ctx->modelsRec.size(), 0.0);
+  std::vector<double> RHErrs(ctx->modelsRec.size(), 0.0);
   for (size_t i = 0; i < ctx->modelsRec.size(); ++i) {
     RHvals[i] = Ralpha(ctx->modelsRec[i].alpha) * Hvals[i];
+    RHErrs[i] = 0.01;
+
   }
 
   // Full RH04_{LM} mixed set and the exact observed subset used by the fitter.
@@ -238,7 +260,8 @@ void GenerateMomentsFromFixedAmplitudes(const char* outFile = "fixed_input_momen
   std::vector<std::string> RH04names;
   std::vector<double> RH04vals;
 
-  for (int L = 0; L <= 2 * cfg.lmax; ++L) {
+  // Skip LM = 00 as we will never have access to it experimentally
+  for (int L = 1; L <= 2 * cfg.lmax; ++L) {
     for (int M = 0; M <= L; ++M) {
       const int idx0 = FindModelIndex(ctx, 0, L, M);
       const int idx4 = FindModelIndex(ctx, 4, L, M);
@@ -248,12 +271,12 @@ void GenerateMomentsFromFixedAmplitudes(const char* outFile = "fixed_input_momen
       x.L = L;
       x.M = M;
       x.name = std::string("RH04_") + std::to_string(L) + "_" + std::to_string(M);
-      x.value = (Hvals[static_cast<size_t>(idx0)] +
-                cfg.rh04MixCoeff * (cfg.epsR4 * R) * Hvals[static_cast<size_t>(idx4)]) * fac;
+      x.value = (Hvals[static_cast<size_t>(idx0)] - (cfg.epsR4 * R) * Hvals[static_cast<size_t>(idx4)]) * fac;
       RH04full.push_back(x);
       RH04names.push_back(x.name);
     }
   }
+
 
   // Assign RH04
   RH04vals.assign(RH04full.size(), 0.0);
@@ -262,15 +285,19 @@ void GenerateMomentsFromFixedAmplitudes(const char* outFile = "fixed_input_momen
   std::vector<std::string> observedNames;
   std::vector<double> observedVals(ctx->observed.size(), 0.0);
   observedNames.reserve(ctx->observed.size());
+
+  std::vector<std::string> errNames;
+  std::vector<double> errVals(ctx->observed.size(), 0.01);
+  errNames.reserve(ctx->observed.size());
   for (size_t i = 0; i < ctx->observed.size(); ++i) {
     const auto& ob = ctx->observed[i];
     observedNames.push_back(ob.name);
+    errNames.push_back(ob.name + "_err");
     if (ob.isMixed04) {
       const int idx0 = (i < ctx->observedModelIdx0.size()) ? ctx->observedModelIdx0[i] : -1;
       const int idx4 = (i < ctx->observedModelIdx4.size()) ? ctx->observedModelIdx4[i] : -1;
       if (idx0 >= 0 && idx4 >= 0) {
-        observedVals[i] = (Hvals[static_cast<size_t>(idx0)] +
-                          cfg.rh04MixCoeff * (cfg.epsR4 * R) * Hvals[static_cast<size_t>(idx4)]) * fac;
+        observedVals[i] = (Hvals[static_cast<size_t>(idx0)] - (cfg.epsR4 * R) * Hvals[static_cast<size_t>(idx4)]) * fac;
       }
     } else {
       const int midx = ctx->observedModelIdx[i];
@@ -278,39 +305,34 @@ void GenerateMomentsFromFixedAmplitudes(const char* outFile = "fixed_input_momen
     }
   }
 
-  std::unique_ptr<TFile> fout(TFile::Open(outFile, "RECREATE"));
+
+  std::unique_ptr<TFile> fout(TFile::Open(out, "RECREATE"));
   if (!fout || fout->IsZombie()) {
     throw std::runtime_error(std::string("Failed to open output file: ") + outFile);
   }
 
-  TTree* t = new TTree("syntheticMoments", "Synthetic moments built from a fixed amplitude point");
+  TTree* t = new TTree("genMoments", "Generated moments built from a fixed amplitude point");
   t->SetDirectory(fout.get());
 
   double storedR = R;
-  double storedSqrtR = sqrtR;
-  double storedH0_00 = H0_00;
-  double storedH4_00 = H4_00;
   t->Branch("R", &storedR);
-  t->Branch("sqrtR", &storedSqrtR);
-  t->Branch("H_0_0_0", &storedH0_00);
-  t->Branch("H_4_0_0", &storedH4_00);
 
   std::vector<double> parStorage;
   MakeBranchesForPars(t, ctx->fullPars, parStorage);
-  std::vector<double> Hstorage;
-  MakeBranchesForMomentsPrefixed(t, ctx->modelsRec, Hstorage, "H");
-  std::vector<double> RHstorage;
-  MakeBranchesForMomentsPrefixed(t, ctx->modelsRec, RHstorage, "RH");
   std::vector<double> RH04storage;
   MakeBranchesForNamedValues(t, RH04names, RH04storage);
   std::vector<double> obsStorage;
   MakeBranchesForNamedValues(t, observedNames, obsStorage);
+  std::vector<double> errStorage;
+  MakeBranchesForNamedValues(t, errNames, errStorage);
+  std::vector<double> Q2storage;
+  MakeBranchesForNamedValues(t, Q2name, Q2storage);
 
   parStorage = fullVals;
-  Hstorage = Hvals;
-  RHstorage = RHvals;
   RH04storage = RH04vals;
   obsStorage = observedVals;
+  Q2storage = Q2vals;
+  errStorage = errVals;
   t->Fill();
 
   fout->Write();
@@ -319,10 +341,7 @@ void GenerateMomentsFromFixedAmplitudes(const char* outFile = "fixed_input_momen
   if (printToScreen) {
     PrintNonZeroParameters(ctx, fullVals);
     std::cout << "\nR      = " << std::setprecision(10) << R << '\n';
-    std::cout << "sqrtR  = " << std::setprecision(10) << sqrtR << '\n';
-    std::cout << "H_0_0_0 = " << std::setprecision(10) << H0_00 << '\n';
-    std::cout << "H_4_0_0 = " << std::setprecision(10) << H4_00 << '\n';
     PrintObservedLikeMoments(ctx, observedVals);
-    std::cout << "\nSaved synthetic moments to " << outFile << std::endl;
+    std::cout << "\nSaved generated moments to " << outDir<<outFile << std::endl;
   }
 }

@@ -1,51 +1,42 @@
-// Proton-only: Fit partial-wave magnitudes + phases to measured H^alpha_{L M}
-// using explicit chi2 minimisation (ROOT Minuit2).
-//
-// This macro implements the same CG-sum structure as E2S0AmpLoader::CGMatrixReflectivity
-// and the same amplitude/phase term construction as E2S0AmpLoader::BruTermCircle,
-// but evaluates everything numerically (no BruFit Setup required).
-//
-// Outputs a ROOT file containing:
-//   - log_val = log10(chi2)
-//   - predicted H_alpha_L_M (for alpha=0..8, L=0..2, M=0..L)
-//   - fitted amplitudes a/b_{T/L}_{l}_{m} and phases a/bphi_{T/L}_{l}_{m}
-//
-// You can run the macro either with a Q2 value (mapped to the nearest SDME table bin)
-// or with a ROOT file containing the observed moments.
-
-// General ROOT Stuff
 #include "TBenchmark.h"
 #include "TFile.h"
 #include "TMath.h"
 #include "TRandom3.h"
 #include "TTree.h"
 
-// Minimiser stuff
 #include "Math/Factory.h"
 #include "Math/IFunction.h"
 #include "Math/Minimizer.h"
 #include <Math/SpecFuncMathMore.h>
 
-// Multiprocessing stuff
 #include "ROOT/TProcessExecutor.hxx"
 #include "TFileMerger.h"
 #include "TSystem.h"
-#include <thread>
 
-// Gneral C++ stuff
+#include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstdint>
 #include <iostream>
-#include <map>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
-namespace chi2_amp_fit {
+namespace chi2_amp_fit_opt {
 
-// Fast sin/cos helper (uses ::sincos when available)
+constexpr double kPi = TMath::Pi();
+constexpr double kTwoPi = 2.0 * TMath::Pi();
+constexpr double kSqrt2 = 1.4142135623730950488016887242097;
+constexpr double kInvSqrt2 = 1.0 / kSqrt2;
+constexpr double kSqrt6Over5 = 0.48989794855663561963945681494118;
+constexpr double kSqrt12Over5 = 0.69282032302755092063339055356909;
+constexpr int kNumBins = 18;
+
 inline void FastSinCos(double x, double& s, double& c) {
 #if defined(__GLIBC__) || defined(__APPLE__)
   ::sincos(x, &s, &c);
@@ -55,27 +46,13 @@ inline void FastSinCos(double x, double& s, double& c) {
 #endif
 }
 
-
-// -------------------------
-// Physics / indexing helpers
-// -------------------------
 inline double ClebschGordan(int l1, int l2, int l3, int m1, int m2, int m3) {
-  // Matches E2S0AmpLoader::ClebschGordan
   using ROOT::Math::wigner_3j;
-  return (TMath::Power(-1.0, l1 - l2 + m3) * TMath::Sqrt(2.0 * l3 + 1.0) *
-          wigner_3j(2 * l1, 2 * l2, 2 * l3, 2 * m1, 2 * m2, -2 * m3));
+  const double sign = ((l1 - l2 + m3) & 1) ? -1.0 : 1.0;
+  return sign * std::sqrt(2.0 * l3 + 1.0) *
+         wigner_3j(2 * l1, 2 * l2, 2 * l3, 2 * m1, 2 * m2, -2 * m3);
 }
 
-// inline double WrapToPi(double phi) {
-//   constexpr double kTwoPi = 2.0 * TMath::Pi();
-//   double x = std::fmod(phi + TMath::Pi(), kTwoPi);
-//   if (x < 0) x += kTwoPi;
-//   return x - TMath::Pi();
-// }
-
-// -------------------------
-// Observed moments container
-// -------------------------
 struct ObservedMoment {
   int alpha = 0;
   int L = 0;
@@ -86,22 +63,10 @@ struct ObservedMoment {
   std::string name;
 };
 
-enum class ObservedMomentsSource : uint8_t { kQ2Table = 0, kRootFile };
-
-struct ObservedInput {
-  ObservedMomentsSource source = ObservedMomentsSource::kQ2Table;
-  int q2bin = 1;
-  std::string momentsFile;
-  std::string momentsTree = "syntheticMoments";
-};
-
-// -------------------------
-// Parameter bookkeeping
-// -------------------------
 struct ParDef {
   std::string name;
   double init = 0.0;
-  double step = 1e-2;
+  double step = 1e-3;
   double low = -1.0;
   double high = 1.0;
   bool fixed = false;
@@ -109,53 +74,57 @@ struct ParDef {
 };
 
 struct FitConfig {
-  // Partial Wave options
   int lmax = 1;
   int mmax = 1;
-  bool useNegRef = true;   // nRefl==2 in loader
+  bool useNegRef = true;
   bool onlyEven = false;
   bool negm = true;
 
   double epsR4 = 1.0;
-  double rh04MixCoeff = -1.0;
 
-  ObservedInput observedInput;
-
-  // Minimiser options
   unsigned nStarts = 10000;
-  unsigned maxCalls = 50000;
-  unsigned maxIters = 50000;
-  double tolerance = 1e-8;
+  unsigned maxCalls = 1000000;
+  unsigned maxIters = 1000000;
+  double tolerance = 1e-6;
   int strategy = 2;
   int printLevel = 0;
   bool runHesse = true;
   uint32_t randomSeed = 0;
 
-  // Normalisation options
-  double H0H4NormTarget = 2.0;
-  double H0H4NormSigma  = 1e-3;
 
-  // Optional per-FCN-call trace. Keep disabled by default for speed.
-  unsigned recordEvery = 0;
+  bool verbose = true;
+  bool useNumericalGradient = true;
 
-  // Multiprocessing configs
-  unsigned int cores = 1;
-  bool verbose = true; // Print out each each tenth of progress
+  bool useMCMCPreScan = false;
+  unsigned mcmcSteps = 2000;
+  double mcmcTemperature = 1.0;
+  double mcmcProposalMagSigma = 0.03;
+  double mcmcProposalPhaseSigma = 0.10;
+
+  std::string depNormMagName;
+  double dirichletMagnitudeAlpha = 1.0;
+  double simplexLogitStep = 0.2;
+  bool photoProduction = false;
+
+  std::string momentsFile;
+  std::string momentsTree;
+  int bin;
 };
 
-// -------------------------
-// Model term list (precomputed)
-// -------------------------
-enum class TrigKind : uint8_t { kNone = 0, kCos, kSin };
+enum class TrigKind : uint8_t { kCos = 0, kSin = 1 };
+
+struct PhasePair {
+  int idxPhi1 = -1;
+  int idxPhi2 = -1;
+};
 
 struct Term {
   double coeff = 0.0;
   int idxMag1 = -1;
-  int idxPhi1 = -1;
   int idxMag2 = -1;
-  int idxPhi2 = -1;
-  bool useTrig = false;
-  TrigKind trig = TrigKind::kNone;
+  int phasePairIdx = -1;
+  TrigKind trig = TrigKind::kCos;
+  bool ignorePhase = false;
 };
 
 struct MomentModel {
@@ -166,13 +135,122 @@ struct MomentModel {
   std::vector<Term> terms;
 };
 
-// -------------------------
-// Build parameter list: a/b, T/L, l,m magnitudes + phases
-// -------------------------
-static std::vector<std::pair<int,int>> EnumerateWaves(int lmax, int mmax, bool negm, bool onlyEven) {
-  std::vector<std::pair<int,int>> waves;
+static double ReadArrayBranchElement(TTree* t, const char* branchName, int bin, bool isErr) {
+  if (!t->GetBranch(branchName) && !isErr) return 0.0; // If no branch then the moment is 0
+  if (!t->GetBranch(branchName) && isErr) return 0.001; // If no branch then the moment error is 0
+  std::array<double, kNumBins> arr{};
+  t->SetBranchAddress(branchName, arr.data());
+  t->GetEntry(0);
+  t->ResetBranchAddresses();
+  return arr.at(bin);
+}
+
+// Input file handling below here
+
+static std::vector<ObservedMoment> BuildObservedMoments(const std::string& inFile,
+                                                                           const std::string& treeName,
+                                                                           int bin,
+                                                                           const FitConfig& cfg) {
+  std::unique_ptr<TFile> fin(TFile::Open(inFile.c_str(), "READ"));
+  if (!fin || fin->IsZombie()) throw std::runtime_error("Failed to open file " + inFile);
+  TTree* t = dynamic_cast<TTree*>(fin->Get(treeName.c_str()));
+  if (!t) throw std::runtime_error("Could not find tree '" + treeName + "'");
+  if (t->GetEntries() < 1) throw std::runtime_error("Tree '" + treeName + "' is empty");
+  if (bin < 0 || bin >= kNumBins) throw std::runtime_error("Bin out of range");
+
+  std::vector<ObservedMoment> obs;
+  obs.reserve(40); // Assume for leptoprod that we will never have R hence max 24 moments
+  if (cfg.photoProduction) obs.reserve(18); // Photoproduction has max 12 elements
+  auto add = [&](int alpha, int L, int M, const char* valName, const char* errName, bool mixed04) {
+    ObservedMoment m;
+    m.alpha = alpha; m.L = L; m.M = M; m.value = ReadArrayBranchElement(t, valName, bin, false); m.sigma = ReadArrayBranchElement(t, errName, bin, true); m.isMixed04 = mixed04; m.name = valName;
+    obs.push_back(std::move(m));
+  };
+
+  if (cfg.photoProduction) {
+    add(0,0,0,"RH_0_0_0","RH_0_0_0_err",false);
+    add(0,1,0,"RH_0_1_0","RH_0_1_0_err",false);
+    add(0,1,1,"RH_0_1_1","RH_0_1_1_err",false);
+    add(0,2,0,"RH_0_2_0","RH_0_2_0_err",false);
+    add(0,2,1,"RH_0_2_1","RH_0_2_1_err",false);
+    add(0,2,2,"RH_0_2_2","RH_0_2_2_err",false);
+
+    add(1,0,0,"RH_1_0_0","RH_1_0_0_err",false);
+    add(1,1,0,"RH_1_1_0","RH_1_1_0_err",false);
+    add(1,1,1,"RH_1_1_1","RH_1_1_1_err",false);
+    add(1,2,0,"RH_1_2_0","RH_1_2_0_err",false);
+    add(1,2,1,"RH_1_2_1","RH_1_2_1_err",false);
+    add(1,2,2,"RH_1_2_2","RH_1_2_2_err",false);
+
+    add(2,1,1,"RH_2_1_1","RH_2_1_1_err",false);
+    add(2,2,1,"RH_2_2_1","RH_2_2_1_err",false);
+    add(2,2,2,"RH_2_2_2","RH_2_2_2_err",false);
+
+    //add(3,1,1,"RH_3_1_1","RH_3_1_1_err",false);
+    //add(3,2,1,"RH_3_2_1","RH_3_2_1_err",false);
+    //add(3,2,2,"RH_3_2_2","RH_3_2_2_err",false);
+    return obs;
+  }
+
+  // Electroproduction / full moment set
+  add(0,1,0,"RH04_1_0","RH04_1_0_err",true);
+  add(0,1,1,"RH04_1_1","RH04_1_1_err",true);
+  add(0,2,0,"RH04_2_0","RH04_2_0_err",true);
+  add(0,2,1,"RH04_2_1","RH04_2_1_err",true);
+  add(0,2,2,"RH04_2_2","RH04_2_2_err",true);
+
+  add(1,0,0,"RH_1_0_0","RH_1_0_0_err",false);
+  add(1,1,0,"RH_1_1_0","RH_1_1_0_err",false);
+  add(1,1,1,"RH_1_1_1","RH_1_1_1_err",false);
+  add(1,2,0,"RH_1_2_0","RH_1_2_0_err",false);
+  add(1,2,1,"RH_1_2_1","RH_1_2_1_err",false);
+  add(1,2,2,"RH_1_2_2","RH_1_2_2_err",false);
+
+  add(2,1,0,"RH_2_1_0","RH_2_1_0_err",false);
+  add(2,1,1,"RH_2_1_1","RH_2_1_1_err",false);
+  add(2,2,1,"RH_2_2_1","RH_2_2_1_err",false);
+  add(2,2,2,"RH_2_2_2","RH_2_2_2_err",false);
+
+  add(3,1,0,"RH_3_1_0","RH_3_1_0_err",false);
+  add(3,1,1,"RH_3_1_1","RH_3_1_1_err",false);
+  add(3,2,1,"RH_3_2_1","RH_3_2_1_err",false);
+  add(3,2,2,"RH_3_2_2","RH_3_2_2_err",false);
+
+  add(5,0,0,"RH_5_0_0","RH_5_0_0_err",false);
+  add(5,1,0,"RH_5_1_0","RH_5_1_0_err",false);
+  add(5,1,1,"RH_5_1_1","RH_5_1_1_err",false);
+  add(5,2,0,"RH_5_2_0","RH_5_2_0_err",false);
+  add(5,2,1,"RH_5_2_1","RH_5_2_1_err",false);
+  add(5,2,2,"RH_5_2_2","RH_5_2_2_err",false);
+
+  add(6,1,0,"RH_6_1_0","RH_6_1_0_err",false);
+  add(6,1,1,"RH_6_1_1","RH_6_1_1_err",false);
+  add(6,2,1,"RH_6_2_1","RH_6_2_1_err",false);
+  add(6,2,2,"RH_6_2_2","RH_6_2_2_err",false);
+
+  add(7,1,0,"RH_7_1_0","RH_7_1_0_err",false);
+  add(7,1,1,"RH_7_1_1","RH_7_1_1_err",false);
+  add(7,2,1,"RH_7_2_1","RH_7_2_1_err",false);
+  add(7,2,2,"RH_7_2_2","RH_7_2_2_err",false);
+
+  add(8,0,0,"RH_8_0_0","RH_8_0_0_err",false);
+  add(8,1,0,"RH_8_1_0","RH_8_1_0_err",false);
+  add(8,1,1,"RH_8_1_1","RH_8_1_1_err",false);
+  add(8,2,0,"RH_8_2_0","RH_8_2_0_err",false);
+  add(8,2,1,"RH_8_2_1","RH_8_2_1_err",false);
+  add(8,2,2,"RH_8_2_2","RH_8_2_2_err",false);
+
+  return obs;
+}
+
+
+// Numerical Calculation stuff below here
+
+static std::vector<std::pair<int, int>> EnumerateWaves(int lmax, int mmax, bool negm, bool onlyEven) {
+  std::vector<std::pair<int, int>> waves;
+  waves.reserve((lmax + 1) * (2 * mmax + 1));
   for (int l = 0; l <= lmax; ++l) {
-    if (onlyEven && (l % 2 == 1)) continue;
+    if (onlyEven && (l & 1)) continue;
     for (int m = -l; m <= l; ++m) {
       if (std::abs(m) > mmax) continue;
       if (!negm && m < 0) continue;
@@ -182,779 +260,141 @@ static std::vector<std::pair<int,int>> EnumerateWaves(int lmax, int mmax, bool n
   return waves;
 }
 
-static std::string MagName(char refl, char orient, int l, int m) {
-  std::ostringstream os;
-  std::string _m;
-  std::string _l = std::to_string(l);
-  if (m==-1)
-  {
-    _m="m1";
-  } else
-  {
-    _m = std::to_string(m);
-  }
-  os << refl << '_' << orient << '_' << _l << '_' << _m;
-  return os.str();
+static std::string MString(int m) { return (m == -1) ? "m1" : std::to_string(m); }
+static std::string MagName(char refl, char orient, int l, int m) { return std::string(1, refl) + '_' + orient + '_' + std::to_string(l) + '_' + MString(m); }
+static std::string PhiName(char refl, char orient, int l, int m) { return std::string(1, refl) + "phi_" + orient + '_' + std::to_string(l) + '_' + MString(m); }
+
+struct ParamLabel {
+  char refl = '\0';
+  char orient = '\0';
+  int l = -1;
+  int m = 0;
+  bool isPhase = false;
+  bool valid = false;
+};
+
+static ParamLabel ParseParamLabel(const std::string& name) {
+  ParamLabel out;
+  if (name.size() < 5) return out;
+  out.refl = name[0];
+  out.isPhase = (name.find("phi_") != std::string::npos);
+  out.orient = (name.find("_L_") != std::string::npos || name.find("phi_L_") != std::string::npos) ? 'L' : 'T';
+  const size_t last = name.find_last_of('_');
+  if (last == std::string::npos || last + 1 >= name.size()) return out;
+  const size_t prev = name.find_last_of('_', last - 1);
+  if (prev == std::string::npos || prev + 1 >= last) return out;
+  out.l = std::stoi(name.substr(prev + 1, last - prev - 1));
+  const std::string mstr = name.substr(last + 1);
+  out.m = (mstr == "m1") ? -1 : std::stoi(mstr);
+  out.valid = true;
+  return out;
 }
 
-static std::string PhiName(char refl, char orient, int l, int m) {
-  std::ostringstream os;
-  std::string _m;
-  std::string _l = std::to_string(l);
-  if (m==-1)
-  {
-    _m="m1";
-  } else
-  {
-    _m = std::to_string(m);
-  }
-  os << refl << "phi_" << orient << '_' << _l << '_' << _m;
-  return os.str();
+static long long MakeParamKey(char refl, char orient, int l, int m, bool isPhase) {
+  const long long reflBit = (refl == 'b');
+  const long long orientBit = (orient == 'L');
+  const long long phaseBit = isPhase;
+  const long long mEnc = static_cast<long long>(m + 32);
+  return ( ((((phaseBit << 1) | reflBit) << 1) | orientBit) << 12) | (static_cast<long long>(l) << 6) | mEnc;
 }
 
 static std::vector<ParDef> BuildAmplitudePhaseParameters(const FitConfig& cfg) {
-  // Use the same naming conventions as ElectroTwoSpin0AmpLoader:
-  // magnitudes: a_T_l_m, a_L_l_m, b_T_l_m, b_L_l_m
-  // phases:     aphi_T_l_m, aphi_L_l_m, bphi_T_l_m, bphi_L_l_m
-
-  constexpr double kPi = TMath::Pi();
-
   std::vector<ParDef> pars;
-  auto waves = EnumerateWaves(cfg.lmax, cfg.mmax, cfg.negm, cfg.onlyEven);
+  const auto waves = EnumerateWaves(cfg.lmax, cfg.mmax, cfg.negm, cfg.onlyEven);
+  pars.reserve(waves.size() * 8);
 
-  auto addMag = [&](char refl, char orient, int l, int m) {
+  auto add = [&](char refl, char orient, int l, int m, bool isPhase) {
     ParDef p;
-    p.name = MagName(refl, orient, l, m);
+    p.name = isPhase ? PhiName(refl, orient, l, m) : MagName(refl, orient, l, m);
     p.init = 0.0;
-    p.step = 1e-3;
-    p.low = 0.0;
-    p.high = 1.0;
-    p.fixed = false;
-    p.isPhase = false;
-    pars.push_back(p);
+    p.step = isPhase ? 0.3 : 0.05;
+    p.low = isPhase ? 0.0 : 0.0; // set to 0 for photoproduction due to ambiguity i.e. one appears in both sides
+    p.high = isPhase ? kPi : 1.0;
+    p.isPhase = isPhase;
+    pars.push_back(std::move(p));
   };
 
-  auto addPhi = [&](char refl, char orient, int l, int m) {
-    ParDef p;
-    p.name = PhiName(refl, orient, l, m);
-    p.init = 0.0;
-    p.step = 1e-3;
-    p.low = -kPi;
-    p.high = kPi;
-    p.fixed = false;
-    p.isPhase = true;
-    pars.push_back(p);
-  };
-
-  for (auto [l, m] : waves) {
-    // magnitudes
-    addMag('a', 'T', l, m);
-    addMag('a', 'L', l, m);
-    addMag('b', 'T', l, m);
-    addMag('b', 'L', l, m);
-
-    // phases
-    addPhi('a', 'T', l, m);
-    addPhi('a', 'L', l, m);
-    addPhi('b', 'T', l, m);
-    addPhi('b', 'L', l, m);
+  for (const auto& w : waves) {
+    const int l = w.first;
+    const int m = w.second;
+    add('a', 'T', l, m, false); add('a', 'L', l, m, false); add('b', 'T', l, m, false); add('b', 'L', l, m, false);
+    add('a', 'T', l, m, true);  add('a', 'L', l, m, true);  add('b', 'T', l, m, true);  add('b', 'L', l, m, true);
   }
 
-  // Apply the same proton-only fixing/zeroing as RunGivenMoments.C
-  auto fixTo = [&](const std::string& name, double val) {
-    for (auto& p : pars) {
-      if (p.name == name) {
-        p.init = val;
-        p.fixed = true;
-        p.low = val;
-        p.high = val;
-        p.step = 0.0;
-        return;
-      }
-    }
-    throw std::runtime_error("Parameter not found to fix: " + name);
+  auto fixTo = [&](const std::string& name, double value) {
+    auto it = std::find_if(pars.begin(), pars.end(), [&](const ParDef& p) { return p.name == name; });
+    if (it == pars.end()) throw std::runtime_error("Parameter not found to fix: " + name);
+    it->init = value; it->fixed = true; it->low = value; it->high = value; it->step = 0.0;
   };
 
-  // Fix reference phases: D+1 real (same as original macro)
-  fixTo("aphi_T_1_1", 0.0);
-  fixTo("bphi_T_1_1", 0.0);
-  // fixTo("aphi_L_1_1", 0.0);
-  // fixTo("bphi_L_1_1", 0.0);
+  // Fix phases
+  fixTo("aphi_T_1_1", 0.0); fixTo("bphi_T_1_1", 0.0); //fixTo("aphi_L_1_1", 0.0); fixTo("bphi_L_1_1", 0.0);
 
-  // 0 by construction
-  fixTo("a_L_0_0", 0.0);
-  fixTo("a_L_1_0", 0.0);
-  // fixTo("a_L_1_1", 0.0);
-  // fixTo("a_L_1_m1", 0.0);
-  // fixTo("b_L_1_1", 0.0);
-  // fixTo("b_L_1_m1", 0.0);
-  // fixTo("b_T_1_1", 0.0);
-  // fixTo("b_T_1_m1", 0.0);
-  // fixTo("b_T_1_0", 0.0);
-  fixTo("aphi_L_0_0", 0.0);
-  fixTo("aphi_L_1_0", 0.0);
-  // fixTo("aphi_L_1_1", 0.0);
-  // fixTo("aphi_L_1_m1", 0.0);
-  // fixTo("bphi_L_1_1", 0.0);
-  // fixTo("bphi_L_1_m1", 0.0);
-  // fixTo("bphi_T_1_1", 0.0);
-  // fixTo("bphi_T_1_m1", 0.0);
-  // fixTo("bphi_T_1_0", 0.0);
+  // P-Wave Transverese
+  //fixTo("a_L_1_0", 0.0); fixTo("aphi_L_1_0", 0.0); //fixTo("b_L_1_0", 0.0); fixTo("bphi_L_1_0", 0.0);
+  // fixTo("a_L_1_1", 0.0); fixTo("aphi_L_1_1", 0.0); fixTo("b_L_1_1", 0.0); fixTo("bphi_L_1_1", 0.0);
+  // fixTo("a_L_1_m1", 0.0); fixTo("aphi_L_1_m1", 0.0); fixTo("b_L_1_m1", 0.0); fixTo("bphi_L_1_m1", 0.0);
 
-  // 0 by hindsight (remove D-1 etc) - same list as RunGivenMoments.C
-  fixTo("b_T_0_0", 0.0);
-  fixTo("a_T_0_0", 0.0);
-  fixTo("b_L_0_0", 0.0);
-  fixTo("bphi_T_0_0", 0.0);
-  fixTo("aphi_T_0_0", 0.0);
-  fixTo("bphi_L_0_0", 0.0);
+  // P-Wave Longitudinal
+  //fixTo("a_L_1_0", 0.0); fixTo("aphi_L_1_0", 0.0);
+  fixTo("b_L_1_0", 0.0); fixTo("bphi_L_1_0", 0.0);
+  //fixTo("a_L_1_1", 0.0); fixTo("aphi_L_1_1", 0.0); fixTo("b_L_1_1", 0.0); fixTo("bphi_L_1_1", 0.0);
+  //fixTo("a_L_1_m1", 0.0); fixTo("aphi_L_1_m1", 0.0); fixTo("b_L_1_m1", 0.0); fixTo("bphi_L_1_m1", 0.0);
+
+  // S-Wave
+ fixTo("b_T_0_0", 0.0); fixTo("a_T_0_0", 0.0); fixTo("a_L_0_0", 0.0); fixTo("b_L_0_0", 0.0);
+ fixTo("bphi_T_0_0", 0.0); fixTo("aphi_T_0_0", 0.0); fixTo("aphi_L_0_0", 0.0); fixTo("bphi_L_0_0", 0.0);
+
+  if (cfg.photoProduction) {
+    for (auto& p : pars) {
+      const auto label = ParseParamLabel(p.name);
+      if (!label.valid || label.orient != 'L') continue;
+      p.init = 0.0;
+      p.fixed = true;
+      p.low = 0.0;
+      p.high = 0.0;
+      p.step = 0.0;
+    }
+  }
+
   return pars;
 }
 
-// -------------------------
-// Observed moments: proton-only, from SDME table (4 Q^2 bins)
-// q2bin: 0-><Q^2>=0.82, 1->1.19, 2->1.66, 3->3.06 GeV^2
-// Values are (value ± stat ± syst) from your table; we combine stat+syst in quadrature.
-// IMPORTANT: These are RH moments (as used by the fit). Comment out any add(...) lines you don't want.
-// -------------------------
-struct ValErr2 { double v{0}, stat{0}, syst{0}; };
-static inline double Comb(const ValErr2& x) { return TMath::Sqrt(x.stat*x.stat + x.syst*x.syst); }
-
-struct ProtonSDMEsTable {
-  ValErr2 r00_04;      // r^04_00
-  ValErr2 re_r10_04;   // Re r^04_10
-  ValErr2 r1m1_04;     // r^04_1-1
-
-  ValErr2 r1m1_1;      // r^1_1-1
-  ValErr2 re_r10_1;    // Re r^1_10
-  ValErr2 im_r10_2;    // Im r^2_10
-  ValErr2 r00_1;       // r^1_00
-  ValErr2 im_r10_3;    // Im r^3_10
-  ValErr2 r00_8;       // r^8_00
-  ValErr2 r11_5;       // r^5_11
-  ValErr2 r1m1_5;      // r^5_1-1
-  ValErr2 im_r1m1_6;   // Im r^6_1-1
-  ValErr2 im_r1m1_7;   // Im r^7_1-1
-  ValErr2 r11_8;       // r^8_11
-  ValErr2 r1m1_8;      // r^8_1-1
-  ValErr2 r11_1;       // r^1_11
-  ValErr2 im_r1m1_3;   // Im r^3_1-1
-  ValErr2 im_r1m1_2;   // Im r^2_1-1
-  ValErr2 re_r10_5;    // Re r^5_10
-  ValErr2 im_r10_6;    // Im r^6_10
-  ValErr2 im_r10_7;    // Im r^7_10
-  ValErr2 re_r10_8;    // Re r^8_10
-  ValErr2 r00_5;       // r^5_00
+struct BruSelection {
+  double coeff = 0.0;
+  char refl1 = 'a';
+  char orient1 = 'T';
+  int l1 = 0;
+  int m1 = 0;
+  char refl2 = 'a';
+  char orient2 = 'T';
+  int l2 = 0;
+  int m2 = 0;
+  TrigKind trig = TrigKind::kCos;
 };
 
-static ProtonSDMEsTable GetProtonSDMEs_TableQ2Bin(int q2bin) {
-  ProtonSDMEsTable p;
-  switch (q2bin) {
+static bool ResolveBruSelection(int reflsign, double factor, int l, int m, int lpr, int mpr,
+                                int alpha, bool negm, bool orientSwap, BruSelection& out) {
+  if (!negm && (m < 0 || mpr < 0)) return false;
+  out.refl1 = (reflsign == -1) ? 'b' : 'a';
+  out.refl2 = (reflsign == -1) ? 'b' : 'a';
 
-    case 0: // <Q^2>=0.82
-      p.r00_04     = { 0.349, 0.026, 0.061 };
-      p.r1m1_1     = { 0.283, 0.023, 0.049 };
-      p.im_r1m1_2  = { -0.294, 0.019, 0.038 };
-      p.re_r10_5   = { 0.151, 0.028, 0.026 };
-      p.im_r10_6   = { -0.149, 0.015, 0.010 };
-      p.im_r10_7   = { 0.079, 0.068, 0.011 };
-      p.re_r10_8   = { 0.040, 0.043, 0.011 };
-      p.re_r10_04  = { 0.028, 0.028, 0.020 };
-      p.re_r10_1   = { -0.037, 0.044, 0.032 };
-      p.im_r10_2   = { 0.023, 0.019, 0.007 };
-      p.r00_5      = { 0.121, 0.038, 0.039 };
-      p.r00_1      = { -0.054, 0.039, 0.013 };
-      p.im_r10_3   = { 0.002, 0.041, 0.008 };
-      p.r00_8      = { 0.022, 0.079, 0.026 };
-      p.r11_5      = { -0.015, 0.010, 0.007 };
-      p.r1m1_5     = { 0.009, 0.011, 0.019 };
-      p.im_r1m1_6  = { -0.011, 0.010, 0.013 };
-      p.im_r1m1_7  = { -0.003, 0.078, 0.021 };
-      p.r11_8      = { 0.019, 0.053, 0.007 };
-      p.r1m1_8     = { 0.013, 0.062, 0.008 };
-      p.r1m1_04    = { -0.024, 0.013, 0.021 };
-      p.r11_1      = { -0.039, 0.017, 0.018 };
-      p.im_r1m1_3  = { 0.021, 0.051, 0.010 };
-      break;
+  out.orient1 = 'T';
+  out.orient2 = 'T';
+  if (alpha == 4) out.orient1 = out.orient2 = 'L';
+  if (alpha >= 5) { out.orient1 = 'L'; out.orient2 = 'T'; }
+  if (alpha >= 5 && orientSwap) { out.orient1 = 'T'; out.orient2 = 'L'; }
 
-    case 1: // <Q^2>=1.19
-      p.r00_04     = { 0.368, 0.018, 0.011 };
-      p.r1m1_1     = { 0.262, 0.018, 0.024 };
-      p.im_r1m1_2  = { -0.255, 0.016, 0.022 };
-      p.re_r10_5   = { 0.171, 0.007, 0.000 };
-      p.im_r10_6   = { -0.167, 0.007, 0.003 };
-      p.im_r10_7   = { 0.092, 0.038, 0.010 };
-      p.re_r10_8   = { 0.020, 0.031, 0.008 };
-      p.re_r10_04  = { 0.029, 0.007, 0.003 };
-      p.re_r10_1   = { -0.043, 0.012, 0.006 };
-      p.im_r10_2   = { 0.022, 0.012, 0.018 };
-      p.r00_5      = { 0.094, 0.017, 0.017 };
-      p.r00_1      = { 0.011, 0.032, 0.018 };
-      p.im_r10_3   = { -0.041, 0.026, 0.005 };
-      p.r00_8      = { 0.040, 0.084, 0.014 };
-      p.r11_5      = { -0.011, 0.006, 0.006 };
-      p.r1m1_5     = { 0.008, 0.007, 0.006 };
-      p.im_r1m1_6  = { 0.002, 0.007, 0.007 };
-      p.im_r1m1_7  = { 0.023, 0.056, 0.013 };
-      p.r11_8      = { 0.056, 0.045, 0.004 };
-      p.r1m1_8     = { 0.072, 0.053, 0.011 };
-      p.r1m1_04    = { -0.014, 0.010, 0.010 };
-      p.r11_1      = { -0.034, 0.013, 0.013 };
-      p.im_r1m1_3  = { 0.000, 0.033, 0.004 };
-      break;
-
-    case 2: // <Q^2>=1.66
-      p.r00_04     = { 0.397, 0.017, 0.018 };
-      p.r1m1_1     = { 0.274, 0.019, 0.024 };
-      p.im_r1m1_2  = { -0.239, 0.017, 0.011 };
-      p.re_r10_5   = { 0.161, 0.006, 0.004 };
-      p.im_r10_6   = { -0.167, 0.006, 0.005 };
-      p.im_r10_7   = { 0.039, 0.036, 0.004 };
-      p.re_r10_8   = { 0.074, 0.034, 0.002 };
-      p.re_r10_04  = { 0.035, 0.007, 0.011 };
-      p.re_r10_1   = { -0.036, 0.012, 0.012 };
-      p.im_r10_2   = { 0.005, 0.012, 0.024 };
-      p.r00_5      = { 0.057, 0.015, 0.019 };
-      p.r00_1      = { 0.007, 0.031, 0.009 };
-      p.im_r10_3   = { -0.074, 0.025, 0.005 };
-      p.r00_8      = { 0.054, 0.086, 0.011 };
-      p.r11_5      = { -0.008, 0.006, 0.011 };
-      p.r1m1_5     = { -0.013, 0.007, 0.003 };
-      p.im_r1m1_6  = { 0.002, 0.007, 0.004 };
-      p.im_r1m1_7  = { -0.005, 0.055, 0.010 };
-      p.r11_8      = { 0.051, 0.044, 0.006 };
-      p.r1m1_8     = { -0.018, 0.054, 0.004 };
-      p.r1m1_04    = { -0.019, 0.010, 0.003 };
-      p.r11_1      = { -0.023, 0.013, 0.008 };
-      p.im_r1m1_3  = { -0.031, 0.032, 0.007 };
-      break;
-
-    case 3: // <Q^2>=3.06
-      p.r00_04     = { 0.454, 0.014, 0.011 };
-      p.r1m1_1     = { 0.204, 0.017, 0.012 };
-      p.im_r1m1_2  = { -0.197, 0.017, 0.012 };
-      p.re_r10_5   = { 0.141, 0.006, 0.008 };
-      p.im_r10_6   = { -0.156, 0.006, 0.010 };
-      p.im_r10_7   = { 0.187, 0.034, 0.018 };
-      p.re_r10_8   = { 0.098, 0.032, 0.005 };
-      p.re_r10_04  = { 0.026, 0.007, 0.003 };
-      p.re_r10_1   = { -0.009, 0.013, 0.010 };
-      p.im_r10_2   = { 0.022, 0.013, 0.008 };
-      p.r00_5      = { 0.151, 0.015, 0.007 };
-      p.r00_1      = { 0.037, 0.034, 0.002 };
-      p.im_r10_3   = { 0.048, 0.024, 0.006 };
-      p.r00_8      = { 0.010, 0.085, 0.016 };
-      p.r11_5      = { -0.021, 0.006, 0.016 };
-      p.r1m1_5     = { 0.020, 0.007, 0.008 };
-      p.im_r1m1_6  = { -0.010, 0.007, 0.007 };
-      p.im_r1m1_7  = { -0.109, 0.047, 0.004 };
-      p.r11_8      = { -0.002, 0.035, 0.005 };
-      p.r1m1_8     = { 0.004, 0.045, 0.014 };
-      p.r1m1_04    = { 0.001, 0.009, 0.007 };
-      p.r11_1      = { -0.018, 0.012, 0.010 };
-      p.im_r1m1_3  = { -0.026, 0.028, 0.005 };
-      break;
-
-    default:
-      ::Error("GetProtonSDMEs_TableQ2Bin", "Invalid q2bin=%d (expected 0..3). Using bin 0.", q2bin);
-      return GetProtonSDMEs_TableQ2Bin(0);
-  }
-  return p;
-}
-
-static int GetClosestQ2Bin(double q2Value) {
-  static constexpr double kQ2Centers[] = {0.82, 1.19, 1.66, 3.06};
-  int best = 0;
-  double bestDiff = std::abs(q2Value - kQ2Centers[0]);
-  for (int i = 1; i < 4; ++i) {
-    const double diff = std::abs(q2Value - kQ2Centers[i]);
-    if (diff < bestDiff) {
-      best = i;
-      bestDiff = diff;
-    }
-  }
-  return best;
-}
-
-static std::vector<ObservedMoment> BuildObservedProtonMomentsFromQ2Bin(int q2bin) {
-  const auto p = GetProtonSDMEs_TableQ2Bin(q2bin);
-
-  std::vector<ObservedMoment> obs;
-  obs.reserve(64);
-
-  auto add = [&](int alpha, int L, int M, double val, double sig) {
-    ObservedMoment m;
-    m.alpha = alpha;
-    m.L = L;
-    m.M = M;
-    m.value = val;
-    m.sigma = sig;
-    std::ostringstream os;
-    os << "RH_" << alpha << "_" << L << "_" << M;
-    m.name = os.str();
-    obs.push_back(m);
-  };
-
-  auto add04 = [&](int L, int M, double val, double sig) {
-    ObservedMoment m;
-    m.alpha = 0;
-    m.L = L;
-    m.M = M;
-    m.value = val;
-    m.sigma = sig;
-    m.isMixed04 = true;
-    std::ostringstream os;
-    os << "RH04_" << L << "_" << M;
-    m.name = os.str();
-    obs.push_back(m);
-  };
-
-  const double s_r00_04    = Comb(p.r00_04);
-  const double s_re_r10_04 = Comb(p.re_r10_04);
-  const double s_r1m1_04   = Comb(p.r1m1_04);
-  const double s_r1m1_1    = Comb(p.r1m1_1);
-  const double s_re_r10_1  = Comb(p.re_r10_1);
-  const double s_r00_1     = Comb(p.r00_1);
-  const double s_r11_1     = Comb(p.r11_1);
-  const double s_im_r10_2  = Comb(p.im_r10_2);
-  const double s_im_r1m1_2 = Comb(p.im_r1m1_2);
-  const double s_im_r10_3  = Comb(p.im_r10_3);
-  const double s_im_r1m1_3 = Comb(p.im_r1m1_3);
-  const double s_r00_5     = Comb(p.r00_5);
-  const double s_r11_5     = Comb(p.r11_5);
-  const double s_re_r10_5  = Comb(p.re_r10_5);
-  const double s_r1m1_5    = Comb(p.r1m1_5);
-  const double s_im_r10_6  = Comb(p.im_r10_6);
-  const double s_im_r1m1_6 = Comb(p.im_r1m1_6);
-  const double s_im_r10_7  = Comb(p.im_r10_7);
-  const double s_im_r1m1_7 = Comb(p.im_r1m1_7);
-  const double s_r00_8     = Comb(p.r00_8);
-  const double s_r11_8     = Comb(p.r11_8);
-  const double s_re_r10_8  = Comb(p.re_r10_8);
-  const double s_r1m1_8    = Comb(p.r1m1_8);
-
-  const double f21 = TMath::Sqrt(12.0) / 5.0;
-  const double f22 = TMath::Sqrt(6.0)  / 5.0;
-
-  add04(2, 0, 0.2 * (3.0 * p.r00_04.v - 1.0),  TMath::Abs(0.6) * s_r00_04);
-  add04(2, 1, f21 * p.re_r10_04.v,              TMath::Abs(f21) * s_re_r10_04);
-  add04(2, 2, -f22 * p.r1m1_04.v,               TMath::Abs(f22) * s_r1m1_04);
-
-  add(1, 0, 0, -(2.0 * p.r11_1.v + p.r00_1.v),
-      TMath::Sqrt((2 * s_r11_1) * (2 * s_r11_1) + s_r00_1 * s_r00_1));
-  add(1, 2, 0, 0.4 * (p.r11_1.v - p.r00_1.v),
-      0.4 * TMath::Sqrt(s_r11_1 * s_r11_1 + s_r00_1 * s_r00_1));
-  add(1, 2, 1, -f21 * p.re_r10_1.v,             TMath::Abs(f21) * s_re_r10_1);
-  add(1, 2, 2,  f22 * p.r1m1_1.v,               TMath::Abs(f22) * s_r1m1_1);
-
-  add(2, 2, 1, -f21 * p.im_r10_2.v,             TMath::Abs(f21) * s_im_r10_2);
-  add(2, 2, 2,  f22 * p.im_r1m1_2.v,            TMath::Abs(f22) * s_im_r1m1_2);
-
-  add(3, 2, 1, -f21 * p.im_r10_3.v,             TMath::Abs(f21) * s_im_r10_3);
-  add(3, 2, 2,  f22 * p.im_r1m1_3.v,            TMath::Abs(f22) * s_im_r1m1_3);
-
-  add(5, 0, 0, -(2.0 * p.r11_5.v + p.r00_5.v),
-      TMath::Sqrt((2 * s_r11_5) * (2 * s_r11_5) + s_r00_5 * s_r00_5));
-  add(5, 2, 0, 0.4 * (p.r11_5.v - p.r00_5.v),
-      0.4 * TMath::Sqrt(s_r11_5 * s_r11_5 + s_r00_5 * s_r00_5));
-  add(5, 2, 1, -f21 * p.re_r10_5.v,             TMath::Abs(f21) * s_re_r10_5);
-  add(5, 2, 2,  f22 * p.r1m1_5.v,               TMath::Abs(f22) * s_r1m1_5);
-
-  add(6, 2, 1, -f21 * p.im_r10_6.v,             TMath::Abs(f21) * s_im_r10_6);
-  add(6, 2, 2,  f22 * p.im_r1m1_6.v,            TMath::Abs(f22) * s_im_r1m1_6);
-
-  add(7, 2, 1, -f21 * p.im_r10_7.v,             TMath::Abs(f21) * s_im_r10_7);
-  add(7, 2, 2,  f22 * p.im_r1m1_7.v,            TMath::Abs(f22) * s_im_r1m1_7);
-
-  add(8, 0, 0, -(2.0 * p.r11_8.v + p.r00_8.v),
-      TMath::Sqrt((2 * s_r11_8) * (2 * s_r11_8) + s_r00_8 * s_r00_8));
-  add(8, 2, 0, 0.4 * (p.r11_8.v - p.r00_8.v),
-      0.4 * TMath::Sqrt(s_r11_8 * s_r11_8 + s_r00_8 * s_r00_8));
-  add(8, 2, 1, -f21 * p.re_r10_8.v,             TMath::Abs(f21) * s_re_r10_8);
-  add(8, 2, 2,  f22 * p.r1m1_8.v,               TMath::Abs(f22) * s_r1m1_8);
-
-  return obs;
-}
-
-static std::vector<ObservedMoment> BuildObservedProtonMomentsFromFile(const std::string& inFile,
-                                                                      const std::string& treeName = "syntheticMoments") {
-  constexpr double kSigma = 1e-3;
-
-  std::unique_ptr<TFile> fin(TFile::Open(inFile.c_str(), "READ"));
-  if (!fin || fin->IsZombie()) {
-    throw std::runtime_error("BuildObservedProtonMomentsFromFile: failed to open file " + inFile);
-  }
-
-  TTree* t = dynamic_cast<TTree*>(fin->Get(treeName.c_str()));
-  if (!t) {
-    throw std::runtime_error("BuildObservedProtonMomentsFromFile: could not find tree '" + treeName + "'");
-  }
-  if (t->GetEntries() < 1) {
-    throw std::runtime_error("BuildObservedProtonMomentsFromFile: tree '" + treeName + "' is empty");
-  }
-
-  auto readBranch = [&](const char* bname) -> double {
-    if (!t->GetBranch(bname)) {
-      throw std::runtime_error(std::string("BuildObservedProtonMomentsFromFile: missing branch '") + bname + "'");
-    }
-    double x = 0.0;
-    t->SetBranchAddress(bname, &x);
-    t->GetEntry(0);
-    t->ResetBranchAddresses();
-    return x;
-  };
-
-  std::vector<ObservedMoment> obs;
-  obs.reserve(24);
-
-  auto add = [&](int alpha, int L, int M, const char* branchName) {
-    ObservedMoment m;
-    m.alpha = alpha;
-    m.L = L;
-    m.M = M;
-    m.value = readBranch(branchName);
-    m.sigma = kSigma;
-    m.name = branchName;
-    obs.push_back(m);
-  };
-
-  auto add04 = [&](int L, int M, const char* branchName) {
-    ObservedMoment m;
-    m.alpha = 0;
-    m.L = L;
-    m.M = M;
-    m.value = readBranch(branchName);
-    m.sigma = kSigma;
-    m.isMixed04 = true;
-    m.name = branchName;
-    obs.push_back(m);
-  };
-
-  add04(2, 0, "RH04_2_0");
-  add04(2, 1, "RH04_2_1");
-  add04(2, 2, "RH04_2_2");
-
-  add(1, 0, 0, "RH_1_0_0");
-  add(1, 2, 0, "RH_1_2_0");
-  add(1, 2, 1, "RH_1_2_1");
-  add(1, 2, 2, "RH_1_2_2");
-
-  add(2, 2, 1, "RH_2_2_1");
-  add(2, 2, 2, "RH_2_2_2");
-
-  add(3, 2, 1, "RH_3_2_1");
-  add(3, 2, 2, "RH_3_2_2");
-
-  add(5, 0, 0, "RH_5_0_0");
-  add(5, 2, 0, "RH_5_2_0");
-  add(5, 2, 1, "RH_5_2_1");
-  add(5, 2, 2, "RH_5_2_2");
-
-  add(6, 2, 1, "RH_6_2_1");
-  add(6, 2, 2, "RH_6_2_2");
-
-  add(7, 2, 1, "RH_7_2_1");
-  add(7, 2, 2, "RH_7_2_2");
-
-  add(8, 0, 0, "RH_8_0_0");
-  add(8, 2, 0, "RH_8_2_0");
-  add(8, 2, 1, "RH_8_2_1");
-  add(8, 2, 2, "RH_8_2_2");
-
-  return obs;
-}
-
-static std::vector<ObservedMoment> BuildObservedMoments(const FitConfig& cfg) {
-  if (cfg.observedInput.source == ObservedMomentsSource::kRootFile) {
-    return BuildObservedProtonMomentsFromFile(cfg.observedInput.momentsFile, cfg.observedInput.momentsTree);
-  }
-  return BuildObservedProtonMomentsFromQ2Bin(cfg.observedInput.q2bin);
-}
-
-// -------------------------
-// Term evaluation: matches BruTermCircle numerically
-// -------------------------
-static void BruTermCircleResolved(int reflsign, double factor, int l, int m, int lpr, int mpr,
-                                  int alpha, bool negm, bool orientswap,
-                                  double& outCoeff,
-                                  char& refl1, char& orient1, int& l1, int& m1,
-                                  char& refl2, char& orient2, int& l2, int& m2,
-                                  bool& useTrig, TrigKind& trig) {
-  // Implements the selection logic from E2S0AmpLoader::BruTermCircle, but instead of
-  // returning a string, returns (overall coefficient, wave selectors, trig kind).
-
-  if (!negm && (m < 0 || mpr < 0)) {
-    outCoeff = 0.0;
-    useTrig = false;
-    trig = TrigKind::kNone;
-    return;
-  }
-
-  refl1 = (reflsign == -1) ? 'b' : 'a';
-
-  // primed reflectivity
-  char reflpr = 'a';
-  if (reflsign == -1 && alpha <= 4) reflpr = 'b';
-  if (reflsign == 1 && alpha > 4) reflpr = 'b';
-
-  // orientation selection
-  orient1 = 'T';
-  char orientpr = 'T';
-  if (alpha == 4) {
-    orient1 = orientpr = 'L';
-  }
-  if (alpha >= 5) {
-    orient1 = 'L';
-    orientpr = 'T';
-  }
-  if (alpha >= 5 && orientswap) {
-    orient1 = 'T';
-    orientpr = 'L';
-  }
-
-  // reflfactor
   int reflfactor = 1;
   if (alpha == 1 || alpha == 2) reflfactor = reflsign;
+  if (alpha == 8) factor *= -1.0;
 
-  // trig selection
-  useTrig = !(l == lpr && m == mpr);
-  trig = TrigKind::kCos;
-  if (alpha == 3 || alpha == 7 || alpha == 8) trig = TrigKind::kSin;
-
-  // extra minus for alpha==8
-  if (alpha == 8) factor *= -1;
-
-  outCoeff = reflfactor * factor;
-
-  // wave selectors
-  l1 = l; m1 = m;
-  l2 = lpr; m2 = mpr;
-  refl2 = reflpr;
-  orient2 = orientpr;
+  out.coeff = reflfactor * factor;
+  out.l1 = l; out.m1 = m; out.l2 = lpr; out.m2 = mpr;
+  out.trig = (alpha == 3 || alpha == 7 || alpha == 8) ? TrigKind::kSin : TrigKind::kCos;
+  return out.coeff != 0.0;
 }
 
-// -------------------------
-// Build numeric model for all desired H(alpha,L,M) as a list of terms
-// -------------------------
-static std::vector<MomentModel> BuildMomentModels(const FitConfig& cfg,
-                                                  const std::map<std::string,int>& nameToIndex) {
-  std::vector<MomentModel> models;
-
-  // Build for alpha=0..8, L=0..2*lmax, M=0..L
-  for (int alpha = 0; alpha <= 8; ++alpha) {
-    for (int L = 0; L <= 2 * cfg.lmax; ++L) {
-      for (int M = 0; M <= L; ++M) {
-        MomentModel mm;
-        mm.alpha = alpha;
-        mm.L = L;
-        mm.M = M;
-        {
-          // Internal model name corresponds to the *pure* (unscaled) moment H^alpha_{L M}.
-          // Experimental inputs are RH^alpha_{L M} = R^alpha * H^alpha_{L M}.
-          // We keep H_ names here so that:
-          //   - R can be formed from H_4_0_0 and H_0_0_0
-          //   - observed RH_* values can be mapped to the underlying H_* model index
-          std::ostringstream os;
-          os << "H_" << alpha << "_" << L << "_" << M;
-          mm.name = os.str();
-        }
-
-        // Respect the loader behaviour: alpha 2,3,6,7 are zero for M=0
-        if ((alpha == 2 || alpha == 3 || alpha == 6 || alpha == 7) && M == 0) {
-          models.push_back(std::move(mm));
-          continue;
-        }
-
-        for (int il = 0; il <= cfg.lmax; ++il) {
-          if (cfg.onlyEven && (il % 2 == 1)) continue;
-          for (int im = -il; im <= il; ++im) {
-            if (std::abs(im) > cfg.mmax) continue;
-            if (!cfg.negm && im < 0) continue;
-
-            for (int ilpr = 0; ilpr <= cfg.lmax; ++ilpr) {
-              if (cfg.onlyEven && (ilpr % 2 == 1)) continue;
-              for (int impr = -ilpr; impr <= ilpr; ++impr) {
-                if (std::abs(impr) > cfg.mmax) continue;
-                if (!cfg.negm && impr < 0) continue;
-
-                const double CM = ClebschGordan(ilpr, L, il, impr, M, im);
-                const double C0 = ClebschGordan(ilpr, L, il, 0, 0, 0);
-                const double factor = TMath::Sqrt((2.0 * ilpr + 1.0) / (2.0 * il + 1.0));
-                double ccfactor = CM * C0 * factor;
-                if (ccfactor == 0.0) continue;
-
-                int mmprimesign = 1;
-                if (std::abs((im - impr) % 2) == 1) mmprimesign = -1;
-
-                int mprimesign = 1;
-                if (std::abs(impr % 2) == 1) mprimesign = -1;
-
-                int msign = 1;
-                if (std::abs(im % 2) == 1) msign = -1;
-
-                auto emitBru = [&](int reflsign, double f, int ll, int mm1, int llpr, int mm2,
-                                   int alphaTerm, bool orSwap, bool asTrigSignFlip) {
-                  // Resolve BruTermCircle selection
-                  double baseCoeff = 0.0;
-                  char r1='a', o1='T', r2='a', o2='T';
-                  int l1=0,m1=0,l2=0,m2=0;
-                  bool useTrig=true;
-                  TrigKind trig=TrigKind::kNone;
-                  BruTermCircleResolved(reflsign, f, ll, mm1, llpr, mm2, alphaTerm, cfg.negm, orSwap,
-                                        baseCoeff, r1, o1, l1, m1, r2, o2, l2, m2, useTrig, trig);
-                  if (baseCoeff == 0.0) return;
-
-                  // Map wave selectors to parameter indices
-                  const std::string mag1 = MagName(r1, o1, l1, m1);
-                  const std::string phi1 = PhiName(r1, o1, l1, m1);
-                  const std::string mag2 = MagName(r2, o2, l2, m2);
-                  const std::string phi2 = PhiName(r2, o2, l2, m2);
-
-                  auto itMag1 = nameToIndex.find(mag1);
-                  auto itPhi1 = nameToIndex.find(phi1);
-                  auto itMag2 = nameToIndex.find(mag2);
-                  auto itPhi2 = nameToIndex.find(phi2);
-                  if (itMag1 == nameToIndex.end() || itMag2 == nameToIndex.end()) {
-                    throw std::runtime_error("Missing magnitude parameter in map: " + mag1 + " or " + mag2);
-                  }
-                  if (itPhi1 == nameToIndex.end() || itPhi2 == nameToIndex.end()) {
-                    throw std::runtime_error("Missing phase parameter in map: " + phi1 + " or " + phi2);
-                  }
-
-                  Term t;
-                  t.coeff = baseCoeff;
-                  //if (asTrigSignFlip) t.coeff *= -1.0; // used to emulate the "+-" in alpha==3 strings
-
-                  t.idxMag1 = itMag1->second;
-                  t.idxPhi1 = itPhi1->second;
-                  t.idxMag2 = itMag2->second;
-                  t.idxPhi2 = itPhi2->second;
-                  t.useTrig = useTrig;
-                  t.trig = trig;
-                  mm.terms.push_back(t);
-                };
-
-                // Replicate alpha-specific blocks from CGMatrixReflectivity
-                if (alpha == 0) {
-                  int refl = +1;
-                  emitBru(refl, ccfactor, il, im, ilpr, impr, 0, false, false);
-                  emitBru(refl, mmprimesign * ccfactor, il, -im, ilpr, -impr, 0, false, false);
-                  if (cfg.useNegRef) {
-                    refl = -1;
-                    emitBru(refl, ccfactor, il, im, ilpr, impr, 0, false, false);
-                    emitBru(refl, mmprimesign * ccfactor, il, -im, ilpr, -impr, 0, false, false);
-                  }
-                } else if (alpha == 1) {
-                  int refl = +1;
-                  emitBru(refl, msign*ccfactor, il, -im, ilpr, impr, 1, false, false);
-                  emitBru(refl, mprimesign * ccfactor, il, im, ilpr, -impr, 1, false, false);
-                  if (cfg.useNegRef) {
-                    refl = -1;
-                    emitBru(refl, msign*ccfactor, il, -im, ilpr, impr, 1, false, false);
-                    emitBru(refl, mprimesign * ccfactor, il, im, ilpr, -impr, 1, false, false);
-                  }
-                } else if (alpha == 2) {
-                  int refl = +1;
-                  emitBru(refl, msign*ccfactor, il, -im, ilpr, impr, 2, false, false);
-                  emitBru(refl, -1 * mprimesign * ccfactor, il, im, ilpr, -impr, 2, false, false);
-                  if (cfg.useNegRef) {
-                    refl = -1;
-                    emitBru(refl, msign*ccfactor, il, -im, ilpr, impr, 2, false, false);
-                    emitBru(refl, -1 * mprimesign * ccfactor, il, im, ilpr, -impr, 2, false, false);
-                  }
-                } else if (alpha == 3) {
-                  int refl = +1;
-                  double f = -1.0 * ccfactor; // ccfactor *= -1 in code
-                  emitBru(refl, f, il, im, ilpr, impr, 3, false, false);
-                  // emulate "+-" by flipping sign of the second term
-                  emitBru(refl, -1*mmprimesign * f, il, -im, ilpr, -impr, 3, false, true);
-                  if (cfg.useNegRef) {
-                    refl = -1;
-                    emitBru(refl, f, il, im, ilpr, impr, 3, false, false);
-                    emitBru(refl, -1*mmprimesign * f, il, -im, ilpr, -impr, 3, false, true);
-                  }
-                } else if (alpha == 4) {
-                  int refl = +1;
-                  double f = -1.0 * ccfactor; // ccfactor*=-1
-                  emitBru(refl, 2 * f, il, im, ilpr, impr, 4, false, false);
-                  if (cfg.useNegRef) {
-                    refl = -1;
-                    emitBru(refl, 2 * f, il, im, ilpr, impr, 4, false, false);
-                  }
-                } else if (alpha == 5) {
-                  int refl = +1;
-                  double f = (-1.0 / TMath::Sqrt(2.0)) * ccfactor;
-                  emitBru(refl, f, il, im, ilpr, impr, 5, false, false);
-                  emitBru(refl, f, il, im, ilpr, impr, 5, true, false);
-                  emitBru(refl, mmprimesign * f, il, -im, ilpr, -impr, 5, false, false);
-                  emitBru(refl, mmprimesign * f, il, -im, ilpr, -impr, 5, true, false);
-                  if (cfg.useNegRef) {
-                    refl = -1;
-                    emitBru(refl, f, il, im, ilpr, impr, 5, false, false);
-                    emitBru(refl, f, il, im, ilpr, impr, 5, true, false);
-                    emitBru(refl, mmprimesign * f, il, -im, ilpr, -impr, 5, false, false);
-                    emitBru(refl, mmprimesign * f, il, -im, ilpr, -impr, 5, true, false);
-                  }
-                } else if (alpha == 6) {
-                  int refl = +1;
-                  double f = (-1.0 / TMath::Sqrt(2.0)) * ccfactor;
-                  emitBru(refl, f, il, im, ilpr, impr, 6, false, false);
-                  emitBru(refl, -1 * f, il, im, ilpr, impr, 6, true, false);
-                  emitBru(refl, -1 * mmprimesign * f, il, -im, ilpr, -impr, 6, false, false);
-                  emitBru(refl, mmprimesign * f, il, -im, ilpr, -impr, 6, true, false);
-                  if (cfg.useNegRef) {
-                    refl = -1;
-                    emitBru(refl, f, il, im, ilpr, impr, 6, false, false);
-                    emitBru(refl, -1 * f, il, im, ilpr, impr, 6, true, false);
-                    emitBru(refl, -1 * mmprimesign * f, il, -im, ilpr, -impr, 6, false, false);
-                    emitBru(refl, mmprimesign * f, il, -im, ilpr, -impr, 6, true, false);
-                  }
-                } else if (alpha == 7) {
-                  int refl = +1;
-                  double f = (-1.0 / TMath::Sqrt(2.0)) * ccfactor;
-                  emitBru(refl, f, il, im, ilpr, impr, 7, false, false);
-                  emitBru(refl, f, il, im, ilpr, impr, 7, true, false);
-                  emitBru(refl, -1 * mmprimesign * f, il, -im, ilpr, -impr, 7, false, false);
-                  emitBru(refl, -1 * mmprimesign * f, il, -im, ilpr, -impr, 7, true, false);
-                  if (cfg.useNegRef) {
-                    refl = -1;
-                    emitBru(refl, f, il, im, ilpr, impr, 7, false, false);
-                    emitBru(refl, f, il, im, ilpr, impr, 7, true, false);
-                    emitBru(refl, -1 * mmprimesign * f, il, -im, ilpr, -impr, 7, false, false);
-                    emitBru(refl, -1 * mmprimesign * f, il, -im, ilpr, -impr, 7, true, false);
-                  }
-                } else if (alpha == 8) {
-                  int refl = +1;
-                  double f = (-1.0 / TMath::Sqrt(2.0)) * ccfactor;
-                  emitBru(refl, f, il, im, ilpr, impr, 8, false, false);
-                  emitBru(refl, -1 * f, il, im, ilpr, impr, 8, true, false);
-                  emitBru(refl, mmprimesign * f, il, -im, ilpr, -impr, 8, false, false);
-                  emitBru(refl, -1 * mmprimesign * f, il, -im, ilpr, -impr, 8, true, false);
-                  if (cfg.useNegRef) {
-                    refl = -1;
-                    emitBru(refl, f, il, im, ilpr, impr, 8, false, false);
-                    emitBru(refl, -1 * f, il, im, ilpr, impr, 8, true, false);
-                    emitBru(refl, mmprimesign * f, il, -im, ilpr, -impr, 8, false, false);
-                    emitBru(refl, -1 * mmprimesign * f, il, -im, ilpr, -impr, 8, true, false);
-                  }
-                } else {
-                }
-              }
-            }
-          }
-        }
-
-        models.push_back(std::move(mm));
-      }
-    }
-  }
-
-  return models;
-}
-
-// -------------------------
-// Evaluator / gradient for chi2
-// -------------------------
 struct EvalContext {
   FitConfig cfg;
   std::vector<ParDef> fullPars;
@@ -963,16 +403,18 @@ struct EvalContext {
 
   std::vector<ObservedMoment> observed;
   std::vector<MomentModel> modelsRec;
-
-  std::map<std::string, size_t> modelIndexByName;
+  std::unordered_map<std::string, size_t> modelIndexByName;
   std::vector<int> observedModelIdx;
   std::vector<int> observedModelIdx0;
   std::vector<int> observedModelIdx4;
 
-  std::vector<int> magFullIdx;
-
+  std::vector<PhasePair> phasePairs;
   int idxH0_00 = -1;
   int idxH4_00 = -1;
+  int simplexRefMagIdx = -1;
+  std::vector<int> simplexMagFullIdx;
+  std::vector<int> coordToSimplexMagPos;
+  double fixedMagSqSum = 0.0;
 
   mutable unsigned callCount = 0;
   mutable TTree* iterTree = nullptr;
@@ -981,108 +423,518 @@ struct EvalContext {
   mutable std::vector<double> iter_Hrec;
 };
 
-static void FillFullFromFree(const EvalContext& ctx, const double* x, std::vector<double>& v) {
-  if (v.size() != ctx.fullPars.size()) v.assign(ctx.fullPars.size(), 0.0);
-  for (size_t i = 0; i < ctx.fullPars.size(); ++i) v[i] = ctx.fullPars[i].init;
+struct MCMCResult {
+  std::vector<double> xStart;
+  std::vector<double> xBest;
+  double chi2Start = 1e300;
+  double chi2Best = 1e300;
+  double chi2Last = 1e300;
+  unsigned accepted = 0;
+  unsigned proposed = 0;
+};
+
+static std::vector<MomentModel> BuildMomentModels(const FitConfig& cfg,
+                                                  const std::unordered_map<long long, int>& paramIndex,
+                                                  std::vector<PhasePair>& phasePairs) {
+  std::vector<MomentModel> models;
+  const int alphaMax = cfg.photoProduction ? 3 : 8;
+  models.reserve((alphaMax + 1) * (2 * cfg.lmax + 1) * (2 * cfg.lmax + 2) / 2);
+
+  std::unordered_map<long long, int> phasePairLookup;
+  const auto waves = EnumerateWaves(cfg.lmax, cfg.mmax, cfg.negm, cfg.onlyEven);
+
+  struct CGKey {
+    int lpr, L, l, mpr, M, m;
+    bool operator==(const CGKey& o) const { return lpr == o.lpr && L == o.L && l == o.l && mpr == o.mpr && M == o.M && m == o.m; }
+  };
+  struct CGKeyHash {
+    size_t operator()(const CGKey& k) const {
+      size_t h = 1469598103934665603ull;
+      auto mix = [&](int v) { h ^= static_cast<size_t>(v + 32); h *= 1099511628211ull; };
+      mix(k.lpr); mix(k.L); mix(k.l); mix(k.mpr); mix(k.M); mix(k.m);
+      return h;
+    }
+  };
+  std::unordered_map<CGKey, double, CGKeyHash> cgCache;
+  cgCache.reserve(2048);
+
+  auto getCG = [&](int lpr, int L, int l, int mpr, int M, int m) {
+    const CGKey key{lpr, L, l, mpr, M, m};
+    auto it = cgCache.find(key);
+    if (it != cgCache.end()) return it->second;
+    const double v = ClebschGordan(lpr, L, l, mpr, M, m);
+    cgCache.emplace(key, v);
+    return v;
+  };
+
+  auto getPhasePairIdx = [&](int idxPhi1, int idxPhi2) {
+    const long long key = (static_cast<long long>(idxPhi1) << 32) | static_cast<unsigned int>(idxPhi2);
+    auto it = phasePairLookup.find(key);
+    if (it != phasePairLookup.end()) return it->second;
+    const int idx = static_cast<int>(phasePairs.size());
+    phasePairs.push_back({idxPhi1, idxPhi2});
+    phasePairLookup.emplace(key, idx);
+    return idx;
+  };
+
+  auto paramIdx = [&](char refl, char orient, int l, int m, bool isPhase) -> int {
+    const auto it = paramIndex.find(MakeParamKey(refl, orient, l, m, isPhase));
+    if (it == paramIndex.end()) {
+      std::ostringstream os;
+      os << "Missing parameter index for " << (isPhase ? "phi" : "mag") << ' ' << refl << ' ' << orient << ' ' << l << ' ' << m;
+      throw std::runtime_error(os.str());
+    }
+    return it->second;
+  };
+
+  auto emit = [&](MomentModel& mm, int reflsign, double factor, int l, int m, int lpr, int mpr, int alpha, bool orientSwap) {
+    BruSelection sel;
+    if (!ResolveBruSelection(reflsign, factor, l, m, lpr, mpr, alpha, cfg.negm, orientSwap, sel)) return;
+    Term t;
+    t.coeff = sel.coeff;
+    t.idxMag1 = paramIdx(sel.refl1, sel.orient1, sel.l1, sel.m1, false);
+    t.idxMag2 = paramIdx(sel.refl2, sel.orient2, sel.l2, sel.m2, false);
+    const int idxPhi1 = paramIdx(sel.refl1, sel.orient1, sel.l1, sel.m1, true);
+    const int idxPhi2 = paramIdx(sel.refl2, sel.orient2, sel.l2, sel.m2, true);
+    t.phasePairIdx = getPhasePairIdx(idxPhi1, idxPhi2);
+    t.trig = sel.trig;
+    t.ignorePhase = (sel.l1 == sel.l2 && sel.m1 == sel.m2);
+    mm.terms.push_back(t);
+  };
+
+  for (int alpha = 0; alpha <= alphaMax; ++alpha) {
+    for (int L = 0; L <= 2 * cfg.lmax; ++L) {
+      for (int M = 0; M <= L; ++M)
+      {
+        MomentModel mm;
+        mm.alpha = alpha; mm.L = L; mm.M = M;
+        mm.name = std::string("H_") + std::to_string(alpha) + "_" + std::to_string(L) + "_" + std::to_string(M);
+        if ((alpha == 2 || alpha == 3 || alpha == 6 || alpha == 7) && M == 0) {
+          models.push_back(std::move(mm));
+          continue;
+        }
+
+        for (const auto& w1 : waves)
+        {
+          const int il = w1.first;
+          const int im = w1.second;
+          for (const auto& w2 : waves)
+          {
+            const int ilpr = w2.first;
+            const int impr = w2.second;
+
+            const double CM = getCG(ilpr, L, il, impr, M, im);
+            if (CM == 0.0) continue;
+            const double C0 = getCG(ilpr, L, il, 0, 0, 0);
+            if (C0 == 0.0) continue;
+            const double ccfactor = CM * C0 * std::sqrt((2.0 * ilpr + 1.0) / (2.0 * il + 1.0));
+            if (ccfactor == 0.0) continue;
+
+            const int mmprimesign = ((std::abs(im - impr) & 1) ? -1 : 1);
+            const int mprimesign = ((std::abs(impr) & 1) ? -1 : 1);
+            const int msign = ((std::abs(im) & 1) ? -1 : 1);
+
+            if (alpha == 0) {
+              emit(mm, +1, ccfactor, il, im, ilpr, impr, 0, false);
+              emit(mm, +1, mmprimesign * ccfactor, il, -im, ilpr, -impr, 0, false);
+              if (cfg.useNegRef) { emit(mm, -1, ccfactor, il, im, ilpr, impr, 0, false); emit(mm, -1, mmprimesign * ccfactor, il, -im, ilpr, -impr, 0, false); }
+            } else if (alpha == 1) {
+              emit(mm, +1, msign * ccfactor, il, -im, ilpr, impr, 1, false);
+              emit(mm, +1, mprimesign * ccfactor, il, im, ilpr, -impr, 1, false);
+              if (cfg.useNegRef) { emit(mm, -1, msign * ccfactor, il, -im, ilpr, impr, 1, false); emit(mm, -1, mprimesign * ccfactor, il, im, ilpr, -impr, 1, false); }
+            } else if (alpha == 2) {
+              emit(mm, +1, msign * ccfactor, il, -im, ilpr, impr, 2, false);
+              emit(mm, +1, -mprimesign * ccfactor, il, im, ilpr, -impr, 2, false);
+              if (cfg.useNegRef) { emit(mm, -1, msign * ccfactor, il, -im, ilpr, impr, 2, false); emit(mm, -1, -mprimesign * ccfactor, il, im, ilpr, -impr, 2, false); }
+            } else if (alpha == 3) {
+              const double f = -ccfactor;
+              emit(mm, +1, f, il, im, ilpr, impr, 3, false);
+              emit(mm, +1, -mmprimesign * f, il, -im, ilpr, -impr, 3, false);
+              if (cfg.useNegRef) { emit(mm, -1, f, il, im, ilpr, impr, 3, false); emit(mm, -1, -mmprimesign * f, il, -im, ilpr, -impr, 3, false); }
+            } else if (alpha == 4) {
+              const double f = -2.0 * ccfactor;
+              emit(mm, +1, f, il, im, ilpr, impr, 4, false);
+              if (cfg.useNegRef) emit(mm, -1, f, il, im, ilpr, impr, 4, false);
+            }  else if (alpha == 5) {
+              int refl = +1;
+              double f = (-1.0 / TMath::Sqrt(2.0)) * ccfactor;
+              emit(mm, refl, f, il, im, ilpr, impr, 5, false);
+              emit(mm, refl, f, il, im, ilpr, impr, 5, true);
+              emit(mm, refl, mmprimesign * f, il, -im, ilpr, -impr, 5, false);
+              emit(mm, refl, mmprimesign * f, il, -im, ilpr, -impr, 5, true);
+              if (cfg.useNegRef) {
+                refl = -1;
+                emit(mm, refl, f, il, im, ilpr, impr, 5, false);
+                emit(mm, refl, f, il, im, ilpr, impr, 5, true);
+                emit(mm, refl, mmprimesign * f, il, -im, ilpr, -impr, 5, false);
+                emit(mm, refl, mmprimesign * f, il, -im, ilpr, -impr, 5, true);
+              }
+            } else if (alpha == 6) {
+              int refl = +1;
+              double f = (1.0 / TMath::Sqrt(2.0)) * ccfactor;
+              emit(mm, refl, f, il, im, ilpr, impr, 6, false);
+              emit(mm, refl, f, il, im, ilpr, impr, 6, true);
+              emit(mm, refl, mmprimesign * f, il, -im, ilpr, -impr, 6, false);
+              emit(mm, refl, mmprimesign * f, il, -im, ilpr, -impr, 6, true);
+              if (cfg.useNegRef) {
+                refl = -1;
+                emit(mm, refl, f, il, im, ilpr, impr, 6, false);
+                emit(mm, refl, f, il, im, ilpr, impr, 6, true);
+                emit(mm, refl, mmprimesign * f, il, -im, ilpr, -impr, 6, false);
+                emit(mm, refl, mmprimesign * f, il, -im, ilpr, -impr, 6, true);
+              }
+            } else if (alpha == 7) {
+              int refl = +1;
+              double f = (-1.0 / TMath::Sqrt(2.0)) * ccfactor;
+              emit(mm, refl, f, il, im, ilpr, impr, 7, false);
+              emit(mm, refl, f, il, im, ilpr, impr, 7, true);
+              emit(mm, refl, -1 * mmprimesign * f, il, -im, ilpr, -impr, 7, false);
+              emit(mm, refl, -1 * mmprimesign * f, il, -im, ilpr, -impr, 7, true);
+              if (cfg.useNegRef) {
+                refl = -1;
+                emit(mm, refl, f, il, im, ilpr, impr, 7, false);
+                emit(mm, refl, f, il, im, ilpr, impr, 7, true);
+                emit(mm, refl, -1 * mmprimesign * f, il, -im, ilpr, -impr, 7, false);
+                emit(mm, refl, -1 * mmprimesign * f, il, -im, ilpr, -impr, 7, true);
+              }
+            } else if (alpha == 8) {
+              int refl = +1;
+              double f = (-1.0 / TMath::Sqrt(2.0)) * ccfactor;
+              emit(mm, refl, f, il, im, ilpr, impr, 8, false);
+              emit(mm, refl, -1 * f, il, im, ilpr, impr, 8, true);
+              emit(mm, refl, mmprimesign * f, il, -im, ilpr, -impr, 8, false);
+              emit(mm, refl, -1 * mmprimesign * f, il, -im, ilpr, -impr, 8, true);
+              if (cfg.useNegRef) {
+                refl = -1;
+                emit(mm, refl, f, il, im, ilpr, impr, 8, false);
+                emit(mm, refl, -1 * f, il, im, ilpr, impr, 8, true);
+                emit(mm, refl, mmprimesign * f, il, -im, ilpr, -impr, 8, false);
+                emit(mm, refl, -1 * mmprimesign * f, il, -im, ilpr, -impr, 8, true);
+              }
+            }
+          }
+        }
+        models.push_back(std::move(mm));
+      }
+    }
+  }
+  return models;
+}
+
+static double SampleGammaMT(TRandom3& rng, double shape, double scale = 1.0) {
+  if (!(shape > 0.0) || !(scale > 0.0) || !std::isfinite(shape) || !std::isfinite(scale)) return 0.0;
+
+  if (shape < 1.0) {
+    const double u = std::max(rng.Rndm(), 1e-300);
+    return SampleGammaMT(rng, shape + 1.0, scale) * std::pow(u, 1.0 / shape);
+  }
+
+  const double d = shape - 1.0 / 3.0;
+  const double c = 1.0 / std::sqrt(9.0 * d);
+  for (;;) {
+    const double x = rng.Gaus(0.0, 1.0);
+    double v = 1.0 + c * x;
+    if (v <= 0.0) continue;
+    v = v * v * v;
+    const double u = std::max(rng.Rndm(), 1e-300);
+    if (u < 1.0 - 0.0331 * x * x * x * x) return scale * d * v;
+    if (std::log(u) < 0.5 * x * x + d * (1.0 - v + std::log(v))) return scale * d * v;
+  }
+}
+
+static bool FillFullFromFree(const EvalContext& ctx,
+                             const double* x,
+                             std::vector<double>& fullVals,
+                             std::vector<double>* simplexWeights = nullptr) {
+  if (fullVals.size() != ctx.fullPars.size()) fullVals.resize(ctx.fullPars.size());
+  for (size_t i = 0; i < ctx.fullPars.size(); ++i) fullVals[i] = ctx.fullPars[i].init;
+
   for (size_t i = 0; i < ctx.freeToFull.size(); ++i) {
     const int fullIdx = ctx.freeToFull[i];
-    v[(size_t)fullIdx] = x[i];
-  }
-}
-
-
-static inline void EnsureSize(std::vector<double>& v, size_t n) {
-  if (v.size() != n) v.assign(n, 0.0);
-}
-
-
-// Full-parameter derivative version (derivatives w.r.t ALL full parameters, including fixed).
-static double EvalMomentAndDerivFull(const MomentModel& mm,
-                                     const std::vector<double>& fullVals,
-                                     std::vector<double>& dHdFull) {
-  std::fill(dHdFull.begin(), dHdFull.end(), 0.0);
-  double H = 0.0;
-
-  for (const auto& t : mm.terms) {
-    const double m1 = fullVals[t.idxMag1];
-    const double p1 = fullVals[t.idxPhi1];
-    const double m2 = fullVals[t.idxMag2];
-    const double p2 = fullVals[t.idxPhi2];
-
-    // if (!t.useTrig) {
-    //   const double val = t.coeff * (m1 * m2);
-    //   H += val;
-    //   dHdFull[(size_t)t.idxMag1] += t.coeff * m2;
-    //   dHdFull[(size_t)t.idxMag2] += t.coeff * m1;
-    //   continue;
-    // }
-
-    const double dphi = p1 - p2;
-    double s = 0.0, c = 1.0;
-    FastSinCos(dphi, s, c);
-
-    double trigv = 0.0;
-    double dtrig_dphi = 0.0;
-    if (t.trig == TrigKind::kCos) {
-      trigv = c;
-      dtrig_dphi = -s;
-    } else if (t.trig == TrigKind::kSin) {
-      trigv = s;
-      dtrig_dphi = c;
+    if (ctx.coordToSimplexMagPos.empty() || ctx.coordToSimplexMagPos[i] < 0) {
+      fullVals[static_cast<size_t>(fullIdx)] = x[i];
     }
-
-    const double val = t.coeff * m1 * m2 * trigv;
-    H += val;
-
-    dHdFull[(size_t)t.idxMag1] += t.coeff * (m2 * trigv);
-    dHdFull[(size_t)t.idxMag2] += t.coeff * (m1 * trigv);
-
-    const double common = t.coeff * m1 * m2 * dtrig_dphi;
-    dHdFull[(size_t)t.idxPhi1] += common;
-    dHdFull[(size_t)t.idxPhi2] -= common;
   }
 
-  return H;
+  if (simplexWeights) simplexWeights->clear();
+  if (ctx.simplexMagFullIdx.empty()) return true;
+
+  const double available = 1.0 - ctx.fixedMagSqSum;
+  if (!(available >= 0.0) || !std::isfinite(available)) return false;
+
+  const size_t kNumSimplexMags = ctx.simplexMagFullIdx.size();
+  if (simplexWeights) simplexWeights->assign(kNumSimplexMags, 0.0);
+
+  if (kNumSimplexMags == 1) {
+    fullVals[static_cast<size_t>(ctx.simplexMagFullIdx[0])] = std::sqrt(available);
+    if (simplexWeights) (*simplexWeights)[0] = 1.0;
+    return std::isfinite(fullVals[static_cast<size_t>(ctx.simplexMagFullIdx[0])]);
+  }
+
+  double maxLogit = 0.0; // reference logit is fixed to zero
+  for (size_t i = 0; i < ctx.freeToFull.size(); ++i) {
+    const int magPos = ctx.coordToSimplexMagPos[i];
+    if (magPos < 0) continue;
+    maxLogit = std::max(maxLogit, x[i]);
+  }
+
+  double denom = std::exp(-maxLogit); // reference magnitude weight
+  for (size_t i = 0; i < ctx.freeToFull.size(); ++i) {
+    const int magPos = ctx.coordToSimplexMagPos[i];
+    if (magPos < 0) continue;
+    denom += std::exp(x[i] - maxLogit);
+  }
+  if (!(denom > 0.0) || !std::isfinite(denom)) return false;
+
+  for (size_t i = 0; i < ctx.freeToFull.size(); ++i) {
+    const int magPos = ctx.coordToSimplexMagPos[i];
+    if (magPos < 0) continue;
+    const double weight = std::exp(x[i] - maxLogit) / denom;
+    const int fullIdx = ctx.freeToFull[i];
+    if (simplexWeights) (*simplexWeights)[static_cast<size_t>(magPos)] = weight;
+    fullVals[static_cast<size_t>(fullIdx)] = std::sqrt(std::max(0.0, available * weight));
+  }
+
+  const double refWeight = std::exp(-maxLogit) / denom;
+  const int refFullIdx = ctx.simplexMagFullIdx.back();
+  if (simplexWeights) (*simplexWeights).back() = refWeight;
+  fullVals[static_cast<size_t>(refFullIdx)] = std::sqrt(std::max(0.0, available * refWeight));
+  return std::isfinite(fullVals[static_cast<size_t>(refFullIdx)]);
 }
 
+static inline void EnsureSize(std::vector<double>& v, size_t n, double fill = 0.0) {
+  if (v.size() != n) v.assign(n, fill);
+}
+
+static void BuildPhasePairTrigCache(const EvalContext& ctx,
+                                    const std::vector<double>& fullVals,
+                                    std::vector<double>& pairSin,
+                                    std::vector<double>& pairCos) {
+  EnsureSize(pairSin, ctx.phasePairs.size());
+  EnsureSize(pairCos, ctx.phasePairs.size());
+  for (size_t i = 0; i < ctx.phasePairs.size(); ++i) {
+    const auto& pp = ctx.phasePairs[i];
+    FastSinCos(fullVals[pp.idxPhi1] - fullVals[pp.idxPhi2], pairSin[i], pairCos[i]);
+  }
+}
 
 static double EvalMomentOnly(const MomentModel& mm,
-                             const std::vector<double>& fullVals) {
-  const double* fv = fullVals.data();
+                             const std::vector<double>& fullVals,
+                             const std::vector<double>& pairSin,
+                             const std::vector<double>& pairCos) {
   double H = 0.0;
-
   for (const auto& t : mm.terms) {
-    const double m1 = fv[t.idxMag1];
-    const double p1 = fv[t.idxPhi1];
-    const double m2 = fv[t.idxMag2];
-    const double p2 = fv[t.idxPhi2];
-
-    // if (!t.useTrig) {
-    //   H += t.coeff * (m1 * m2);
-    //   continue;
-    // }
-
-    const double dphi = p1 - p2;
-    double s = 0.0, c = 1.0;
-    FastSinCos(dphi, s, c);
-
-    if (t.trig == TrigKind::kCos) {
-      H += t.coeff * m1 * m2 * c;
-    } else if (t.trig == TrigKind::kSin) {
-      H += t.coeff * m1 * m2 * s;
-    }
+    //if (t.ignorePhase && (mm.alpha==3 || mm.alpha==7 || mm.alpha==8)) continue; // No imaginary parts for these
+    //const double trig = t.ignorePhase ? 1.0 : ((t.trig == TrigKind::kCos) ? pairCos[t.phasePairIdx] : pairSin[t.phasePairIdx]);
+    const double trig = (t.trig == TrigKind::kCos) ? pairCos[t.phasePairIdx] : pairSin[t.phasePairIdx];
+    H += t.coeff * fullVals[t.idxMag1] * fullVals[t.idxMag2] * trig;
   }
-
   return H;
 }
 
-static void EvalAllMoments(const std::vector<MomentModel>& models,
+static double EvalMomentAndDerivFull(const EvalContext& ctx,
+                                     const MomentModel& mm,
+                                     const std::vector<double>& fullVals,
+                                     const std::vector<double>& pairSin,
+                                     const std::vector<double>& pairCos,
+                                     std::vector<double>& dHdFull) {
+  EnsureSize(dHdFull, ctx.fullPars.size());
+  std::fill(dHdFull.begin(), dHdFull.end(), 0.0);
+  double H = 0.0;
+  for (const auto& t : mm.terms) {
+    const auto& pp = ctx.phasePairs[t.phasePairIdx];
+    const double m1 = fullVals[t.idxMag1];
+    const double m2 = fullVals[t.idxMag2];
+    //if (t.ignorePhase && (mm.alpha==3 || mm.alpha==7 || mm.alpha==8)) continue; // No imaginary parts for these
+    const double trig = (t.trig == TrigKind::kCos) ? pairCos[t.phasePairIdx] : pairSin[t.phasePairIdx];
+    const double dtrig =(t.trig == TrigKind::kCos) ? -pairSin[t.phasePairIdx] : pairCos[t.phasePairIdx];
+    const double val = t.coeff * m1 * m2 * trig;
+    H += val;
+    dHdFull[t.idxMag1] += t.coeff * m2 * trig;
+    dHdFull[t.idxMag2] += t.coeff * m1 * trig;
+    //if (!t.ignorePhase) {
+    const double common = t.coeff * m1 * m2 * dtrig;
+    dHdFull[pp.idxPhi1] += common;
+    dHdFull[pp.idxPhi2] -= common;
+    //}
+  }
+  return H;
+}
+
+static void EvalAllMoments(const EvalContext& ctx,
                            const std::vector<double>& fullVals,
                            std::vector<double>& values) {
-  EnsureSize(values, models.size());
-  for (size_t i = 0; i < models.size(); ++i) {
-    values[i] = EvalMomentOnly(models[i], fullVals);
+  EnsureSize(values, ctx.modelsRec.size());
+  std::vector<double> pairSin, pairCos;
+  BuildPhasePairTrigCache(ctx, fullVals, pairSin, pairCos);
+  for (size_t i = 0; i < ctx.modelsRec.size(); ++i) values[i] = EvalMomentOnly(ctx.modelsRec[i], fullVals, pairSin, pairCos);
+}
+
+static int ChooseDependentNormalizationMagnitude(const std::vector<ParDef>& pars,
+                                               const FitConfig& cfg) {
+  if (!cfg.depNormMagName.empty()) {
+    for (int i = 0; i < static_cast<int>(pars.size()); ++i) {
+      const auto& p = pars[static_cast<size_t>(i)];
+      if (p.name != cfg.depNormMagName) continue;
+      if (p.isPhase) throw std::runtime_error("Simplex reference parameter must be a magnitude, not a phase: " + cfg.depNormMagName);
+      if (p.fixed) throw std::runtime_error("Simplex reference magnitude is fixed and cannot be used: " + cfg.depNormMagName);
+      return i;
+    }
+    throw std::runtime_error("Requested simplex reference magnitude not found: " + cfg.depNormMagName);
   }
+
+  int bestPosT = -1;
+  int bestZeroT = -1;
+  int bestAnyT = -1;
+  auto betterLM = [&](int lhsIdx, int rhsIdx) {
+    if (rhsIdx < 0) return true;
+    const auto lhs = ParseParamLabel(pars[static_cast<size_t>(lhsIdx)].name);
+    const auto rhs = ParseParamLabel(pars[static_cast<size_t>(rhsIdx)].name);
+    if (lhs.l != rhs.l) return lhs.l > rhs.l;
+    if (lhs.m != rhs.m) return lhs.m > rhs.m;
+    return lhsIdx < rhsIdx;
+  };
+
+  for (int i = 0; i < static_cast<int>(pars.size()); ++i) {
+    const auto& p = pars[static_cast<size_t>(i)];
+    if (p.isPhase || p.fixed) continue;
+    const auto label = ParseParamLabel(p.name);
+    if (!label.valid) continue;
+    if (label.orient == 'T') {
+      if (label.m > 0) {
+        if (betterLM(i, bestPosT)) bestPosT = i;
+      } else if (label.m == 0) {
+        if (betterLM(i, bestZeroT)) bestZeroT = i;
+      }
+      if (betterLM(i, bestAnyT)) bestAnyT = i;
+    }
+  }
+
+  if (bestPosT >= 0) return bestPosT;
+  if (bestZeroT >= 0) return bestZeroT;
+  if (bestAnyT >= 0) return bestAnyT;
+
+  for (int i = static_cast<int>(pars.size()) - 1; i >= 0; --i) {
+    if (!pars[static_cast<size_t>(i)].isPhase && !pars[static_cast<size_t>(i)].fixed) return i;
+  }
+  return -1;
+}
+
+static inline double SimplexMagnitudeDot(const EvalContext& ctx,
+                                         const std::vector<double>& fullVals,
+                                         const std::vector<double>& dFull) {
+  double out = 0.0;
+  for (const int fullIdx : ctx.simplexMagFullIdx) {
+    out += fullVals[static_cast<size_t>(fullIdx)] * dFull[static_cast<size_t>(fullIdx)];
+  }
+  return out;
+}
+
+static inline double MapFullDerivToFreeWithSimplexMagnitudes(const EvalContext& ctx,
+                                                             const std::vector<double>& fullVals,
+                                                             const std::vector<double>& simplexWeights,
+                                                             const std::vector<double>& dFull,
+                                                             double simplexDot,
+                                                             unsigned iFree) {
+  const int fullIdx = ctx.freeToFull[iFree];
+  const int simplexPos = ctx.coordToSimplexMagPos.empty() ? -1 : ctx.coordToSimplexMagPos[iFree];
+  if (simplexPos < 0) return dFull[static_cast<size_t>(fullIdx)];
+  return 0.5 * fullVals[static_cast<size_t>(fullIdx)] * dFull[static_cast<size_t>(fullIdx)]
+       - 0.5 * simplexWeights[static_cast<size_t>(simplexPos)] * simplexDot;
+}
+
+static double WrapToRange(double x, double low, double high) {
+  if (!(high > low)) return low;
+  const double width = high - low;
+  while (x < low) x += width;
+  while (x > high) x -= width;
+  if (x < low) x = low;
+  if (x > high) x = high;
+  return x;
+}
+
+
+static double EvaluateChi2AtPoint(const ROOT::Math::IBaseFunctionMultiDim& fcn,
+                                  const std::vector<double>& x) {
+  if (x.empty()) return 1e300;
+  const double chi2 = fcn(x.data());
+  return (std::isfinite(chi2) ? chi2 : 1e300);
+}
+
+static void ProposeMCMCStep(const EvalContext& ctx,
+                            const FitConfig& cfg,
+                            TRandom3& rng,
+                            const std::vector<double>& current,
+                            std::vector<double>& proposal) {
+  proposal = current;
+  if (proposal.empty()) return;
+  const unsigned iFree = rng.Integer(proposal.size());
+  const int fullIdx = ctx.freeToFull[iFree];
+  const auto& p = ctx.fullPars[static_cast<size_t>(fullIdx)];
+  const double step = p.isPhase
+                        ? std::max(cfg.mcmcProposalPhaseSigma, (p.step > 0.0 ? p.step : 0.0))
+                        : std::max(cfg.mcmcProposalMagSigma, (cfg.simplexLogitStep > 0.0 ? cfg.simplexLogitStep : 0.2));
+  const double trial = proposal[iFree] + rng.Gaus(0.0, step);
+  proposal[iFree] = p.isPhase ? WrapToRange(trial, p.low, p.high)
+                              : trial;
+}
+
+static MCMCResult RunMCMCPreScan(const EvalContext& ctx,
+                                 const FitConfig& cfg,
+                                 const ROOT::Math::IBaseFunctionMultiDim& fcn,
+                                 TRandom3& rng,
+                                 const std::vector<double>& xSeed) {
+  MCMCResult out;
+  out.xStart = xSeed;
+  out.xBest = xSeed;
+  if (xSeed.empty() || cfg.mcmcSteps == 0) {
+    out.chi2Start = EvaluateChi2AtPoint(fcn, xSeed);
+    out.chi2Best = out.chi2Start;
+    out.chi2Last = out.chi2Start;
+    return out;
+  }
+
+  std::vector<double> current = xSeed;
+  std::vector<double> proposal = xSeed;
+  double currentChi2 = EvaluateChi2AtPoint(fcn, current);
+  if (!(currentChi2 < 1e299)) {
+    out.chi2Start = currentChi2;
+    out.chi2Best = currentChi2;
+    out.chi2Last = currentChi2;
+    return out;
+  }
+
+  out.chi2Start = currentChi2;
+  out.chi2Best = currentChi2;
+  out.chi2Last = currentChi2;
+
+  const double temperature = (cfg.mcmcTemperature > 0.0) ? cfg.mcmcTemperature : 1.0;
+
+  for (unsigned istep = 0; istep < cfg.mcmcSteps; ++istep) {
+    ProposeMCMCStep(ctx, cfg, rng, current, proposal);
+    const double propChi2 = EvaluateChi2AtPoint(fcn, proposal);
+    ++out.proposed;
+    bool accept = false;
+    if (propChi2 < currentChi2) {
+      accept = true;
+    } else if (propChi2 < 1e299) {
+      const double delta = (propChi2 - currentChi2) / temperature;
+      accept = (delta <= 0.0) || (rng.Uniform() < std::exp(-0.5 * delta));
+    }
+
+    if (accept) {
+      current.swap(proposal);
+      currentChi2 = propChi2;
+      ++out.accepted;
+      if (currentChi2 < out.chi2Best) {
+        out.chi2Best = currentChi2;
+        out.xBest = current;
+      }
+    }
+  }
+
+  out.chi2Last = currentChi2;
+  return out;
 }
 
 class Chi2Function final : public ROOT::Math::IMultiGradFunction {
@@ -1092,284 +944,273 @@ public:
   }
 
   unsigned int NDim() const override { return static_cast<unsigned>(ctx_->freeToFull.size()); }
+  ROOT::Math::IBaseFunctionMultiDim* Clone() const override { return new Chi2Function(ctx_); }
 
-  ROOT::Math::IBaseFunctionMultiDim* Clone() const override {
-    return new Chi2Function(ctx_);
-  }
-
-  
   double DoEval(const double* x) const override {
-  FillFullFromFree(*ctx_, x, fullVals_);
-  const auto& fullVals = fullVals_;
+    if (!FillFullFromFree(*ctx_, x, fullVals_, &simplexWeights_)) return 1e300;
+    BuildPhasePairTrigCache(*ctx_, fullVals_, pairSin_, pairCos_);
+    ++ctx_->callCount;
 
-  ctx_->callCount++;
+    EnsureSize(buf_momRec_, ctx_->modelsRec.size());
+    if (buf_momSeen_.size() != ctx_->modelsRec.size()) buf_momSeen_.assign(ctx_->modelsRec.size(), 0);
+    std::fill(buf_momSeen_.begin(), buf_momSeen_.end(), static_cast<unsigned char>(0));
 
-  const bool writeTrace = (ctx_->iterTree && ctx_->cfg.recordEvery > 0 &&
-                           (ctx_->callCount % ctx_->cfg.recordEvery == 0));
-
-  EnsureSize(buf_momRec_, ctx_->modelsRec.size());
-  if (buf_momSeen_.size() != ctx_->modelsRec.size()) buf_momSeen_.assign(ctx_->modelsRec.size(), 0);
-  std::fill(buf_momSeen_.begin(), buf_momSeen_.end(), static_cast<unsigned char>(0));
-
-  auto GetMoment = [&](int idx) -> double {
-    if (idx < 0) return 0.0;
-    const size_t uidx = static_cast<size_t>(idx);
-    if (!buf_momSeen_[uidx]) {
-      buf_momRec_[uidx] = EvalMomentOnly(ctx_->modelsRec[uidx], fullVals);
-      buf_momSeen_[uidx] = 1;
-    }
-    return buf_momRec_[uidx];
-  };
-
-  const double H0 = (ctx_->idxH0_00 >= 0) ? GetMoment(ctx_->idxH0_00) : 0.0;
-  const double H4 = (ctx_->idxH4_00 >= 0) ? GetMoment(ctx_->idxH4_00) : 0.0;
-
-  double R = -H4/H0;
-
-  const double eps = ctx_->cfg.epsR4;
-  const double invDen = 1.0 / (1.0 + eps * R);
-  const double sqrtR = std::sqrt(R);
-
-  auto ScaleForAlpha = [&](int alpha) -> double {
-    if (alpha >= 0 && alpha <= 3) return invDen;
-    if (alpha == 4) return eps * R * invDen;
-    if (alpha >= 5 && alpha <= 8) return sqrtR * invDen;
-    return 1.0;
-  };
-
-  double chi2 = 0.0;
-
-  const double rNorm = (H0 - H4 - ctx_->cfg.H0H4NormTarget) / ctx_->cfg.H0H4NormSigma;
-  chi2 += rNorm * rNorm;
-
-  for (size_t i = 0; i < ctx_->observed.size(); ++i) {
-    const auto& ob = ctx_->observed[i];
-    double RH = 0.0;
-
-    if (ob.isMixed04) {
-      const int idx0 = ctx_->observedModelIdx0[i];
-      const int idx4 = ctx_->observedModelIdx4[i];
-      if (idx0 < 0 || idx4 < 0) continue;
-      RH = GetMoment(idx0) + ctx_->cfg.rh04MixCoeff * (eps * R) * GetMoment(idx4);
-    } else {
-      const int midx = ctx_->observedModelIdx[i];
-      if (midx < 0) continue;
-      RH = ScaleForAlpha(ob.alpha) * GetMoment(midx);
-    }
-
-    const double r = (RH - ob.value) / ob.sigma;
-    chi2 += r * r;
-  }
-
-  if (writeTrace) {
-    ctx_->iter_log_val = (chi2 > 0.0) ? std::log10(chi2) : -999.0;
-
-    for (size_t j = 0; j < ctx_->fullPars.size(); ++j) {
-      double v = fullVals[j];
-      ctx_->iter_parVals[j] = v;
-    }
-
-    for (size_t i = 0; i < ctx_->modelsRec.size(); ++i) {
-      if (!buf_momSeen_[i]) {
-        buf_momRec_[i] = EvalMomentOnly(ctx_->modelsRec[i], fullVals);
-        buf_momSeen_[i] = 1;
+    auto getMomentRaw = [&](int idx) -> double {
+      if (idx < 0) return 0.0;
+      const size_t uidx = static_cast<size_t>(idx);
+      if (!buf_momSeen_[uidx]) {
+        buf_momRec_[uidx] = EvalMomentOnly(ctx_->modelsRec[uidx], fullVals_, pairSin_, pairCos_);
+        buf_momSeen_[uidx] = 1;
       }
-      ctx_->iter_Hrec[i] = buf_momRec_[i];
-    }
-    ctx_->iterTree->Fill();
-  }
+      return buf_momRec_[uidx];
+    };
 
-  return chi2 / NDim();
-}
-
-void Gradient(const double* x, double* grad) const override {
-  std::fill(grad, grad + NDim(), 0.0);
-
-  FillFullFromFree(*ctx_, x, fullVals_);
-  const auto& fullVals = fullVals_;
-  const size_t nFull = ctx_->fullPars.size();
-
-  auto mapFullDerivToFree = [&](const std::vector<double>& dFull, unsigned iFree) -> double {
-    const int fullIdx = ctx_->freeToFull[iFree];
-    return dFull[(size_t)fullIdx];
-  };
-
-  EnsureSize(buf_fullA_, nFull);
-  EnsureSize(buf_fullB_, nFull);
-  EnsureSize(buf_fullC_, nFull);
-  EnsureSize(buf_fullD_, nFull);
-  EnsureSize(buf_fullE_, nFull);
-  EnsureSize(buf_fullF_, nFull);
-
-  auto& dH0_full = buf_fullA_;
-  auto& dH4_full = buf_fullB_;
-  auto& dRraw_full = buf_fullC_;
-  auto& dR_full = buf_fullD_;
-  auto& dH_full = buf_fullE_;
-  auto& dH2_full = buf_fullF_;
-
-  double H0 = 0.0;
-  double H4 = 0.0;
-  if (ctx_->idxH0_00 >= 0) H0 = EvalMomentAndDerivFull(ctx_->modelsRec[(size_t)ctx_->idxH0_00], fullVals, dH0_full);
-  if (ctx_->idxH4_00 >= 0) H4 = EvalMomentAndDerivFull(ctx_->modelsRec[(size_t)ctx_->idxH4_00], fullVals, dH4_full);
-
-  constexpr double kEpsH0 = 1e-12;
-  constexpr double kEpsR = 1e-12;
-
-  const double H0abs = std::abs(H0);
-  const bool denomClamped = !(H0abs > kEpsH0);
-  const double H0safe = denomClamped ? (H0 >= 0.0 ? kEpsH0 : -kEpsH0) : H0;
-
-  const double Rraw = -H4 / H0safe;
-  const double signRraw = (Rraw >= 0.0 ? 1.0 : -1.0);
-  double R = std::abs(Rraw);
-  bool Rclamped = false;
-  if (R < kEpsR) {
-    R = kEpsR;
-    Rclamped = true;
-  }
-  const double sqrtR = std::sqrt(R);
-
-  const double eps = ctx_->cfg.epsR4;
-  const double den = 1.0 + eps * R;
-  const double invDen = 1.0 / den;
-  const double invDen2 = invDen * invDen;
-
-  std::fill(dRraw_full.begin(), dRraw_full.end(), 0.0);
-  if (!denomClamped) {
-    const double H0sq = H0safe * H0safe;
-    for (size_t i = 0; i < nFull; ++i) {
-      dRraw_full[i] = -((dH4_full[i] * H0safe) - (H4 * dH0_full[i])) / H0sq;
-    }
-  } else {
-    for (size_t i = 0; i < nFull; ++i) {
-      dRraw_full[i] = -(dH4_full[i]) / H0safe;
-    }
-  }
-
-  std::fill(dR_full.begin(), dR_full.end(), 0.0);
-  if (!Rclamped) {
-    for (size_t i = 0; i < nFull; ++i) dR_full[i] = signRraw * dRraw_full[i];
-  }
-
-  EnsureSize(buf_dR_, NDim());
-  auto& dR_free = buf_dR_;
-  for (unsigned i = 0; i < NDim(); ++i) dR_free[i] = mapFullDerivToFree(dR_full, i);
-
-  auto ScaleForAlpha = [&](int alpha) -> double {
-    if (alpha >= 0 && alpha <= 3) return invDen;
-    if (alpha == 4) return eps * R * invDen;
-    if (alpha >= 5 && alpha <= 8) return sqrtR * invDen;
-    return 1.0;
-  };
-
-  auto dScaleForAlpha_dR = [&](int alpha) -> double {
-    if (alpha >= 0 && alpha <= 3) return -eps * invDen2;
-    if (alpha == 4) return eps * invDen2;
-    if (alpha >= 5 && alpha <= 8) return 0.5 * invDen / sqrtR - eps * sqrtR * invDen2;
-    return 0.0;
-  };
-
-  const double normScale = 2.0 * (H0 - H4 - ctx_->cfg.H0H4NormTarget) /
-                           (ctx_->cfg.H0H4NormSigma * ctx_->cfg.H0H4NormSigma);
-  for (unsigned i = 0; i < NDim(); ++i) {
-    grad[i] += normScale * (mapFullDerivToFree(dH0_full, i) - mapFullDerivToFree(dH4_full, i));
-  }
-
-  for (size_t iobs = 0; iobs < ctx_->observed.size(); ++iobs) {
-    const auto& ob = ctx_->observed[iobs];
-
-    if (ob.isMixed04) {
-      const int idx0 = ctx_->observedModelIdx0[iobs];
-      const int idx4 = ctx_->observedModelIdx4[iobs];
-      if (idx0 < 0 || idx4 < 0) continue;
-
-      const double H0_LM = EvalMomentAndDerivFull(ctx_->modelsRec[(size_t)idx0], fullVals, dH_full);
-      const double H4_LM = EvalMomentAndDerivFull(ctx_->modelsRec[(size_t)idx4], fullVals, dH2_full);
-      const double k = ctx_->cfg.rh04MixCoeff * eps;
-      const double RH = H0_LM + k * R * H4_LM;
-      const double r = (RH - ob.value) / ob.sigma;
-      const double scale = 2.0 * r / ob.sigma;
-
-      for (unsigned i = 0; i < NDim(); ++i) {
-        const double dH0_i = mapFullDerivToFree(dH_full, i);
-        const double dH4_i = mapFullDerivToFree(dH2_full, i);
-        grad[i] += scale * (dH0_i + k * (H4_LM * dR_free[i] + R * dH4_i));
+    if (ctx_->cfg.photoProduction) {
+      double chi2 = 0.0;
+      for (size_t i = 0; i < ctx_->observed.size(); ++i) {
+        const auto& ob = ctx_->observed[i];
+        const int midx = ctx_->observedModelIdx[i];
+        if (midx < 0) continue;
+        const double H = getMomentRaw(midx);
+        const double r = (ob.value - H);
+        chi2 += r * r;
       }
-      continue;
+      return chi2;
     }
 
-    const int midx = ctx_->observedModelIdx[iobs];
-    if (midx < 0) continue;
+    const double H0 = getMomentRaw(ctx_->idxH0_00);
+    const double H4 = getMomentRaw(ctx_->idxH4_00);
+    if (!std::isfinite(H0) || !std::isfinite(H4) || std::abs(H0) < 1e-15) return 1e300;
 
-    const double H = EvalMomentAndDerivFull(ctx_->modelsRec[(size_t)midx], fullVals, dH_full);
-    const double scaleAlpha = ScaleForAlpha(ob.alpha);
-    const double dScale_dR = dScaleForAlpha_dR(ob.alpha);
-    const double RH = scaleAlpha * H;
-    const double r = (RH - ob.value) / ob.sigma;
-    const double scale = 2.0 * r / ob.sigma;
+    const double R = -H4 / H0;
+    if (!(R >= 0.0) || !std::isfinite(R)) return 1e300;
 
-    for (unsigned i = 0; i < NDim(); ++i) {
-      const double dH_i = mapFullDerivToFree(dH_full, i);
-      grad[i] += scale * (scaleAlpha * dH_i + H * dScale_dR * dR_free[i]);
+    const double eps = ctx_->cfg.epsR4;
+    const double den = 1.0 + eps * R;
+    if (!std::isfinite(den) || std::abs(den) < 1e-15) return 1e300;
+    const double invDen = 1.0 / den;
+    const double sqrtR = std::sqrt(R);
+
+    auto scaleForAlpha = [&](int alpha) {
+      if (alpha <= 3) return invDen;
+      if (alpha == 4) return eps * R * invDen;
+      return sqrtR * invDen;
+    };
+
+    double chi2 = 0.0;
+    for (size_t i = 0; i < ctx_->observed.size(); ++i) {
+      const auto& ob = ctx_->observed[i];
+      double RH = 0.0;
+      if (ob.isMixed04) {
+        const int idx0 = ctx_->observedModelIdx0[i], idx4 = ctx_->observedModelIdx4[i];
+        if (idx0 < 0 || idx4 < 0) continue;
+        const double H0_LM = getMomentRaw(idx0);
+        const double H4_LM = getMomentRaw(idx4);
+        RH = (H0_LM - (eps * R) * H4_LM) * invDen;
+      } else {
+        const int midx = ctx_->observedModelIdx[i];
+        if (midx < 0) continue;
+        RH = scaleForAlpha(ob.alpha) * getMomentRaw(midx);
+      }
+      const double r = (ob.value - RH);
+      chi2 += r * r;
+    }
+
+    return chi2;
+  }
+
+  void Gradient(const double* x, double* grad) const override {
+    std::fill(grad, grad + NDim(), 0.0);
+    if (!FillFullFromFree(*ctx_, x, fullVals_, &simplexWeights_)) return;
+    BuildPhasePairTrigCache(*ctx_, fullVals_, pairSin_, pairCos_);
+
+    const size_t nFull = ctx_->fullPars.size();
+    EnsureSize(buf_fullA_, nFull); EnsureSize(buf_fullB_, nFull); EnsureSize(buf_fullD_, nFull);
+    EnsureSize(buf_fullE_, nFull); EnsureSize(buf_fullF_, nFull); EnsureSize(buf_dR_, NDim());
+
+    auto& dH0_raw = buf_fullA_;
+    auto& dH4_raw = buf_fullB_;
+    auto& dR_full = buf_fullD_;
+    auto& dH_full = buf_fullE_;
+    auto& dH2_full = buf_fullF_;
+
+    auto mapFullDerivToFree = [&](const std::vector<double>& dFull, double simplexDot, unsigned iFree) {
+      return MapFullDerivToFreeWithSimplexMagnitudes(*ctx_, fullVals_, simplexWeights_, dFull, simplexDot, iFree);
+    };
+
+    if (ctx_->cfg.photoProduction) {
+      for (size_t iobs = 0; iobs < ctx_->observed.size(); ++iobs) {
+        const auto& ob = ctx_->observed[iobs];
+        const int midx = ctx_->observedModelIdx[iobs];
+        if (midx < 0) continue;
+        const double H = EvalMomentAndDerivFull(*ctx_, ctx_->modelsRec[midx], fullVals_, pairSin_, pairCos_, dH_full);
+        const double r = (ob.value - H);
+        const double simplexDot = SimplexMagnitudeDot(*ctx_, fullVals_, dH_full);
+        for (unsigned i = 0; i < NDim(); ++i) {
+          const double dH = mapFullDerivToFree(dH_full, simplexDot, i);
+          grad[i] += -2.0 * r * dH;
+        }
+      }
+      return;
+    }
+
+    std::fill(dH0_raw.begin(), dH0_raw.end(), 0.0);
+    std::fill(dH4_raw.begin(), dH4_raw.end(), 0.0);
+    double H0raw = 0.0, H4raw = 0.0;
+    if (ctx_->idxH0_00 >= 0) H0raw = EvalMomentAndDerivFull(*ctx_, ctx_->modelsRec[ctx_->idxH0_00], fullVals_, pairSin_, pairCos_, dH0_raw);
+    if (ctx_->idxH4_00 >= 0) H4raw = EvalMomentAndDerivFull(*ctx_, ctx_->modelsRec[ctx_->idxH4_00], fullVals_, pairSin_, pairCos_, dH4_raw);
+    if (!std::isfinite(H0raw) || !std::isfinite(H4raw) || std::abs(H0raw) < 1e-15) return;
+
+    const double R = -H4raw / H0raw;
+    if (!(R >= 0.0) || !std::isfinite(R)) return;
+
+    std::fill(dR_full.begin(), dR_full.end(), 0.0);
+    for (size_t i = 0; i < nFull; ++i) {
+      dR_full[i] = -((dH4_raw[i] * H0raw) - (H4raw * dH0_raw[i])) / (H0raw * H0raw);
+    }
+    const double simplexDotR = SimplexMagnitudeDot(*ctx_, fullVals_, dR_full);
+    for (unsigned i = 0; i < NDim(); ++i) buf_dR_[i] = mapFullDerivToFree(dR_full, simplexDotR, i);
+
+    const double sqrtR = std::sqrt(R);
+    const double eps = ctx_->cfg.epsR4;
+    const double den = 1.0 + eps * R;
+    if (!std::isfinite(den) || std::abs(den) < 1e-15) return;
+    const double invDen = 1.0 / den;
+    const double invDen2 = invDen * invDen;
+
+    auto scaleForAlpha = [&](int alpha) {
+      if (alpha <= 3) return invDen;
+      if (alpha == 4) return eps * R * invDen;
+      return sqrtR * invDen;
+    };
+    auto dScaleForAlpha_dR = [&](int alpha) {
+      if (alpha <= 3) return -eps * invDen2;
+      if (alpha == 4) return eps * invDen2;
+      return 0.5 * invDen / sqrtR - eps * sqrtR * invDen2;
+    };
+
+    for (size_t iobs = 0; iobs < ctx_->observed.size(); ++iobs) {
+      const auto& ob = ctx_->observed[iobs];
+      if (ob.isMixed04) {
+        const int idx0 = ctx_->observedModelIdx0[iobs], idx4 = ctx_->observedModelIdx4[iobs];
+        if (idx0 < 0 || idx4 < 0) continue;
+        const double H0_LM = EvalMomentAndDerivFull(*ctx_, ctx_->modelsRec[idx0], fullVals_, pairSin_, pairCos_, dH_full);
+        const double H4_LM = EvalMomentAndDerivFull(*ctx_, ctx_->modelsRec[idx4], fullVals_, pairSin_, pairCos_, dH2_full);
+        const double RH = (H0_LM - eps * R * H4_LM) * invDen;
+        const double r = (ob.value - RH);
+        const double simplexDotH0 = SimplexMagnitudeDot(*ctx_, fullVals_, dH_full);
+        const double simplexDotH4 = SimplexMagnitudeDot(*ctx_, fullVals_, dH2_full);
+        for (unsigned i = 0; i < NDim(); ++i) {
+          const double dH0_LM = mapFullDerivToFree(dH_full, simplexDotH0, i);
+          const double dH4_LM = mapFullDerivToFree(dH2_full, simplexDotH4, i);
+          const double dNum = dH0_LM - eps * (H4_LM * buf_dR_[i] + R * dH4_LM);
+          const double dRH = invDen * dNum - eps * invDen2 * (H0_LM - eps * R * H4_LM) * buf_dR_[i];
+          grad[i] += -2.0 * r * dRH;
+        }
+      } else {
+        const int midx = ctx_->observedModelIdx[iobs];
+        if (midx < 0) continue;
+        const double H = EvalMomentAndDerivFull(*ctx_, ctx_->modelsRec[midx], fullVals_, pairSin_, pairCos_, dH_full);
+        const double scaleAlpha = scaleForAlpha(ob.alpha);
+        const double dScale_dR = dScaleForAlpha_dR(ob.alpha);
+        const double RH = scaleAlpha * H;
+        const double r = (ob.value - RH);
+        const double simplexDotH = SimplexMagnitudeDot(*ctx_, fullVals_, dH_full);
+        for (unsigned i = 0; i < NDim(); ++i) {
+          const double dH = mapFullDerivToFree(dH_full, simplexDotH, i);
+          const double dRH = (scaleAlpha * dH + H * dScale_dR * buf_dR_[i]);
+          grad[i] += -2.0 * r * dRH;
+        }
+      }
     }
   }
-}
 
-double DoDerivative(const double* x, unsigned int icoord) const override {
-  if (icoord >= NDim()) return 0.0;
-  EnsureSize(buf_gradTmp_, NDim());
-  std::fill(buf_gradTmp_.begin(), buf_gradTmp_.end(), 0.0);
-  Gradient(x, buf_gradTmp_.data());
-  return buf_gradTmp_[icoord];
-}
+  double DoDerivative(const double* x, unsigned int icoord) const override {
+    EnsureSize(buf_gradTmp_, NDim());
+    Gradient(x, buf_gradTmp_.data());
+    return (icoord < NDim()) ? buf_gradTmp_[icoord] : 0.0;
+  }
 
 private:
   std::shared_ptr<EvalContext> ctx_;
   mutable std::vector<double> fullVals_;
+  mutable std::vector<double> pairSin_;
+  mutable std::vector<double> pairCos_;
+  mutable std::vector<double> simplexWeights_;
   mutable std::vector<double> buf_momRec_;
   mutable std::vector<unsigned char> buf_momSeen_;
   mutable std::vector<double> buf_dR_;
-  mutable std::vector<double> buf_fullA_;
-  mutable std::vector<double> buf_fullB_;
-  mutable std::vector<double> buf_fullC_;
-  mutable std::vector<double> buf_fullD_;
-  mutable std::vector<double> buf_fullE_;
-  mutable std::vector<double> buf_fullF_;
+  mutable std::vector<double> buf_fullA_, buf_fullB_, buf_fullD_, buf_fullE_, buf_fullF_;
   mutable std::vector<double> buf_gradTmp_;
 };
 
-// -------------------------
-// Utility: build context (param maps, models)
-// -------------------------
+class Chi2FunctionNoGrad final : public ROOT::Math::IBaseFunctionMultiDim {
+public:
+  explicit Chi2FunctionNoGrad(std::shared_ptr<EvalContext> ctx) : fcn_(std::move(ctx)) {}
+
+  unsigned int NDim() const override { return fcn_.NDim(); }
+  ROOT::Math::IBaseFunctionMultiDim* Clone() const override { return new Chi2FunctionNoGrad(*this); }
+  double DoEval(const double* x) const override { return fcn_.DoEval(x); }
+
+private:
+  Chi2Function fcn_;
+};
+
 static std::shared_ptr<EvalContext> BuildContext(const FitConfig& cfg) {
   auto ctx = std::make_shared<EvalContext>();
   ctx->cfg = cfg;
   ctx->fullPars = BuildAmplitudePhaseParameters(cfg);
 
-  std::map<std::string, int> nameToIndex;
-  for (int i = 0; i < (int)ctx->fullPars.size(); ++i) {
-    nameToIndex[ctx->fullPars[i].name] = i;
-    if (!ctx->fullPars[i].isPhase) ctx->magFullIdx.push_back(i);
+  std::unordered_map<long long, int> paramIndex;
+  paramIndex.reserve(ctx->fullPars.size() * 2);
+  // Build direct parameter lookup once so model construction never does string searches inside the heavy loops.
+  paramIndex.clear();
+  for (int i = 0; i < static_cast<int>(ctx->fullPars.size()); ++i) {
+    const auto& p = ctx->fullPars[i];
+    const auto label = ParseParamLabel(p.name);
+    if (!label.valid) throw std::runtime_error("Could not parse parameter label: " + p.name);
+    paramIndex.emplace(MakeParamKey(label.refl, label.orient, label.l, label.m, p.isPhase), i);
+  }
+
+  ctx->simplexRefMagIdx = ChooseDependentNormalizationMagnitude(ctx->fullPars, cfg);
+  if (cfg.verbose && ctx->simplexRefMagIdx >= 0) {
+    std::cout << "Using simplex reference magnitude: "
+              << ctx->fullPars[static_cast<size_t>(ctx->simplexRefMagIdx)].name << std::endl;
+  }
+  if (cfg.verbose) {
+    std::cout << "Production mode: " << (cfg.photoProduction ? "photoproduction (alpha <= 3, L fixed to 0)" : "electroproduction/full") << std::endl;
+  }
+  ctx->fixedMagSqSum = 0.0;
+  for (size_t i = 0; i < ctx->fullPars.size(); ++i) {
+    if (!ctx->fullPars[i].isPhase && ctx->fullPars[i].fixed) ctx->fixedMagSqSum += ctx->fullPars[i].init * ctx->fullPars[i].init;
   }
 
   ctx->fullToFree.assign(ctx->fullPars.size(), -1);
-  for (int i = 0; i < (int)ctx->fullPars.size(); ++i) {
+  ctx->coordToSimplexMagPos.clear();
+  ctx->simplexMagFullIdx.clear();
+  for (int i = 0; i < static_cast<int>(ctx->fullPars.size()); ++i) {
     if (ctx->fullPars[i].fixed) continue;
-    ctx->fullToFree[i] = (int)ctx->freeToFull.size();
-    ctx->freeToFull.push_back(i);
+    if (ctx->fullPars[i].isPhase) {
+      ctx->fullToFree[i] = static_cast<int>(ctx->freeToFull.size());
+      ctx->freeToFull.push_back(i);
+      ctx->coordToSimplexMagPos.push_back(-1);
+    } else if (i != ctx->simplexRefMagIdx) {
+      ctx->fullToFree[i] = static_cast<int>(ctx->freeToFull.size());
+      ctx->freeToFull.push_back(i);
+      ctx->coordToSimplexMagPos.push_back(static_cast<int>(ctx->simplexMagFullIdx.size()));
+      ctx->simplexMagFullIdx.push_back(i);
+    }
   }
+  if (ctx->simplexRefMagIdx >= 0) ctx->simplexMagFullIdx.push_back(ctx->simplexRefMagIdx);
 
-  ctx->observed = BuildObservedMoments(cfg);
-  ctx->modelsRec = BuildMomentModels(cfg, nameToIndex);
-
-  for (size_t i = 0; i < ctx->modelsRec.size(); ++i) {
-    ctx->modelIndexByName[ctx->modelsRec[i].name] = i;
-  }
+  ctx->observed = BuildObservedMoments(cfg.momentsFile, cfg.momentsTree, cfg.bin, cfg);
+  ctx->modelsRec = BuildMomentModels(cfg, paramIndex, ctx->phasePairs);
+  ctx->modelIndexByName.reserve(ctx->modelsRec.size() * 2);
+  for (size_t i = 0; i < ctx->modelsRec.size(); ++i) ctx->modelIndexByName.emplace(ctx->modelsRec[i].name, i);
 
   auto it0 = ctx->modelIndexByName.find("H_0_0_0");
-  if (it0 != ctx->modelIndexByName.end()) ctx->idxH0_00 = static_cast<int>(it0->second);
   auto it4 = ctx->modelIndexByName.find("H_4_0_0");
+  if (it0 != ctx->modelIndexByName.end()) ctx->idxH0_00 = static_cast<int>(it0->second);
   if (it4 != ctx->modelIndexByName.end()) ctx->idxH4_00 = static_cast<int>(it4->second);
 
   ctx->observedModelIdx.assign(ctx->observed.size(), -1);
@@ -1378,247 +1219,361 @@ static std::shared_ptr<EvalContext> BuildContext(const FitConfig& cfg) {
 
   for (size_t i = 0; i < ctx->observed.size(); ++i) {
     const auto& ob = ctx->observed[i];
-
     if (ob.isMixed04) {
-      std::ostringstream os0, os4;
-      os0 << "H_0_" << ob.L << "_" << ob.M;
-      os4 << "H_4_" << ob.L << "_" << ob.M;
-
-      auto itObs0 = ctx->modelIndexByName.find(os0.str());
-      auto itObs4 = ctx->modelIndexByName.find(os4.str());
+      const std::string key0 = std::string("H_0_") + std::to_string(ob.L) + "_" + std::to_string(ob.M);
+      const std::string key4 = std::string("H_4_") + std::to_string(ob.L) + "_" + std::to_string(ob.M);
+      auto itObs0 = ctx->modelIndexByName.find(key0);
+      auto itObs4 = ctx->modelIndexByName.find(key4);
       if (itObs0 != ctx->modelIndexByName.end()) ctx->observedModelIdx0[i] = static_cast<int>(itObs0->second);
       if (itObs4 != ctx->modelIndexByName.end()) ctx->observedModelIdx4[i] = static_cast<int>(itObs4->second);
-      continue;
+    } else {
+      std::string key = ob.name;
+      if (key.rfind("RH_", 0) == 0) key = "H_" + key.substr(3);
+      auto it = ctx->modelIndexByName.find(key);
+      if (it != ctx->modelIndexByName.end()) ctx->observedModelIdx[i] = static_cast<int>(it->second);
     }
-
-    std::string key = ob.name;
-    if (key.rfind("RH_", 0) == 0) key = "H_" + key.substr(3);
-    auto it = ctx->modelIndexByName.find(key);
-    if (it != ctx->modelIndexByName.end()) ctx->observedModelIdx[i] = static_cast<int>(it->second);
   }
-
   return ctx;
 }
 
-// -------------------------
-// Main runner
-// -------------------------
 static void MakeBranchesForPars(TTree* t, const std::vector<ParDef>& pars, std::vector<double>& storage) {
   storage.assign(pars.size(), 0.0);
-  for (size_t i = 0; i < pars.size(); ++i) {
-    t->Branch(pars[i].name.c_str(), &storage[i]);
-  }
+  for (size_t i = 0; i < pars.size(); ++i) t->Branch(pars[i].name.c_str(), &storage[i]);
 }
 
-static void MakeBranchesForMoments(TTree* t,
-                                  const std::vector<MomentModel>& models,
-                                  std::vector<double>& storage) {
+static void MakeBranchesForMoments(TTree* t, const std::vector<MomentModel>& models, std::vector<double>& storage) {
   storage.assign(models.size(), 0.0);
-  for (size_t i = 0; i < models.size(); ++i) {
-    t->Branch(models[i].name.c_str(), &storage[i]);
+  for (size_t i = 0; i < models.size(); ++i) t->Branch(models[i].name.c_str(), &storage[i]);
+}
+
+static void MakeBranchesForObservedRH(TTree* t, const std::vector<ObservedMoment>& observed, std::vector<double>& storage) {
+  storage.assign(observed.size(), 0.0);
+  for (size_t i = 0; i < observed.size(); ++i) t->Branch(observed[i].name.c_str(), &storage[i]);
+}
+
+static void FillObservedRHValues(const EvalContext& ctx,
+                                 const std::vector<double>& rawMoments,
+                                 std::vector<double>& rhVals) {
+  rhVals.assign(ctx.observed.size(), 0.0);
+
+  double H0_00 = 0.0, H4_00 = 0.0;
+  if (ctx.idxH0_00 >= 0) H0_00 = rawMoments[static_cast<size_t>(ctx.idxH0_00)];
+  if (ctx.idxH4_00 >= 0) H4_00 = rawMoments[static_cast<size_t>(ctx.idxH4_00)];
+
+  double R = 0.0;
+  if (ctx.cfg.photoProduction) {
+    R = 0.0;
+  } else {
+    if (std::abs(H0_00) < 1e-15) throw std::runtime_error("Cannot reconstruct RH moments: H_0_0_0 is too close to zero");
+    R = -H4_00 / H0_00;
+  }
+
+  const double eps = ctx.cfg.epsR4;
+  const double den = 1.0 + eps * R;
+  if (!std::isfinite(den) || std::abs(den) < 1e-15) {
+    throw std::runtime_error("Cannot reconstruct RH moments: invalid normalization denominator");
+  }
+  const double invDen = 1.0 / den;
+  const double sqrtR = (R > 0.0) ? std::sqrt(R) : 0.0;
+
+  auto scaleForAlpha = [&](int alpha) {
+    if (ctx.cfg.photoProduction) return 1.0;
+    if (alpha <= 3) return invDen;
+    if (alpha == 4) return eps * R * invDen;
+    return sqrtR * invDen;
+  };
+
+  for (size_t i = 0; i < ctx.observed.size(); ++i) {
+    const auto& ob = ctx.observed[i];
+    double RH = 0.0;
+    if (ob.isMixed04) {
+      const int idx0 = ctx.observedModelIdx0[i];
+      const int idx4 = ctx.observedModelIdx4[i];
+      if (idx0 >= 0 && idx4 >= 0) {
+        const double H0_LM = rawMoments[static_cast<size_t>(idx0)];
+        const double H4_LM = rawMoments[static_cast<size_t>(idx4)];
+        RH = (H0_LM - (eps * R) * H4_LM) * invDen;
+      }
+    } else {
+      const int midx = ctx.observedModelIdx[i];
+      if (midx >= 0) RH = scaleForAlpha(ob.alpha) * rawMoments[static_cast<size_t>(midx)];
+    }
+    rhVals[i] = RH;
   }
 }
-} // namespace chi2_amp_fit
 
-// =====================================================================================
-// User-facing macro entry points
-// =====================================================================================
+
+static void BuildRandomStartPoint(const EvalContext& ctx,
+                                  TRandom3& rng,
+                                  std::vector<double>& xStart) {
+  xStart.assign(ctx.freeToFull.size(), 0.0);
+
+  for (unsigned i = 0; i < ctx.freeToFull.size(); ++i) {
+    const int fullIdx = ctx.freeToFull[i];
+    const auto& p = ctx.fullPars[static_cast<size_t>(fullIdx)];
+    if (p.isPhase) {
+      const double start = rng.Uniform(p.low, p.high);
+      xStart[i] = std::min(std::max(start, p.low), p.high);
+    }
+  }
+
+  const size_t kNumSimplexMags = ctx.simplexMagFullIdx.size();
+  if (kNumSimplexMags <= 1) return;
+
+  const double available = 1.0 - ctx.fixedMagSqSum;
+  if (!(available > 0.0) || !std::isfinite(available)) {
+    throw std::runtime_error("Invalid fixed magnitude sum for simplex magnitude parameterization");
+  }
+
+  const double alpha = (ctx.cfg.dirichletMagnitudeAlpha > 0.0 && std::isfinite(ctx.cfg.dirichletMagnitudeAlpha))
+                         ? ctx.cfg.dirichletMagnitudeAlpha
+                         : 1.0;
+
+  std::vector<double> weights(kNumSimplexMags, 0.0);
+  double sumW = 0.0;
+  for (size_t k = 0; k < kNumSimplexMags; ++k) {
+    weights[k] = SampleGammaMT(rng, alpha, 1.0);
+    sumW += weights[k];
+  }
+  if (!(sumW > 0.0) || !std::isfinite(sumW)) {
+    std::fill(weights.begin(), weights.end(), 1.0 / static_cast<double>(kNumSimplexMags));
+  } else {
+    for (double& w : weights) w /= sumW;
+  }
+
+  const double wRef = std::max(weights.back(), 1e-300);
+  for (unsigned i = 0; i < ctx.freeToFull.size(); ++i) {
+    const int magPos = ctx.coordToSimplexMagPos[i];
+    if (magPos < 0) continue;
+    const double w = std::max(weights[static_cast<size_t>(magPos)], 1e-300);
+    xStart[i] = std::log(w / wRef);
+  }
+}
+
+} // namespace chi2_amp_fit_opt
+
 namespace {
 
-void RunGivenMoments_Chi2Amps_Impl(const chi2_amp_fit::FitConfig& cfg, const char* outFile) {
-  using namespace chi2_amp_fit;
-
+void RunGivenMoments_Chi2Amps_DirichletStarts_Impl(const chi2_amp_fit_opt::FitConfig& cfg, const char* outFile) {
+  using namespace chi2_amp_fit_opt;
   auto ctx = BuildContext(cfg);
 
   TRandom3 rng(cfg.randomSeed);
   if (cfg.randomSeed == 0) rng.SetSeed(0);
 
   std::unique_ptr<TFile> fout(TFile::Open(outFile, "RECREATE"));
-  if (!fout || fout->IsZombie()) {
-    throw std::runtime_error(std::string("Failed to open output file: ") + outFile);
+  if (!fout || fout->IsZombie()) throw std::runtime_error(std::string("Failed to open output file: ") + outFile);
+
+  TTree* t = new TTree("fitResults", "Optimized chi2 fit results (per start)");
+  double log_val = 0.0;
+  double start_log_val = -999.0;
+  double prescan_log_val = -999.0;
+  double mcmc_acceptance = 0.0;
+
+  t->Branch("log_val", &log_val);
+  if (cfg.useMCMCPreScan){
+    t->Branch("start_log_val", &start_log_val);
+    t->Branch("prescan_log_val", &prescan_log_val);
+    t->Branch("mcmc_acceptance", &mcmc_acceptance);
   }
 
-  TTree* t = new TTree("fitResults", "Chi2 fit results (per start)");
-  double log_val = 0.0;
-  t->Branch("log_val", &log_val);
-
-  std::vector<double> parVals;
+  std::vector<double> parVals, momRecVals, rhRecVals;
   MakeBranchesForPars(t, ctx->fullPars, parVals);
-  std::vector<double> momRecVals;
   MakeBranchesForMoments(t, ctx->modelsRec, momRecVals);
+  MakeBranchesForObservedRH(t, ctx->observed, rhRecVals);
 
-  Chi2Function fcn(ctx);
-
-  TBenchmark bench;
-  bench.Start("fit");
-
-  std::unique_ptr<ROOT::Math::Minimizer> min(
-        ROOT::Math::Factory::CreateMinimizer("Minuit2", "Migrad"));
-
+  std::unique_ptr<ROOT::Math::Minimizer> min(ROOT::Math::Factory::CreateMinimizer("Minuit2", "Migrad"));
   min->SetMaxFunctionCalls(cfg.maxCalls);
   min->SetMaxIterations(cfg.maxIters);
   min->SetTolerance(cfg.tolerance);
   min->SetStrategy(cfg.strategy);
   min->SetPrintLevel(cfg.printLevel);
-  min->SetFunction(fcn);
 
+  Chi2FunctionNoGrad fcnNoGrad(ctx);
+  Chi2Function fcn(ctx);
+
+  if (cfg.useNumericalGradient) {
+    if (cfg.verbose) std::cout << "Using Minuit2 numerical derivatives (analytical gradient disabled)." << std::endl;
+
+    min->SetFunction(fcnNoGrad);
+  } else {
+    if (cfg.verbose) std::cout << "Using analytical gradient." << std::endl;
+    min->SetFunction(fcn);
+  }
+  if (cfg.verbose && cfg.useMCMCPreScan && cfg.mcmcSteps > 0) {
+    std::cout << "Using MCMC pre-scan before each Minuit fit: steps=" << cfg.mcmcSteps
+              << ", T=" << cfg.mcmcTemperature
+              << ", magSigma=" << cfg.mcmcProposalMagSigma
+              << ", phaseSigma=" << cfg.mcmcProposalPhaseSigma << std::endl;
+  }
+
+  TBenchmark bench;
+  bench.Start("fit");
+
+  const unsigned progressStep = std::max(1u, cfg.nStarts / 10u);
   for (unsigned iStart = 0; iStart < cfg.nStarts; ++iStart) {
     ctx->callCount = 0;
-    if (iStart % 100 == 0) std::cout << iStart << std::endl;
+    if (cfg.verbose && (iStart % progressStep == 0 || iStart + 1 == cfg.nStarts)) std::cout << "start " << (iStart + 1) << '/' << cfg.nStarts << std::endl;
+
+    std::vector<double> startVals;
+    BuildRandomStartPoint(*ctx, rng, startVals);
+    const double startChi2 = EvaluateChi2AtPoint(fcnNoGrad, startVals);
+    start_log_val = (startChi2 > 0.0) ? std::log10(startChi2) : -999.0;
+
+    if (cfg.useMCMCPreScan && cfg.mcmcSteps > 0) {
+      const auto mcmc = RunMCMCPreScan(*ctx, cfg, fcnNoGrad, rng, startVals);
+      startVals = mcmc.xBest;
+      prescan_log_val = (mcmc.chi2Best > 0.0) ? std::log10(mcmc.chi2Best) : -999.0;
+      mcmc_acceptance = (mcmc.proposed > 0) ? (static_cast<double>(mcmc.accepted) / static_cast<double>(mcmc.proposed)) : 0.0;
+    } else {
+      prescan_log_val = start_log_val;
+      mcmc_acceptance = 0.0;
+    }
 
     for (unsigned i = 0; i < fcn.NDim(); ++i) {
       const int fullIdx = ctx->freeToFull[i];
       const auto& p = ctx->fullPars[fullIdx];
-
-      double start = p.isPhase ? rng.Gaus(0.0, 0.1) : rng.Gaus(0.5, 0.1);
-      if (start < p.low) start = p.low;
-      if (start > p.high) start = p.high;
-
-      min->SetLimitedVariable(i, p.name.c_str(), start, (p.step > 0 ? p.step : 1e-3), p.low, p.high);
+      if (p.isPhase) {
+        min->SetLimitedVariable(i, p.name.c_str(), startVals[i], p.step, p.low, p.high);
+      } else {
+        const std::string coordName = std::string("logit_") + p.name;
+        const double step = (cfg.simplexLogitStep > 0.0) ? cfg.simplexLogitStep : 0.2;
+        min->SetVariable(i, coordName.c_str(), startVals[i], step);
+      }
     }
 
-    min->Minimize();
+    bool ok = min->Minimize();
+    int status = min->Status();
+    //if (!ok) continue;
     if (cfg.runHesse) min->Hesse();
-
     const double chi2 = min->MinValue();
     log_val = (chi2 > 0.0) ? std::log10(chi2) : -999.0;
-
-    FillFullFromFree(*ctx, min->X(), parVals);
-
-    EvalAllMoments(ctx->modelsRec, parVals, momRecVals);
+    if (!FillFullFromFree(*ctx, min->X(), parVals)) {
+      throw std::runtime_error("Failed to map simplex coordinates to physical amplitudes");
+    }
+    EvalAllMoments(*ctx, parVals, momRecVals);
+    FillObservedRHValues(*ctx, momRecVals, rhRecVals);
     t->Fill();
   }
 
   bench.Stop("fit");
   bench.Print("fit");
-
   fout->Write();
   fout->Close();
-
   std::cout << "Saved: " << outFile << std::endl;
+}
+
+static std::string MakePartFileName(const char* outFile, unsigned workerId) {
+  std::string base = outFile ? std::string(outFile) : std::string("resultsGivenMoments_optimized.root");
+  const std::string ext = ".root";
+  if (base.size() >= ext.size() && base.compare(base.size() - ext.size(), ext.size(), ext) == 0) base.erase(base.size() - ext.size());
+  return base + ".part_" + std::to_string(workerId) + ".root";
 }
 
 } // namespace
 
-// Standard constructor with q2 value that then picks from HERMES data
-void RunGivenMoments_Chi2Amps_Setup(double q2Value,
-                              unsigned nStarts = 10000,
-                              const char* outFile = "resultsGivenMoments_chi2_amps.root",
-                              uint32_t seed = 0,
-                              double epsR4 = 1.0) {
-  chi2_amp_fit::FitConfig cfg;
-  cfg.nStarts = nStarts;
-  cfg.randomSeed = seed;
-  cfg.epsR4 = epsR4;
-  cfg.observedInput.source = chi2_amp_fit::ObservedMomentsSource::kQ2Table;
-  cfg.observedInput.q2bin = chi2_amp_fit::GetClosestQ2Bin(q2Value);
-  RunGivenMoments_Chi2Amps_Impl(cfg, outFile);
+void RunGivenMoments_Chi2Amps_dirichletStarts_Setup(const char* tableFile="InputFiles/Experiment/experimental_moments_table.root",
+                                                           const char* treeName = "expMoments",
+                                                           int bin = 0,
+                                                           unsigned nStarts = 10000,
+                                                           const char* outFile = "resultsGivenMoments_chi2_amps.root",
+                                                           uint32_t seed = 0,
+                                                           double epsR4 = 1.0,
+                                                           const char* dependentMagName = "",
+                                                           bool useNumericalGradient = true,
+                                                           bool useMCMCPreScan = false,
+                                                           unsigned mcmcSteps = 2000,
+                                                           double mcmcProposalMagSigma = 0.03,
+                                                           double mcmcProposalPhaseSigma = 0.10,
+                                                           double mcmcTemperature = 1.0,
+                                                           double dirichletMagnitudeAlpha = 1.0,
+                                                           double simplexLogitStep = 0.2,
+                                                           bool photoProduction = false) {
+  // Set all config stuff
+  chi2_amp_fit_opt::FitConfig cfg;
+  cfg.nStarts = nStarts; cfg.randomSeed = seed; cfg.epsR4 = epsR4; cfg.useNumericalGradient = useNumericalGradient;
+  cfg.useMCMCPreScan = useMCMCPreScan; cfg.mcmcSteps = mcmcSteps; cfg.mcmcProposalMagSigma = mcmcProposalMagSigma; cfg.mcmcProposalPhaseSigma = mcmcProposalPhaseSigma; cfg.mcmcTemperature = mcmcTemperature;
+  cfg.depNormMagName = dependentMagName ? dependentMagName : "";
+  cfg.dirichletMagnitudeAlpha = dirichletMagnitudeAlpha;
+  cfg.simplexLogitStep = simplexLogitStep;
+  cfg.photoProduction = photoProduction;
+  cfg.momentsFile = tableFile ? tableFile : "InputFiles/Experiment/experimental_moments_table.root";
+  cfg.momentsTree = treeName ? treeName : "expMoments";
+  cfg.bin = bin;
+  cfg.verbose = true;
+
+  // Call the implementation
+  RunGivenMoments_Chi2Amps_DirichletStarts_Impl(cfg, outFile);
 }
 
-// Constructor when you know the Q2 bin (maybe a better implementation) so for example
-// Eventually move to file + q2 value and take the SDMEs out of this
-// i.e. move the HERMEs etc data into root files then just load a root file + Q2
-// update generator to have some Q2 value then...
-void RunGivenMoments_Chi2Amps_Setup(int q2bin,
-                                    unsigned nStarts = 10000,
-                                    const char* outFile = "resultsGivenMoments_chi2_amps.root",
-                                    uint32_t seed = 0,
-                                    double epsR4 = 1.0)
-{
-  chi2_amp_fit::FitConfig cfg;
-  cfg.nStarts = nStarts;
-  cfg.randomSeed = seed;
-  cfg.epsR4 = epsR4;
-  cfg.observedInput.source = chi2_amp_fit::ObservedMomentsSource::kQ2Table;
-  cfg.observedInput.q2bin = q2bin;
-  RunGivenMoments_Chi2Amps_Impl(cfg, outFile);
-}
+// Macro function, filenames and bin as cml args so that bins can be looped over by  a script
+void RunGivenMoments_Chi2Amps(const char* tableFile = "InputFiles/Experiment/e_rho_moments.root", const char* treeName = "expMoments", const int bin = 1, const std::string outFile = "Hermestest.root", const double epsR4 = 1, const bool photoProduction = false) {
 
-// Constructor with moments file (i.e. when using generated fixed amplitudes)
-void RunGivenMoments_Chi2Amps_Setup(const char* momentsFile,
-                              unsigned nStarts = 10000,
-                              const char* outFile = "resultsGivenMoments_chi2_amps.root",
-                              uint32_t seed = 0,
-                              double epsR4 = 1.0,
-                              const char* treeName = "syntheticMoments") {
-  chi2_amp_fit::FitConfig cfg;
-  cfg.nStarts = nStarts;
-  cfg.randomSeed = seed;
-  cfg.epsR4 = epsR4;
-  cfg.observedInput.source = chi2_amp_fit::ObservedMomentsSource::kRootFile;
-  cfg.observedInput.momentsFile = momentsFile ? momentsFile : "";
-  cfg.observedInput.momentsTree = treeName ? treeName : "syntheticMoments";
-  RunGivenMoments_Chi2Amps_Impl(cfg, outFile);
-}
+  // Setup
+  // User settings
+  const unsigned nStarts = 10000;
+  const uint32_t seed = 0;
+  //const double epsR4 = 0.8; // virtual photon polarisation 0.8 for e rho 0.9 for muon rho and 0.96 for omega
+  const unsigned int nCores = 10;
 
-// Below handles all of the multiprocessing stuff
-namespace {
-static std::string MakePartFileName(const char* outFile, unsigned workerId) {
-  std::string base = outFile ? std::string(outFile) : std::string("resultsGivenMoments_chi2_amps.root");
-  const std::string ext = ".root";
-  if (base.size() >= ext.size() && base.compare(base.size() - ext.size(), ext.size(), ext) == 0) {
-    base.erase(base.size() - ext.size());
-  }
-  std::ostringstream os;
-  os << base << ".part_" << workerId << ".root";
-  return os.str();
-}
-}
+  // Fit / model options ... possibly add some more stuff from ctx that user might want to change
+  //const bool photoProduction = false;   // true -> fit only alpha <= 3 and fix all L amplitudes/phases to 0
+  const char* dependentMagName = "a_T_1_1";
+  const bool useNumericalGradient = false;
+  const double dirichletMagnitudeAlpha = 1;
+  const double simplexLogitStep = 0.2;
 
-void RunGivenMoments_Chi2Amps(double q2Value,
-                              unsigned nStarts = 10000,
-                              const char* outFile = "resultsGivenMoments_MP_chi2_amps.root",
-                              uint32_t seed = 0,
-                              double epsR4 = 1.0,
-                              unsigned int nCores = 1) {
-  if (nStarts == 0) {
-    throw std::runtime_error("RunGivenMoments_Chi2Amps_MP: nStarts must be > 0");
-  }
+  // Optional MCMC prescan -- if fit is poor try use this to improve the original posterior distribution
+  const bool useMCMCPreScan = false;
+  const unsigned mcmcSteps = 2000;
+  const double mcmcProposalMagSigma = 0.03;
+  const double mcmcProposalPhaseSigma = 0.10;
+  const double mcmcTemperature = 1.0;
 
-  unsigned nWorkers = nCores;
-  if (nWorkers == 0) {
-    nWorkers = std::max(1u, std::thread::hardware_concurrency());
-  }
+  // ====================================================================================================================
+
+  // Multicore processing
+  // Split up the processes between each core
+  if (nStarts == 0) throw std::runtime_error("RunGivenMoments_Chi2Amps_mcmc_photoMode_dirichletStarts: nStarts must be > 0");
+  unsigned nWorkers = (nCores == 0) ? std::max(1u, std::thread::hardware_concurrency()) : nCores;
   if (nWorkers > nStarts) nWorkers = nStarts;
+
+  std::string outDir = "./OutputFiles/";
+  std::string out = outDir + outFile;
 
   std::vector<unsigned> workerIds(nWorkers);
   for (unsigned i = 0; i < nWorkers; ++i) workerIds[i] = i;
-
   ROOT::TProcessExecutor pool(nWorkers);
 
+  // Each core writes to a seperate file
   auto partFiles = pool.Map([=](unsigned workerId) {
     const unsigned baseStarts = nStarts / nWorkers;
     const unsigned extra = nStarts % nWorkers;
-    const unsigned myStarts = baseStarts + (workerId < extra ? 1u : 0u);
-
-    const auto partFile = MakePartFileName(outFile, workerId);
-    const uint32_t workerSeed =
-        (seed == 0) ? (0x9e3779b9u + 100003u * workerId)
-                    : (seed + 100003u * workerId);
-
-    RunGivenMoments_Chi2Amps_Setup(q2Value,
-                                        myStarts,
-                                  partFile.c_str(),
-                                        workerSeed,
-                                        epsR4);
+    const unsigned myStarts = baseStarts + ((workerId < extra) ? 1u : 0u);
+    std::string partFile = MakePartFileName(out.c_str(), workerId);
+    const uint32_t workerSeed = (seed == 0) ? (0x9e3779b9u + 100003u * workerId) : (seed + 100003u * workerId);
+    RunGivenMoments_Chi2Amps_dirichletStarts_Setup(tableFile, treeName, bin, myStarts, partFile.c_str(), workerSeed, epsR4,
+                                             dependentMagName, useNumericalGradient, useMCMCPreScan, mcmcSteps,
+                                             mcmcProposalMagSigma, mcmcProposalPhaseSigma, mcmcTemperature,
+                                             dirichletMagnitudeAlpha, simplexLogitStep, photoProduction);
     return partFile;
   }, workerIds);
 
-  TFileMerger merger(/*isLocal=*/kTRUE, /*histoOneGo=*/kFALSE);
-  merger.OutputFile(outFile, "RECREATE");
-  for (const auto& partFile : partFiles) {
-    merger.AddFile(partFile.c_str());
-  }
-
-  const Bool_t ok = merger.Merge();
-  if (!ok) {
-    throw std::runtime_error(std::string("RunGivenMoments_Chi2Amps_MP: merge failed for output file: ") + outFile);
-  }
-
-
-  for (const auto& partFile : partFiles) {
-    gSystem->Unlink(partFile.c_str());
-  }
-
+  // Merge the files into final one containing all minimisations
+  TFileMerger merger(kTRUE, kFALSE);
+  merger.OutputFile(out.c_str(), "RECREATE");
+  for (const auto& partFile : partFiles) merger.AddFile(partFile.c_str());
+  if (!merger.Merge()) throw std::runtime_error(std::string("Merge failed for output file: ") + outFile);
+  for (const auto& partFile : partFiles) gSystem->Unlink(partFile.c_str());
   std::cout << "Merged " << partFiles.size() << " worker files into " << outFile << std::endl;
 }
+
+// EXTENSIONS / FUTURE WORK:
+// 1) Add if statements for protection against moments that arent included i.e. circ and lin
+// For example in GlueX we dont have circ so currently code would set to 0
+// Need a flag so that we can skip
+// 2) Add setters for all the flags and do a general tidyup on the user input section
+// User should just have to specify commands like Set this and Set that with cml for file I/O
+// 3) Possibly restructure into different headers for each of the different classes as is standard
+// With each class in a different header keep this mean macro for user to only have to set things
+// 4) Update verbose to just print once instead of ncores times, simple flag done before
