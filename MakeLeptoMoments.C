@@ -53,6 +53,7 @@ struct OutputArrays {
   static constexpr int kMaxBins = 64;
   int Nbins{0};
   double Q2[kMaxBins]{};
+  double RH04_0_0[kMaxBins]{}, RH04_0_0_err[kMaxBins]{};
   double RH04_1_0[kMaxBins]{}, RH04_1_0_err[kMaxBins]{}, RH04_1_1[kMaxBins]{}, RH04_1_1_err[kMaxBins]{}, RH04_2_0[kMaxBins]{}, RH04_2_0_err[kMaxBins]{}, RH04_2_1[kMaxBins]{}, RH04_2_1_err[kMaxBins]{}, RH04_2_2[kMaxBins]{}, RH04_2_2_err[kMaxBins]{};
   double RH_1_0_0[kMaxBins]{}, RH_1_0_0_err[kMaxBins]{}, RH_1_1_0[kMaxBins]{}, RH_1_1_0_err[kMaxBins]{}, RH_1_1_1[kMaxBins]{}, RH_1_1_1_err[kMaxBins]{}, RH_1_2_0[kMaxBins]{}, RH_1_2_0_err[kMaxBins]{}, RH_1_2_1[kMaxBins]{}, RH_1_2_1_err[kMaxBins]{}, RH_1_2_2[kMaxBins]{}, RH_1_2_2_err[kMaxBins]{};
   double RH_2_1_0[kMaxBins]{}, RH_2_1_0_err[kMaxBins]{}, RH_2_1_1[kMaxBins]{}, RH_2_1_1_err[kMaxBins]{}, RH_2_2_1[kMaxBins]{}, RH_2_2_1_err[kMaxBins]{}, RH_2_2_2[kMaxBins]{}, RH_2_2_2_err[kMaxBins]{};
@@ -78,6 +79,8 @@ static void ResizeOutputs(OutputArrays& out, std::size_t n) {
 }
 
 static void SetMissingL1(OutputArrays& out, int i) {
+  // Maybe find a better way to do this...
+  // Could intrinsically set them to 0 in the code then have options for circ vs lin for photo where this is issue?
   constexpr double kMissingMoment = 0.0;
   constexpr double kMissingError  = 0.001;
 
@@ -134,6 +137,7 @@ static void FillBin(OutputArrays& out, int i, double q2, const SDMEsTable& p) {
   const double s_re_r10_8   = Comb(p.re_r10_8);
   const double s_r1m1_8     = Comb(p.r1m1_8);
 
+  out.RH04_0_0[i] = 2;                                             out.RH04_0_0_err[i] = 0.001;
   out.RH04_2_0[i] = 2 * 0.2 * (3.0 * p.r00_04.v - 1.0);            out.RH04_2_0_err[i] = 2 * 0.6 * s_r00_04;
   out.RH04_2_1[i] = 2 * kSqrt12Over5 * p.re_r10_04.v;              out.RH04_2_1_err[i] = 2 * kSqrt12Over5 * s_re_r10_04;
   out.RH04_2_2[i] =  2 * kSqrt6Over5 * p.r1m1_04.v;                out.RH04_2_2_err[i] = 2 * kSqrt6Over5 * s_r1m1_04;
@@ -305,7 +309,7 @@ static DatasetSpec GetDatasetSpec(const std::string& requestedKey) {
 
   throw std::runtime_error(
     "Unknown dataset key '" + requestedKey +
-    "'. Supported keys: e_rho, mu_rho, omega"
+    "'. Supported keys: e_rho, mu_rho, e_omega or mu_omega."
   );
 }
 
@@ -344,6 +348,7 @@ void MakeLeptoMoments(const char* dataset = "e_rho",
   };
 
   br("Q2", out.Q2);
+  br("RH04_0_0", out.RH04_0_0); br("RH04_0_0_err", out.RH04_0_0_err);
   br("RH04_1_0", out.RH04_1_0); br("RH04_1_0_err", out.RH04_1_0_err);
   br("RH04_1_1", out.RH04_1_1); br("RH04_1_1_err", out.RH04_1_1_err);
   br("RH04_2_0", out.RH04_2_0); br("RH04_2_0_err", out.RH04_2_0_err);
@@ -410,5 +415,4 @@ void MakeLeptoMoments(const char* dataset = "e_rho",
 // FUTURE UPDATES:
 // Extend bins to stuff like t and invariant masses W etc,
 // Store the information too will be different to above if it comes binned that way
-// Need to look into RH0400 -- getting that as a value could be invaluable
 // Have verbose mode that prints out the moments

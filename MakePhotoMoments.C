@@ -117,6 +117,7 @@ static void FillBin(OutputArrays& out, std::size_t i, double mean_t, const SDMEs
   out.RH_2_2_2[i]     = 2.0 * kSqrt6Over5 * p.im_r1m1_2.v;
   out.RH_2_2_2_err[i] = kSqrt6Over5 * s_im_r1m1_2;
 
+  // Why do I have this? was it to double check when photoprod was going wrong
   if (i == 15) {
     out.RH_0_2_0[i] = -0.2955;
     out.RH_0_2_1[i] =  0.0360;
@@ -295,3 +296,5 @@ void MakePhotoMoments(const char* dataset = "gluex",
 
   std::cout << "Saved dataset '" << ds.key << "' (" << ds.title << ") to " << outPath << std::endl;
 }
+
+// Similar to electroprod but should add bins for W and remove Q2 stuff
