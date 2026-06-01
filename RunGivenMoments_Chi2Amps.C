@@ -76,12 +76,12 @@ struct ParDef {
 };
 
 struct FitConfig {
-  int lmax = 1;
-  int mmax = 1;
+  int lmax = 2;
+  int mmax = 2;
   bool useNegRef = true;
   bool onlyEven = false;
   bool negm = true;
-  bool enforceLongitudinalParity = true;
+  bool enforceLongitudinalParity = false;
 
   double epsilon = 1.0;
 
@@ -212,15 +212,15 @@ static std::vector<ObservedMoment> BuildObservedMoments(const std::string& inFil
   add(0,2,0,"RH04_2_0","RH04_2_0_err",true);
   add(0,2,1,"RH04_2_1","RH04_2_1_err",true);
   add(0,2,2,"RH04_2_2","RH04_2_2_err",true);
-  // add(0,3,0,"RH04_3_0","RH04_3_0_err",true);
-  // add(0,3,1,"RH04_3_1","RH04_3_1_err",true);
-  // add(0,3,2,"RH04_3_2","RH04_3_2_err",true);
-  // add(0,3,3,"RH04_3_3","RH04_3_3_err",true);
-  // add(0,4,0,"RH04_4_0","RH04_4_0_err",true);
-  // add(0,4,1,"RH04_4_1","RH04_4_1_err",true);
-  // add(0,4,2,"RH04_4_2","RH04_4_2_err",true);
-  // add(0,4,3,"RH04_4_3","RH04_4_3_err",true);
-  // add(0,4,4,"RH04_4_4","RH04_4_4_err",true);
+  add(0,3,0,"RH04_3_0","RH04_3_0_err",true);
+  add(0,3,1,"RH04_3_1","RH04_3_1_err",true);
+  add(0,3,2,"RH04_3_2","RH04_3_2_err",true);
+  add(0,3,3,"RH04_3_3","RH04_3_3_err",true);
+  add(0,4,0,"RH04_4_0","RH04_4_0_err",true);
+  add(0,4,1,"RH04_4_1","RH04_4_1_err",true);
+  add(0,4,2,"RH04_4_2","RH04_4_2_err",true);
+  add(0,4,3,"RH04_4_3","RH04_4_3_err",true);
+  add(0,4,4,"RH04_4_4","RH04_4_4_err",true);
 
   add(1,0,0,"RH_1_0_0","RH_1_0_0_err",false);
   add(1,1,0,"RH_1_1_0","RH_1_1_0_err",false);
@@ -228,37 +228,37 @@ static std::vector<ObservedMoment> BuildObservedMoments(const std::string& inFil
   add(1,2,0,"RH_1_2_0","RH_1_2_0_err",false);
   add(1,2,1,"RH_1_2_1","RH_1_2_1_err",false);
   add(1,2,2,"RH_1_2_2","RH_1_2_2_err",false);
-  // add(1,3,0,"RH_1_3_0","RH_1_3_0_err",false);
-  // add(1,3,1,"RH_1_3_1","RH_1_3_1_err",false);
-  // add(1,3,2,"RH_1_3_2","RH_1_3_2_err",false);
-  // add(1,3,3,"RH_1_3_3","RH_1_3_3_err",false);
-  // add(1,4,0,"RH_1_4_0","RH_1_4_0_err",false);
-  // add(1,4,1,"RH_1_4_1","RH_1_4_1_err",false);
-  // add(1,4,2,"RH_1_4_2","RH_1_4_2_err",false);
-  // add(1,4,3,"RH_1_4_3","RH_1_4_3_err",false);
-  // add(1,4,4,"RH_1_4_4","RH_1_4_4_err",false);
+  add(1,3,0,"RH_1_3_0","RH_1_3_0_err",false);
+  add(1,3,1,"RH_1_3_1","RH_1_3_1_err",false);
+  add(1,3,2,"RH_1_3_2","RH_1_3_2_err",false);
+  add(1,3,3,"RH_1_3_3","RH_1_3_3_err",false);
+  add(1,4,0,"RH_1_4_0","RH_1_4_0_err",false);
+  add(1,4,1,"RH_1_4_1","RH_1_4_1_err",false);
+  add(1,4,2,"RH_1_4_2","RH_1_4_2_err",false);
+  add(1,4,3,"RH_1_4_3","RH_1_4_3_err",false);
+  add(1,4,4,"RH_1_4_4","RH_1_4_4_err",false);
 
   add(2,1,1,"RH_2_1_1","RH_2_1_1_err",false);
   add(2,2,1,"RH_2_2_1","RH_2_2_1_err",false);
   add(2,2,2,"RH_2_2_2","RH_2_2_2_err",false);
-  // add(2,3,1,"RH_2_3_1","RH_2_3_1_err",false);
-  // add(2,3,2,"RH_2_3_2","RH_2_3_2_err",false);
-  // add(2,3,3,"RH_2_3_3","RH_2_3_3_err",false);
-  // add(2,4,1,"RH_2_4_1","RH_2_4_1_err",false);
-  // add(2,4,2,"RH_2_4_2","RH_2_4_2_err",false);
-  // add(2,4,3,"RH_2_4_3","RH_2_4_3_err",false);
-  // add(2,4,4,"RH_2_4_4","RH_2_4_4_err",false);
+  add(2,3,1,"RH_2_3_1","RH_2_3_1_err",false);
+  add(2,3,2,"RH_2_3_2","RH_2_3_2_err",false);
+  add(2,3,3,"RH_2_3_3","RH_2_3_3_err",false);
+  add(2,4,1,"RH_2_4_1","RH_2_4_1_err",false);
+  add(2,4,2,"RH_2_4_2","RH_2_4_2_err",false);
+  add(2,4,3,"RH_2_4_3","RH_2_4_3_err",false);
+  add(2,4,4,"RH_2_4_4","RH_2_4_4_err",false);
 
   add(3,1,1,"RH_3_1_1","RH_3_1_1_err",false);
   add(3,2,1,"RH_3_2_1","RH_3_2_1_err",false);
   add(3,2,2,"RH_3_2_2","RH_3_2_2_err",false);
-  // add(3,3,1,"RH_3_3_1","RH_3_3_1_err",false);
-  // add(3,3,2,"RH_3_3_2","RH_3_3_2_err",false);
-  // add(3,3,3,"RH_3_3_3","RH_3_3_3_err",false);
-  // add(3,4,1,"RH_3_4_1","RH_3_4_1_err",false);
-  // add(3,4,2,"RH_3_4_2","RH_3_4_2_err",false);
-  // add(3,4,3,"RH_3_4_3","RH_3_4_3_err",false);
-  // add(3,4,4,"RH_3_4_4","RH_3_4_4_err",false);
+  add(3,3,1,"RH_3_3_1","RH_3_3_1_err",false);
+  add(3,3,2,"RH_3_3_2","RH_3_3_2_err",false);
+  add(3,3,3,"RH_3_3_3","RH_3_3_3_err",false);
+  add(3,4,1,"RH_3_4_1","RH_3_4_1_err",false);
+  add(3,4,2,"RH_3_4_2","RH_3_4_2_err",false);
+  add(3,4,3,"RH_3_4_3","RH_3_4_3_err",false);
+  add(3,4,4,"RH_3_4_4","RH_3_4_4_err",false);
 
   add(5,0,0,"RH_5_0_0","RH_5_0_0_err",false);
   add(5,1,0,"RH_5_1_0","RH_5_1_0_err",false);
@@ -266,37 +266,37 @@ static std::vector<ObservedMoment> BuildObservedMoments(const std::string& inFil
   add(5,2,0,"RH_5_2_0","RH_5_2_0_err",false);
   add(5,2,1,"RH_5_2_1","RH_5_2_1_err",false);
   add(5,2,2,"RH_5_2_2","RH_5_2_2_err",false);
-  // add(5,3,0,"RH_5_3_0","RH_5_3_0_err",false);
-  // add(5,3,1,"RH_5_3_1","RH_5_3_1_err",false);
-  // add(5,3,2,"RH_5_3_2","RH_5_3_2_err",false);
-  // add(5,3,3,"RH_5_3_3","RH_5_3_3_err",false);
-  // add(5,4,0,"RH_5_4_0","RH_5_4_0_err",false);
-  // add(5,4,1,"RH_5_4_1","RH_5_4_1_err",false);
-  // add(5,4,2,"RH_5_4_2","RH_5_4_2_err",false);
-  // add(5,4,3,"RH_5_4_3","RH_5_4_3_err",false);
-  // add(5,4,4,"RH_5_4_4","RH_5_4_4_err",false);
+  add(5,3,0,"RH_5_3_0","RH_5_3_0_err",false);
+  add(5,3,1,"RH_5_3_1","RH_5_3_1_err",false);
+  add(5,3,2,"RH_5_3_2","RH_5_3_2_err",false);
+  add(5,3,3,"RH_5_3_3","RH_5_3_3_err",false);
+  add(5,4,0,"RH_5_4_0","RH_5_4_0_err",false);
+  add(5,4,1,"RH_5_4_1","RH_5_4_1_err",false);
+  add(5,4,2,"RH_5_4_2","RH_5_4_2_err",false);
+  add(5,4,3,"RH_5_4_3","RH_5_4_3_err",false);
+  add(5,4,4,"RH_5_4_4","RH_5_4_4_err",false);
 
   add(6,1,1,"RH_6_1_1","RH_6_1_1_err",false);
   add(6,2,1,"RH_6_2_1","RH_6_2_1_err",false);
   add(6,2,2,"RH_6_2_2","RH_6_2_2_err",false);
-  // add(6,3,1,"RH_6_3_1","RH_6_3_1_err",false);
-  // add(6,3,2,"RH_6_3_2","RH_6_3_2_err",false);
-  // add(6,3,3,"RH_6_3_3","RH_6_3_3_err",false);
-  // add(6,4,1,"RH_6_4_1","RH_6_4_1_err",false);
-  // add(6,4,2,"RH_6_4_2","RH_6_4_2_err",false);
-  // add(6,4,3,"RH_6_4_3","RH_6_4_3_err",false);
-  // add(6,4,4,"RH_6_4_4","RH_6_4_4_err",false);
+  add(6,3,1,"RH_6_3_1","RH_6_3_1_err",false);
+  add(6,3,2,"RH_6_3_2","RH_6_3_2_err",false);
+  add(6,3,3,"RH_6_3_3","RH_6_3_3_err",false);
+  add(6,4,1,"RH_6_4_1","RH_6_4_1_err",false);
+  add(6,4,2,"RH_6_4_2","RH_6_4_2_err",false);
+  add(6,4,3,"RH_6_4_3","RH_6_4_3_err",false);
+  add(6,4,4,"RH_6_4_4","RH_6_4_4_err",false);
 
   add(7,1,1,"RH_7_1_1","RH_7_1_1_err",false);
   add(7,2,1,"RH_7_2_1","RH_7_2_1_err",false);
   add(7,2,2,"RH_7_2_2","RH_7_2_2_err",false);
-  // add(7,3,1,"RH_7_3_1","RH_7_3_1_err",false);
-  // add(7,3,2,"RH_7_3_2","RH_7_3_2_err",false);
-  // add(7,3,3,"RH_7_3_3","RH_7_3_3_err",false);
-  // add(7,4,1,"RH_7_4_1","RH_7_4_1_err",false);
-  // add(7,4,2,"RH_7_4_2","RH_7_4_2_err",false);
-  // add(7,4,3,"RH_7_4_3","RH_7_4_3_err",false);
-  // add(7,4,4,"RH_7_4_4","RH_7_4_4_err",false);
+  add(7,3,1,"RH_7_3_1","RH_7_3_1_err",false);
+  add(7,3,2,"RH_7_3_2","RH_7_3_2_err",false);
+  add(7,3,3,"RH_7_3_3","RH_7_3_3_err",false);
+  add(7,4,1,"RH_7_4_1","RH_7_4_1_err",false);
+  add(7,4,2,"RH_7_4_2","RH_7_4_2_err",false);
+  add(7,4,3,"RH_7_4_3","RH_7_4_3_err",false);
+  add(7,4,4,"RH_7_4_4","RH_7_4_4_err",false);
 
   add(8,0,0,"RH_8_0_0","RH_8_0_0_err",false);
   add(8,1,0,"RH_8_1_0","RH_8_1_0_err",false);
@@ -304,15 +304,15 @@ static std::vector<ObservedMoment> BuildObservedMoments(const std::string& inFil
   add(8,2,0,"RH_8_2_0","RH_8_2_0_err",false);
   add(8,2,1,"RH_8_2_1","RH_8_2_1_err",false);
   add(8,2,2,"RH_8_2_2","RH_8_2_2_err",false);
-  // add(8,3,0,"RH_8_3_0","RH_8_3_0_err",false);
-  // add(8,3,1,"RH_8_3_1","RH_8_3_1_err",false);
-  // add(8,3,2,"RH_8_3_2","RH_8_3_2_err",false);
-  // add(8,3,3,"RH_8_3_3","RH_8_3_3_err",false);
-  // add(8,4,0,"RH_8_4_0","RH_8_4_0_err",false);
-  // add(8,4,1,"RH_8_4_1","RH_8_4_1_err",false);
-  // add(8,4,2,"RH_8_4_2","RH_8_4_2_err",false);
-  // add(8,4,3,"RH_8_4_3","RH_8_4_3_err",false);
-  // add(8,4,4,"RH_8_4_4","RH_8_4_4_err",false);
+  add(8,3,0,"RH_8_3_0","RH_8_3_0_err",false);
+  add(8,3,1,"RH_8_3_1","RH_8_3_1_err",false);
+  add(8,3,2,"RH_8_3_2","RH_8_3_2_err",false);
+  add(8,3,3,"RH_8_3_3","RH_8_3_3_err",false);
+  add(8,4,0,"RH_8_4_0","RH_8_4_0_err",false);
+  add(8,4,1,"RH_8_4_1","RH_8_4_1_err",false);
+  add(8,4,2,"RH_8_4_2","RH_8_4_2_err",false);
+  add(8,4,3,"RH_8_4_3","RH_8_4_3_err",false);
+  add(8,4,4,"RH_8_4_4","RH_8_4_4_err",false);
 
   return obs;
 }
@@ -438,8 +438,8 @@ static std::vector<ParDef> BuildAmplitudePhaseParameters(const FitConfig& cfg) {
   // Fix one transverse reference phase per reflectivity to remove the global phase ambiguity.
   const int refL = cfg.lmax;
   const int refM = std::min(cfg.mmax, refL);
-  fixTo(PhiName('a', 'T', 1, 1), 0.0);
-  fixTo(PhiName('b', 'T', 1, 1), 0.0);
+  fixTo(PhiName('a', 'T', 2, 2), 0.0);
+  fixTo(PhiName('b', 'T', 2, 2), 0.0);
 
   // P-Wave Transveres
   //fixTo("a_L_1_0", 0.0); fixTo("aphi_L_1_0", 0.0); //fixTo("b_L_1_0", 0.0); fixTo("bphi_L_1_0", 0.0);
@@ -453,8 +453,8 @@ static std::vector<ParDef> BuildAmplitudePhaseParameters(const FitConfig& cfg) {
   //fixTo("a_L_1_m1", 0.0); fixTo("aphi_L_1_m1", 0.0); fixTo("b_L_1_m1", 0.0); fixTo("bphi_L_1_m1", 0.0);
 
   // S-Wave
- fixTo("b_T_0_0", 0.0); fixTo("a_T_0_0", 0.0); fixTo("a_L_0_0", 0.0); fixTo("b_L_0_0", 0.0);
- fixTo("bphi_T_0_0", 0.0); fixTo("aphi_T_0_0", 0.0); fixTo("aphi_L_0_0", 0.0); fixTo("bphi_L_0_0", 0.0);
+ // fixTo("b_T_0_0", 0.0); fixTo("a_T_0_0", 0.0); fixTo("a_L_0_0", 0.0); fixTo("b_L_0_0", 0.0);
+ // fixTo("bphi_T_0_0", 0.0); fixTo("aphi_T_0_0", 0.0); fixTo("aphi_L_0_0", 0.0); fixTo("bphi_L_0_0", 0.0);
 
   if (cfg.photoProduction) {
     for (auto& p : pars) {
@@ -682,56 +682,56 @@ static std::vector<MomentModel> BuildMomentModels(const FitConfig& cfg,
               double f = (-1.0 / TMath::Sqrt(2.0)) * ccfactor;
               emit(mm, refl, f, il, im, ilpr, impr, 5, false);
               emit(mm, refl, f, il, im, ilpr, impr, 5, true);
-              emit(mm, refl, mmprimesign * f, il, -im, ilpr, -impr, 5, false);
-              emit(mm, refl, mmprimesign * f, il, -im, ilpr, -impr, 5, true);
+              emit(mm, refl, -1 * mmprimesign * f, il, -im, ilpr, -impr, 5, false);
+              emit(mm, refl, -1 * mmprimesign * f, il, -im, ilpr, -impr, 5, true);
               if (cfg.useNegRef) {
                 refl = -1;
                 emit(mm, refl, f, il, im, ilpr, impr, 5, false);
                 emit(mm, refl, f, il, im, ilpr, impr, 5, true);
-                emit(mm, refl, mmprimesign * f, il, -im, ilpr, -impr, 5, false);
-                emit(mm, refl, mmprimesign * f, il, -im, ilpr, -impr, 5, true);
+                emit(mm, refl, -1 * mmprimesign * f, il, -im, ilpr, -impr, 5, false);
+                emit(mm, refl, -1 * mmprimesign * f, il, -im, ilpr, -impr, 5, true);
               }
             } else if (alpha == 6) {
               int refl = +1;
               double f = (1.0 / TMath::Sqrt(2.0)) * ccfactor;
               emit(mm, refl, f, il, im, ilpr, impr, 6, false);
               emit(mm, refl, f, il, im, ilpr, impr, 6, true);
-              emit(mm, refl, mmprimesign * f, il, -im, ilpr, -impr, 6, false);
-              emit(mm, refl, mmprimesign * f, il, -im, ilpr, -impr, 6, true);
+              emit(mm, refl, -1 * mmprimesign * f, il, -im, ilpr, -impr, 6, false);
+              emit(mm, refl, -1 * mmprimesign * f, il, -im, ilpr, -impr, 6, true);
               if (cfg.useNegRef) {
                 refl = -1;
                 emit(mm, refl, f, il, im, ilpr, impr, 6, false);
                 emit(mm, refl, f, il, im, ilpr, impr, 6, true);
-                emit(mm, refl, mmprimesign * f, il, -im, ilpr, -impr, 6, false);
-                emit(mm, refl, mmprimesign * f, il, -im, ilpr, -impr, 6, true);
+                emit(mm, refl, -1 * mmprimesign * f, il, -im, ilpr, -impr, 6, false);
+                emit(mm, refl, -1 * mmprimesign * f, il, -im, ilpr, -impr, 6, true);
               }
             } else if (alpha == 7) {
               int refl = +1;
               double f = (-1.0 / TMath::Sqrt(2.0)) * ccfactor;
               emit(mm, refl, f, il, im, ilpr, impr, 7, false);
               emit(mm, refl, f, il, im, ilpr, impr, 7, true);
-              emit(mm, refl, -1 * mmprimesign * f, il, -im, ilpr, -impr, 7, false);
-              emit(mm, refl, -1 * mmprimesign * f, il, -im, ilpr, -impr, 7, true);
+              emit(mm, refl, mmprimesign * f, il, -im, ilpr, -impr, 7, false);
+              emit(mm, refl, mmprimesign * f, il, -im, ilpr, -impr, 7, true);
               if (cfg.useNegRef) {
                 refl = -1;
                 emit(mm, refl, f, il, im, ilpr, impr, 7, false);
                 emit(mm, refl, f, il, im, ilpr, impr, 7, true);
-                emit(mm, refl, -1 * mmprimesign * f, il, -im, ilpr, -impr, 7, false);
-                emit(mm, refl, -1 * mmprimesign * f, il, -im, ilpr, -impr, 7, true);
+                emit(mm, refl, mmprimesign * f, il, -im, ilpr, -impr, 7, false);
+                emit(mm, refl, mmprimesign * f, il, -im, ilpr, -impr, 7, true);
               }
             } else if (alpha == 8) {
               int refl = +1;
               double f = (-1.0 / TMath::Sqrt(2.0)) * ccfactor;
               emit(mm, refl, f, il, im, ilpr, impr, 8, false);
               emit(mm, refl, -1 * f, il, im, ilpr, impr, 8, true);
-              emit(mm, refl, mmprimesign * f, il, -im, ilpr, -impr, 8, false);
-              emit(mm, refl, -1 * mmprimesign * f, il, -im, ilpr, -impr, 8, true);
+              emit(mm, refl, -1*mmprimesign * f, il, -im, ilpr, -impr, 8, false);
+              emit(mm, refl,  mmprimesign * f, il, -im, ilpr, -impr, 8, true);
               if (cfg.useNegRef) {
                 refl = -1;
                 emit(mm, refl, f, il, im, ilpr, impr, 8, false);
                 emit(mm, refl, -1 * f, il, im, ilpr, impr, 8, true);
-                emit(mm, refl, mmprimesign * f, il, -im, ilpr, -impr, 8, false);
-                emit(mm, refl, -1 * mmprimesign * f, il, -im, ilpr, -impr, 8, true);
+                emit(mm, refl, -1*mmprimesign * f, il, -im, ilpr, -impr, 8, false);
+                emit(mm, refl, mmprimesign * f, il, -im, ilpr, -impr, 8, true);
               }
             }
           }
@@ -1350,7 +1350,7 @@ void RunGivenMoments_Chi2Amps_Setup(const char* tableFile="InputFiles/Experiment
 }
 
 // Macro function, filenames and bin as cml args so that bins can be looped over by  a script
-void RunGivenMoments_Chi2Amps_test3(const char* tableFile = "InputFiles/Experiment/e_rho_moments.root", const char* treeName = "expMoments", const int bin = 1, const std::string outFile = "Hermestest.root", const double epsilon = 1, const bool photoProduction = false) {
+void RunGivenMoments_Chi2Amps(const char* tableFile = "InputFiles/Experiment/e_rho_moments.root", const char* treeName = "expMoments", const int bin = 1, const std::string outFile = "Hermestest.root", const double epsilon = 1, const bool photoProduction = false) {
 
   // Setup
   // User settings

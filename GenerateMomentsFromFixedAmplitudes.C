@@ -52,52 +52,52 @@ static void FillUserAmplitudes(const std::shared_ptr<EvalContext>& ctx,
   // =====================================================================
 
   // Positive-reflectivity magnitudes
-  set("a_T_0_0", 0.639427);
-  set("a_L_0_0", 0.029797);
+  set("a_T_0_0", 0.278093);
+  set("a_L_0_0", 0.012959);
 
-  set("a_T_1_1", 0.025011);
-  set("a_T_1_0", 0.275029);
-  set("a_T_1_m1", 0.223211);
+  set("a_T_1_1", 0.010878);
+  set("a_T_1_0", 0.119613);
+  set("a_T_1_m1", 0.097077);
 
-  set("a_L_1_1", 0.218638);
-  set("a_L_1_0", 0.505355);
-  set("a_L_1_m1", 0.026536);
+  set("a_L_1_1", 0.095088);
+  set("a_L_1_0", 0.219784);
+  set("a_L_1_m1", 0.011541);
 
-  set("a_T_2_2", 0.736471);
-  set("a_T_2_1", 0.676699);
-  set("a_T_2_0", 0.892180);
-  set("a_T_2_m1", 0.086939);
-  set("a_T_2_m2", 0.421922);
+  set("a_T_2_2", 0.320298);
+  set("a_T_2_1", 0.294303);
+  set("a_T_2_0", 0.388018);
+  set("a_T_2_m1", 0.037811);
+  set("a_T_2_m2", 0.183498);
 
-  set("a_L_2_2", 0.198838);
-  set("a_L_2_1", 0.649884);
-  set("a_L_2_0", 0.544941);
-  set("a_L_2_m1", 0.220441);
-  set("a_L_2_m2", 0.589266);
+  set("a_L_2_2", 0.086477);
+  set("a_L_2_1", 0.282641);
+  set("a_L_2_0", 0.237000);
+  set("a_L_2_m1", 0.095872);
+  set("a_L_2_m2", 0.256278);
 
-// Negative-reflectivity magnitudes
-  set("b_T_0_0", 0.16947);
-  set("b_L_0_0", 0.297);
+  // Negative-reflectivity magnitudes
+  set("b_T_0_0", 0.073704);
+  set("b_L_0_0", 0.129168);
 
-  set("b_T_1_1", 0.809430);
-  set("b_T_1_0", 0.006499);
-  set("b_T_1_m1", 0.805819);
+  set("b_T_1_1", 0.352029);
+  set("b_T_1_0", 0.002826);
+  set("b_T_1_m1", 0.350459);
 
-  set("b_L_1_1", 0.092746);
-  set("b_L_1_0", 0.096716);
-  set("b_L_1_m1", 0.847494);
+  set("b_L_1_1", 0.040336);
+  set("b_L_1_0", 0.042063);
+  set("b_L_1_m1", 0.368583);
 
-  set("b_T_2_2", 0.698139);
-  set("b_T_2_1", 0.340251);
-  set("b_T_2_0", 0.155479);
-  set("b_T_2_m1", 0.957213);
-  set("b_T_2_m2", 0.336595);
+  set("b_T_2_2", 0.303627);
+  set("b_T_2_1", 0.147978);
+  set("b_T_2_0", 0.067619);
+  set("b_T_2_m1", 0.416301);
+  set("b_T_2_m2", 0.146388);
 
-  set("b_L_2_2", 0.603726);
-  set("b_L_2_1", 0.807128);
-  set("b_L_2_0", 0.729732);
-  set("b_L_2_m1", 0.536228);
-  set("b_L_2_m2", 0.973116);
+  set("b_L_2_2", 0.262566);
+  set("b_L_2_1", 0.351028);
+  set("b_L_2_0", 0.317368);
+  set("b_L_2_m1", 0.233211);
+  set("b_L_2_m2", 0.423218);
 
 // Positive-reflectivity phases
   set("aphi_T_0_0", -0.763191);
@@ -167,34 +167,32 @@ static void MakeBranchesForNamedValues(TTree* t,
 
 static void PrintNonZeroParameters(const std::shared_ptr<EvalContext>& ctx,
                                    const std::vector<double>& fullVals) {
-  std::cout << "
-Input parameters used for synthetic moments
-";
-  std::cout << "-----------------------------------------
-";
+  std::cout << "Input parameters used for synthetic moments" <<std::endl;
+  std::cout << "-----------------------------------------"<<std::endl;
   for (size_t i = 0; i < ctx->fullPars.size(); ++i) {
     const auto& p = ctx->fullPars[i];
     const double v = fullVals[i];
     if (std::abs(v) < 1e-14) continue;
-    std::cout << std::setw(18) << p.name << " = " << std::setw(12)
-              << std::setprecision(8) << v;
-    if (p.fixed) std::cout << "   [fixed in fit]";
-    std::cout << '
-';
+    std::cout << std::setw(18) << p.name << " = " << std::setw(12)<< std::setprecision(8) << v << std::endl;
+    if (p.fixed) std::cout << "   [fixed in fit]" << std::endl;
   }
 }
 
 static void PrintObservedLikeMoments(const std::shared_ptr<EvalContext>& ctx,
                                      const std::vector<double>& obsVals) {
-  std::cout << "
-Moments written for the inverter
-";
-  std::cout << "--------------------------------
-";
+  std::cout << "Observed Moments written for the inverter";
+  std::cout << "--------------------------------"<<std::endl;
   for (size_t i = 0; i < ctx->observed.size(); ++i) {
-    std::cout << std::setw(12) << ctx->observed[i].name
-              << " = " << std::setw(14) << std::setprecision(10) << obsVals[i] << '
-';
+    std::cout << std::setw(12) << ctx->observed[i].name << " = " << std::setw(14) << std::setprecision(10) << obsVals[i] << std::endl;
+  }
+}
+
+static void PrintAllMoments(const std::shared_ptr<EvalContext>& ctx,
+                                     const std::vector<double>& Hvals) {
+  std::cout << "All Moments written for the inverter";
+  std::cout << "--------------------------------"<<std::endl;
+  for (size_t i = 0; i < ctx->modelsRec.size(); ++i) {
+    std::cout << std::setw(12) << ctx->modelsRec[i].name << " = " << std::setw(14) << std::setprecision(10) << Hvals[i] << std::endl;
   }
 }
 
@@ -310,8 +308,8 @@ void GenerateMomentsFromFixedAmplitudes(std::string outFile = "fixed_input_momen
 
   if (printToScreen) {
     PrintNonZeroParameters(ctx, fullVals);
+    PrintAllMoments(ctx, Hvals);
     PrintObservedLikeMoments(ctx, observedVals);
-    std::cout << "
-Saved generated moments to " << outPath << std::endl;
+    std::cout << "Saved generated moments to " << outPath << std::endl;
   }
 }
