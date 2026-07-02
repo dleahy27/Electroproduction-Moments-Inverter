@@ -17,6 +17,14 @@
 namespace fixed_moment_builder {
 using namespace chi2_amp_fit_opt;
 
+struct AmpInfo {
+  std::string magName;
+  std::string phaseName;
+  bool isLongitudinal;
+  double mag;
+  double phase;
+};
+
 static int FindParIndex(const std::shared_ptr<EvalContext>& ctx, const std::string& name) {
   for (size_t i = 0; i < ctx->fullPars.size(); ++i) {
     if (ctx->fullPars[i].name == name) return static_cast<int>(i);
@@ -35,13 +43,14 @@ static void SetPar(const std::shared_ptr<EvalContext>& ctx,
 }
 
 static void FillUserAmplitudes(const std::shared_ptr<EvalContext>& ctx,
-                               std::vector<double>& fullVals) {
+                               std::vector<double>& fullVals)
+{
   fullVals.assign(ctx->fullPars.size(), 0.0);
   for (size_t i = 0; i < ctx->fullPars.size(); ++i) {
     fullVals[i] = ctx->fullPars[i].init;
   }
 
-  auto set = [&](const char* name, double value) {
+  auto set = [&](std::string name, double value) {
     SetPar(ctx, fullVals, name, value);
   };
 
@@ -51,101 +60,122 @@ static void FillUserAmplitudes(const std::shared_ptr<EvalContext>& ctx,
   // the inverter can be tested independently of physical restrictions.
   // =====================================================================
 
-  // Positive-reflectivity magnitudes
-  set("a_T_0_0", 0.278093);
-  set("a_L_0_0", 0.012959);
+  // Random values for closure test
+  // std::vector<AmpInfo> amps = {
+  //   // Positive-reflectivity amplitudes
+  //   {"a_T_0_0",  "aphi_T_0_0",  false, 0.278093, -0.763191},
+  //   {"a_L_0_0",  "aphi_L_0_0",  true,  0.001290, -1.323314},
+  //
+  //   {"a_T_1_1",  "aphi_T_1_1",  false, 0.187800,  0.326981},
+  //   {"a_T_1_0",  "aphi_T_1_0",  false, 0.119613,  2.069711},
+  //   {"a_T_1_m1", "aphi_T_1_m1", false, 0.097077,  0.744682},
+  //
+  //   {"a_L_1_1",  "aphi_L_1_1",  true,  0.095088, -2.640245},
+  //   {"a_L_1_0",  "aphi_L_1_0",  true,  0.219784, -1.678924},
+  //
+  //   {"a_T_2_2",  "aphi_T_2_2",  false, 0.320298,  0.000000},
+  //   {"a_T_2_1",  "aphi_T_2_1",  false, 0.294303,  0.486018},
+  //   {"a_T_2_0",  "aphi_T_2_0",  false, 0.388018,  1.285363},
+  //   {"a_T_2_m1", "aphi_T_2_m1", false, 0.037811, -2.853670},
+  //   {"a_T_2_m2", "aphi_T_2_m2", false, 0.183498, -1.709666},
+  //
+  //   {"a_L_2_2",  "aphi_L_2_2",  true,  0.086477, -1.395033},
+  //   {"a_L_2_1",  "aphi_L_2_1",  true,  0.282641,  0.852531},
+  //   {"a_L_2_0",  "aphi_L_2_0",  true,  0.237000, -0.849284},
+  //
+  //   // Negative-reflectivity amplitudes
+  //   {"b_T_0_0",  "bphi_T_0_0",  false, 0.073704,  1.223400},
+  //
+  //   {"b_T_1_1",  "bphi_T_1_1",  false, 0.352029, -1.464122},
+  //   {"b_T_1_0",  "bphi_T_1_0",  false, 0.002826,  2.743582},
+  //   {"b_T_1_m1", "bphi_T_1_m1", false, 0.350459,  0.930134},
+  //
+  //   {"b_L_1_1",  "bphi_L_1_1",  true,  0.040336,  1.075766},
+  //
+  //   {"b_T_2_2",  "bphi_T_2_2",  false, 0.303627,  0.000000},
+  //   {"b_T_2_1",  "bphi_T_2_1",  false, 0.147978, -2.066297},
+  //   {"b_T_2_0",  "bphi_T_2_0",  false, 0.067619,  1.439646},
+  //   {"b_T_2_m1", "bphi_T_2_m1", false, 0.416301, -2.114905},
+  //   {"b_T_2_m2", "bphi_T_2_m2", false, 0.146388, -0.757404},
+  //
+  //   {"b_L_2_2",  "bphi_L_2_2",  true,  0.262566,  1.159966},
+  //   {"b_L_2_1",  "bphi_L_2_1",  true,  0.351028,  2.154202}
+  // };
 
-  set("a_T_1_1", 0.010878);
-  set("a_T_1_0", 0.119613);
-  set("a_T_1_m1", 0.097077);
+  // Oppositely large values for natural/unnatural L/T hypothesis
+  std::vector<AmpInfo> amps = {
+    // Positive-reflectivity amplitudes
+    {"a_T_0_0",  "aphi_T_0_0",  false, 0.85,  -0.763191},
+    {"a_L_0_0",  "aphi_L_0_0",  true,  0.01,  -1.323314},
 
-  set("a_L_1_1", 0.095088);
-  set("a_L_1_0", 0.219784);
-  set("a_L_1_m1", 0.011541);
+    {"a_T_1_1",  "aphi_T_1_1",  false, 0.90,   0.0},
+    {"a_T_1_0",  "aphi_T_1_0",  false, 0.78,   2.069711},
+    {"a_T_1_m1", "aphi_T_1_m1", false, 0.82,   0.744682},
 
-  set("a_T_2_2", 0.320298);
-  set("a_T_2_1", 0.294303);
-  set("a_T_2_0", 0.388018);
-  set("a_T_2_m1", 0.037811);
-  set("a_T_2_m2", 0.183498);
+    {"a_L_1_1",  "aphi_L_1_1",  true,  0.02,  -2.640245},
+    {"a_L_1_0",  "aphi_L_1_0",  true,  0.015, -1.678924},
 
-  set("a_L_2_2", 0.086477);
-  set("a_L_2_1", 0.282641);
-  set("a_L_2_0", 0.237000);
-  set("a_L_2_m1", 0.095872);
-  set("a_L_2_m2", 0.256278);
+    // {"a_T_2_2",  "aphi_T_2_2",  false, 0.95,   0.000000},
+    // {"a_T_2_1",  "aphi_T_2_1",  false, 0.88,   0.486018},
+    // {"a_T_2_0",  "aphi_T_2_0",  false, 0.92,   1.285363},
+    // {"a_T_2_m1", "aphi_T_2_m1", false, 0.75,  -2.853670},
+    // {"a_T_2_m2", "aphi_T_2_m2", false, 0.80,  -1.709666},
+    //
+    // {"a_L_2_2",  "aphi_L_2_2",  true,  0.02,  -1.395033},
+    // {"a_L_2_1",  "aphi_L_2_1",  true,  0.025,  0.852531},
+    // {"a_L_2_0",  "aphi_L_2_0",  true,  0.015, -0.849284},
 
-  // Negative-reflectivity magnitudes
-  set("b_T_0_0", 0.073704);
-  set("b_L_0_0", 0.129168);
+    // Negative-reflectivity amplitudes
+    {"b_T_0_0",  "bphi_T_0_0",  false, 0.015,  1.223400},
 
-  set("b_T_1_1", 0.352029);
-  set("b_T_1_0", 0.002826);
-  set("b_T_1_m1", 0.350459);
+    {"b_T_1_1",  "bphi_T_1_1",  false, 0.02,  0.0},
+    {"b_T_1_0",  "bphi_T_1_0",  false, 0.01,   2.743582},
+    {"b_T_1_m1", "bphi_T_1_m1", false, 0.025,  0.930134},
 
-  set("b_L_1_1", 0.040336);
-  set("b_L_1_0", 0.042063);
-  set("b_L_1_m1", 0.368583);
+    {"b_L_1_1",  "bphi_L_1_1",  true,  0.85,   3.075766},
 
-  set("b_T_2_2", 0.303627);
-  set("b_T_2_1", 0.147978);
-  set("b_T_2_0", 0.067619);
-  set("b_T_2_m1", 0.416301);
-  set("b_T_2_m2", 0.146388);
+    // {"b_T_2_2",  "bphi_T_2_2",  false, 0.02,   0.000000},
+    // {"b_T_2_1",  "bphi_T_2_1",  false, 0.015, -2.066297},
+    // {"b_T_2_0",  "bphi_T_2_0",  false, 0.01,   1.439646},
+    // {"b_T_2_m1", "bphi_T_2_m1", false, 0.025, -2.114905},
+    // {"b_T_2_m2", "bphi_T_2_m2", false, 0.015, -0.757404},
+    //
+    // {"b_L_2_2",  "bphi_L_2_2",  true,  0.95,   1.159966},
+    // {"b_L_2_1",  "bphi_L_2_1",  true,  0.90,   2.154202}
+  };
 
-  set("b_L_2_2", 0.262566);
-  set("b_L_2_1", 0.351028);
-  set("b_L_2_0", 0.317368);
-  set("b_L_2_m1", 0.233211);
-  set("b_L_2_m2", 0.423218);
+  double sumT = 0.0;
+  double sumL = 0.0;
 
-// Positive-reflectivity phases
-  set("aphi_T_0_0", -0.763191);
-  set("aphi_L_0_0", -1.323314);
+  // First sample raw magnitudes and phases
+  for (auto& amp : amps) {
+    if (amp.isLongitudinal) {
+      if (amp.magName[6]=='1')
+      {
+        sumL += 2*amp.mag * amp.mag;
+      }else
+      {
+        sumL += amp.mag * amp.mag;
+      }
 
-  set("aphi_T_1_1", 0.326981);
-  set("aphi_T_1_0", 2.069711);
-  set("aphi_T_1_m1", 0.744682);
 
-  set("aphi_L_1_1", -2.640245);
-  set("aphi_L_1_0", -1.678924);
-  set("aphi_L_1_m1", -2.506982);
+    } else {
+      sumT += amp.mag * amp.mag;
+    }
+  }
 
-  set("aphi_T_2_2", 0.0);
-  set("aphi_T_2_1", 0.486018);
-  set("aphi_T_2_0", 1.285363);
-  set("aphi_T_2_m1", -2.853670);
-  set("aphi_T_2_m2", -1.709666);
+  const double normDenom = sumT + ctx->cfg.epsilon * sumL;
 
-  set("aphi_L_2_2", -1.395033);
-  set("aphi_L_2_1", 0.852531);
-  set("aphi_L_2_0", -0.849284);
-  set("aphi_L_2_m1", -0.815677);
-  set("aphi_L_2_m2", -1.825221);
+  const double scale = std::sqrt(1.0 / normDenom);
 
-// Negative-reflectivity phases
-  set("bphi_T_0_0", 1.2234);
-  set("bphi_L_0_0", -2.3345);
+  //std::cout<<"sumT = "<<sumT<<" and sumL = "<<sumL<<" gives scale = "<<scale<<std::endl;
 
-  set("bphi_T_1_1", -1.464122);
-  set("bphi_T_1_0", 2.743582);
-  set("bphi_T_1_m1", 0.930134);
+  // Then set the correctly normalised magnitudes and random phases
+  for (const auto& amp : amps) {
+    set(amp.magName, amp.mag * scale);
+    set(amp.phaseName, amp.phase);
+  }
 
-  set("bphi_L_1_1", 3.075766);
-  set("bphi_L_1_0", 0.879644);
-  set("bphi_L_1_m1", 0.357826);
-
-  set("bphi_T_2_2", 0.0);
-  set("bphi_T_2_1", -2.066297);
-  set("bphi_T_2_0", 1.439646);
-  set("bphi_T_2_m1", -2.114905);
-  set("bphi_T_2_m2", -0.757404);
-
-  set("bphi_L_2_2", 1.159966);
-  set("bphi_L_2_1", 2.154202);
-  set("bphi_L_2_0", 1.734159);
-  set("bphi_L_2_m1", -1.702441);
-  set("bphi_L_2_m2", -2.939901);
 }
 
 static int FindModelIndex(const std::shared_ptr<EvalContext>& ctx, int alpha, int L, int M) {
@@ -211,7 +241,7 @@ static void CreateSeedInputFile(const std::string& fileName, const std::string& 
 
 void GenerateMomentsFromFixedAmplitudes(std::string outFile = "fixed_input_moments.root",
                                         std::vector<double> Q2vals = {1.0},
-                                        double epsilon = 1.0,
+                                        double epsilon = 0.8,
                                         bool printToScreen = true) {
   using namespace fixed_moment_builder;
   using namespace chi2_amp_fit_opt;
@@ -222,13 +252,13 @@ void GenerateMomentsFromFixedAmplitudes(std::string outFile = "fixed_input_momen
   const std::string treeName = "genMoments";
 
   FitConfig cfg;
-  cfg.lmax = 2;
-  cfg.mmax = 2;
+  cfg.lmax = 1;
+  cfg.mmax = 1;
   cfg.negm = true;
   cfg.useNegRef = true;
   cfg.epsilon = epsilon;
   cfg.photoProduction = false;
-  cfg.enforceLongitudinalParity = false;
+  cfg.enforceLongitudinalParity = true;
   cfg.momentsFile = outPath;
   cfg.momentsTree = treeName;
   cfg.bin = 0;
@@ -249,7 +279,7 @@ void GenerateMomentsFromFixedAmplitudes(std::string outFile = "fixed_input_momen
   std::vector<std::string> observedNames;
   std::vector<std::string> errNames;
   std::vector<double> observedVals(ctx->observed.size(), 0.0);
-  std::vector<double> errVals(ctx->observed.size(), 0.01);
+  std::vector<double> errVals(ctx->observed.size(), 0.001);
   observedNames.reserve(ctx->observed.size());
   errNames.reserve(ctx->observed.size());
 

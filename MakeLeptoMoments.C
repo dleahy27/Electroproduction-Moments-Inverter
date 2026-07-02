@@ -106,7 +106,7 @@ static void SetMissingL1(OutputArrays& out, int i) {
 
 static void FillBin(OutputArrays& out, int i, double q2, const SDMEsTable& p) {
   out.Q2[i] = q2;
-  SetMissingL1(out, i);
+  // SetMissingL1(out, i);
 
   const double s_r00_04    = Comb(p.r00_04);
   const double s_re_r10_04 = Comb(p.re_r10_04);
@@ -140,31 +140,31 @@ static void FillBin(OutputArrays& out, int i, double q2, const SDMEsTable& p) {
   out.RH04_0_0[i] = 2;                                             out.RH04_0_0_err[i] = 0.001;
   out.RH04_2_0[i] = 2 * 0.2 * (3.0 * p.r00_04.v - 1.0);            out.RH04_2_0_err[i] = 2 * 0.6 * s_r00_04;
   out.RH04_2_1[i] = 2 * kSqrt12Over5 * p.re_r10_04.v;              out.RH04_2_1_err[i] = 2 * kSqrt12Over5 * s_re_r10_04;
-  out.RH04_2_2[i] =  2 * kSqrt6Over5 * p.r1m1_04.v;                out.RH04_2_2_err[i] = 2 * kSqrt6Over5 * s_r1m1_04;
+  out.RH04_2_2[i] =  -2 * kSqrt6Over5 * p.r1m1_04.v;                out.RH04_2_2_err[i] = 2 * kSqrt6Over5 * s_r1m1_04;
 
-  out.RH_1_0_0[i] =  2 * (2.0 * p.r11_1.v + p.r00_1.v);            out.RH_1_0_0_err[i] = 2 * std::sqrt(4.0 * s_r11_1 * s_r11_1 + s_r00_1 * s_r00_1);
+  out.RH_1_0_0[i] =  -2 * (2.0 * p.r11_1.v + p.r00_1.v);            out.RH_1_0_0_err[i] = 2 * std::sqrt(4.0 * s_r11_1 * s_r11_1 + s_r00_1 * s_r00_1);
   out.RH_1_2_0[i] = 2 * 0.4 * (p.r11_1.v - p.r00_1.v);             out.RH_1_2_0_err[i] = 2 * 0.4 * std::sqrt(s_r11_1 * s_r11_1 + s_r00_1 * s_r00_1);
-  out.RH_1_2_1[i] = 2 *  kSqrt12Over5 * p.re_r10_1.v;              out.RH_1_2_1_err[i] = 2 * kSqrt12Over5 * s_re_r10_1;
+  out.RH_1_2_1[i] = -2 *  kSqrt12Over5 * p.re_r10_1.v;              out.RH_1_2_1_err[i] = 2 * kSqrt12Over5 * s_re_r10_1;
   out.RH_1_2_2[i] = 2 * kSqrt6Over5 * p.r1m1_1.v;                 out.RH_1_2_2_err[i] = 2 * kSqrt6Over5 * s_r1m1_1;
 
-  out.RH_2_2_1[i] =  2 * kSqrt12Over5 * p.im_r10_2.v;              out.RH_2_2_1_err[i] = 2 * kSqrt12Over5 * s_im_r10_2;
+  out.RH_2_2_1[i] =  -2 * kSqrt12Over5 * p.im_r10_2.v;              out.RH_2_2_1_err[i] = 2 * kSqrt12Over5 * s_im_r10_2;
   out.RH_2_2_2[i] = 2 * kSqrt6Over5 * p.im_r1m1_2.v;              out.RH_2_2_2_err[i] = 2 * kSqrt6Over5 * s_im_r1m1_2;
-  out.RH_3_2_1[i] =  2 * kSqrt12Over5 * p.im_r10_3.v;              out.RH_3_2_1_err[i] = 2 * kSqrt12Over5 * s_im_r10_3;
+  out.RH_3_2_1[i] =  -2 * kSqrt12Over5 * p.im_r10_3.v;              out.RH_3_2_1_err[i] = 2 * kSqrt12Over5 * s_im_r10_3;
   out.RH_3_2_2[i] = 2 * kSqrt6Over5 * p.im_r1m1_3.v;              out.RH_3_2_2_err[i] = 2 * kSqrt6Over5 * s_im_r1m1_3;
 
-  out.RH_5_0_0[i] =  2 * (2.0 * p.r11_5.v + p.r00_5.v);                out.RH_5_0_0_err[i] = 2 * std::sqrt(4.0 * s_r11_5 * s_r11_5 + s_r00_5 * s_r00_5);
+  out.RH_5_0_0[i] =  -2 * (2.0 * p.r11_5.v + p.r00_5.v);                out.RH_5_0_0_err[i] = 2 * std::sqrt(4.0 * s_r11_5 * s_r11_5 + s_r00_5 * s_r00_5);
   out.RH_5_2_0[i] = 2 * 0.4 * (p.r11_5.v - p.r00_5.v);                 out.RH_5_2_0_err[i] = 2 * 0.4 * std::sqrt(s_r11_5 * s_r11_5 + s_r00_5 * s_r00_5);
-  out.RH_5_2_1[i] =  2 * kSqrt12Over5 * p.re_r10_5.v;                  out.RH_5_2_1_err[i] = 2 * kSqrt12Over5 * s_re_r10_5;
+  out.RH_5_2_1[i] =  -2 * kSqrt12Over5 * p.re_r10_5.v;                  out.RH_5_2_1_err[i] = 2 * kSqrt12Over5 * s_re_r10_5;
   out.RH_5_2_2[i] = 2 * kSqrt6Over5 * p.r1m1_5.v;                     out.RH_5_2_2_err[i] = 2 * kSqrt6Over5 * s_r1m1_5;
 
-  out.RH_6_2_1[i] =  2 * kSqrt12Over5 * p.im_r10_6.v;              out.RH_6_2_1_err[i] = 2 * kSqrt12Over5 * s_im_r10_6;
+  out.RH_6_2_1[i] =  -2 * kSqrt12Over5 * p.im_r10_6.v;              out.RH_6_2_1_err[i] = 2 * kSqrt12Over5 * s_im_r10_6;
   out.RH_6_2_2[i] = 2 * kSqrt6Over5 * p.im_r1m1_6.v;              out.RH_6_2_2_err[i] = 2 * kSqrt6Over5 * s_im_r1m1_6;
-  out.RH_7_2_1[i] =  2 * kSqrt12Over5 * p.im_r10_7.v;              out.RH_7_2_1_err[i] = 2 * kSqrt12Over5 * s_im_r10_7;
+  out.RH_7_2_1[i] =  -2 * kSqrt12Over5 * p.im_r10_7.v;              out.RH_7_2_1_err[i] = 2 * kSqrt12Over5 * s_im_r10_7;
   out.RH_7_2_2[i] = 2 * kSqrt6Over5 * p.im_r1m1_7.v;              out.RH_7_2_2_err[i] = 2 * kSqrt6Over5 * s_im_r1m1_7;
 
-  out.RH_8_0_0[i] =  2 * (2.0 * p.r11_8.v + p.r00_8.v);                out.RH_8_0_0_err[i] = 2 * std::sqrt(4.0 * s_r11_8 * s_r11_8 + s_r00_8 * s_r00_8);
+  out.RH_8_0_0[i] =  -2 * (2.0 * p.r11_8.v + p.r00_8.v);                out.RH_8_0_0_err[i] = 2 * std::sqrt(4.0 * s_r11_8 * s_r11_8 + s_r00_8 * s_r00_8);
   out.RH_8_2_0[i] = 2 * 0.4 * (p.r11_8.v - p.r00_8.v);                 out.RH_8_2_0_err[i] = 2 * 0.4 * std::sqrt(s_r11_8 * s_r11_8 + s_r00_8 * s_r00_8);
-  out.RH_8_2_1[i] =  2 * kSqrt12Over5 * p.re_r10_8.v;                  out.RH_8_2_1_err[i] = 2 * kSqrt12Over5 * s_re_r10_8;
+  out.RH_8_2_1[i] =  -2 * kSqrt12Over5 * p.re_r10_8.v;                  out.RH_8_2_1_err[i] = 2 * kSqrt12Over5 * s_re_r10_8;
   out.RH_8_2_2[i] = 2 * kSqrt6Over5 * p.r1m1_8.v;                     out.RH_8_2_2_err[i] = 2 * kSqrt6Over5 * s_r1m1_8;
 }
 
@@ -225,21 +225,33 @@ static DatasetSpec GetDatasetSpec(const std::string& requestedKey) {
     ds.bins = {
       SDMEsTable{
         VE(0.164,0.034,0.022), VE(0.005,0.021,0.004), VE(-0.004,0.032,0.000),
-        VE(-0.032,0.050,0.032), VE(-0.005,0.032,0.013), VE(0.012,0.030,0.012), VE(0.009,0.049,0.011), VE(0.044,0.096,0.008), VE(-0.147,0.210,0.039),
-        VE(-0.074,0.020,0.021), VE(-0.047,0.024,0.007), VE(0.070,0.025,0.013), VE(-0.326,0.223,0.058), VE(0.276,0.171,0.049), VE(-0.507,0.212,0.093),
-        VE(0.063,0.040,0.015), VE(0.074,0.153,0.013), VE(0.172,0.048,0.027), VE(0.038,0.016,0.018), VE(-0.062,0.015,0.012), VE(0.163,0.139,0.030), VE(0.088,0.143,0.021), VE(0.031,0.029,0.001)
+        VE(-0.032,0.050,0.032), VE(-0.005,0.032,0.013), VE(0.012,0.030,0.012), VE(0.009,0.049,0.011),
+        VE(0.044,0.096,0.008), VE(-0.147,0.210,0.039),
+        VE(-0.074,0.020,0.021), VE(-0.047,0.024,0.007),
+        VE(0.070,0.025,0.013), VE(-0.326,0.223,0.058), VE(0.276,0.171,0.049), VE(-0.507,0.212,0.093),
+        VE(0.063,0.040,0.015), VE(0.074,0.153,0.013),
+        VE(0.172,0.048,0.027), VE(0.038,0.016,0.018),
+        VE(-0.062,0.015,0.012), VE(0.163,0.139,0.030), VE(0.088,0.143,0.021), VE(0.031,0.029,0.001)
       },
       SDMEsTable{
         VE(0.166,0.030,0.044), VE(-0.060,0.020,0.011), VE(-0.023,0.031,0.003),
-        VE(-0.175,0.049,0.037), VE(-0.090,0.031,0.012), VE(0.042,0.030,0.003), VE(0.039,0.049,0.013), VE(0.047,0.076,0.009), VE(0.035,0.196,0.026),
-        VE(-0.050,0.020,0.012), VE(-0.078,0.025,0.021), VE(-0.015,0.024,0.017), VE(-0.161,0.198,0.030), VE(-0.120,0.155,0.021), VE(-0.026,0.188,0.005),
-        VE(-0.037,0.041,0.012), VE(-0.110,0.131,0.021), VE(0.133,0.050,0.043), VE(0.022,0.015,0.010), VE(-0.069,0.012,0.014), VE(-0.006,0.125,0.009), VE(0.078,0.137,0.028), VE(0.029,0.025,0.012)
+        VE(-0.175,0.049,0.037), VE(-0.090,0.031,0.012), VE(0.042,0.030,0.003), VE(0.039,0.049,0.013),
+        VE(0.047,0.076,0.009), VE(0.035,0.196,0.026),
+        VE(-0.050,0.020,0.012), VE(-0.078,0.025,0.021),
+        VE(-0.015,0.024,0.017), VE(-0.161,0.198,0.030), VE(-0.120,0.155,0.021), VE(-0.026,0.188,0.005),
+        VE(-0.037,0.041,0.012), VE(-0.110,0.131,0.021),
+        VE(0.133,0.050,0.043), VE(0.022,0.015,0.010),
+        VE(-0.069,0.012,0.014), VE(-0.006,0.125,0.009), VE(0.078,0.137,0.028), VE(0.029,0.025,0.012)
       },
       SDMEsTable{
         VE(0.179,0.031,0.036), VE(0.016,0.019,0.022), VE(0.008,0.031,0.014),
-        VE(-0.314,0.053,0.090), VE(0.073,0.034,0.016), VE(0.036,0.034,0.016), VE(-0.032,0.053,0.015), VE(0.073,0.076,0.018), VE(-0.197,0.171,0.045),
-        VE(-0.070,0.021,0.029), VE(0.008,0.025,0.009), VE(0.043,0.026,0.026), VE(0.046,0.204,0.023), VE(-0.312,0.144,0.080), VE(0.185,0.178,0.063),
-        VE(0.003,0.044,0.012), VE(0.088,0.124,0.024), VE(0.163,0.057,0.029), VE(0.053,0.015,0.022), VE(-0.046,0.014,0.013), VE(0.170,0.128,0.042), VE(0.280,0.119,0.067), VE(0.068,0.027,0.016)
+        VE(-0.314,0.053,0.090), VE(0.073,0.034,0.016), VE(0.036,0.034,0.016), VE(-0.032,0.053,0.015),
+        VE(0.073,0.076,0.018), VE(-0.197,0.171,0.045),
+        VE(-0.070,0.021,0.029), VE(0.008,0.025,0.009), VE(0.043,0.026,0.026), VE(0.046,0.204,0.023),
+        VE(-0.312,0.144,0.080), VE(0.185,0.178,0.063),
+        VE(0.003,0.044,0.012), VE(0.088,0.124,0.024),
+        VE(0.163,0.057,0.029), VE(0.053,0.015,0.022), VE(-0.046,0.014,0.013), VE(0.170,0.128,0.042),
+        VE(0.280,0.119,0.067), VE(0.068,0.027,0.016)
       }
     };
     return ds;
@@ -349,47 +361,47 @@ void MakeLeptoMoments(const char* dataset = "e_rho",
 
   br("Q2", out.Q2);
   br("RH04_0_0", out.RH04_0_0); br("RH04_0_0_err", out.RH04_0_0_err);
-  br("RH04_1_0", out.RH04_1_0); br("RH04_1_0_err", out.RH04_1_0_err);
-  br("RH04_1_1", out.RH04_1_1); br("RH04_1_1_err", out.RH04_1_1_err);
+  // br("RH04_1_0", out.RH04_1_0); br("RH04_1_0_err", out.RH04_1_0_err);
+  // br("RH04_1_1", out.RH04_1_1); br("RH04_1_1_err", out.RH04_1_1_err);
   br("RH04_2_0", out.RH04_2_0); br("RH04_2_0_err", out.RH04_2_0_err);
   br("RH04_2_1", out.RH04_2_1); br("RH04_2_1_err", out.RH04_2_1_err);
   br("RH04_2_2", out.RH04_2_2); br("RH04_2_2_err", out.RH04_2_2_err);
 
   br("RH_1_0_0", out.RH_1_0_0); br("RH_1_0_0_err", out.RH_1_0_0_err);
-  br("RH_1_1_0", out.RH_1_1_0); br("RH_1_1_0_err", out.RH_1_1_0_err);
-  br("RH_1_1_1", out.RH_1_1_1); br("RH_1_1_1_err", out.RH_1_1_1_err);
+  // br("RH_1_1_0", out.RH_1_1_0); br("RH_1_1_0_err", out.RH_1_1_0_err);
+  // br("RH_1_1_1", out.RH_1_1_1); br("RH_1_1_1_err", out.RH_1_1_1_err);
   br("RH_1_2_0", out.RH_1_2_0); br("RH_1_2_0_err", out.RH_1_2_0_err);
   br("RH_1_2_1", out.RH_1_2_1); br("RH_1_2_1_err", out.RH_1_2_1_err);
   br("RH_1_2_2", out.RH_1_2_2); br("RH_1_2_2_err", out.RH_1_2_2_err);
-
-  br("RH_2_1_0", out.RH_2_1_0); br("RH_2_1_0_err", out.RH_2_1_0_err);
-  br("RH_2_1_1", out.RH_2_1_1); br("RH_2_1_1_err", out.RH_2_1_1_err);
+  //
+  // br("RH_2_1_0", out.RH_2_1_0); br("RH_2_1_0_err", out.RH_2_1_0_err);
+  // br("RH_2_1_1", out.RH_2_1_1); br("RH_2_1_1_err", out.RH_2_1_1_err);
   br("RH_2_2_1", out.RH_2_2_1); br("RH_2_2_1_err", out.RH_2_2_1_err);
   br("RH_2_2_2", out.RH_2_2_2); br("RH_2_2_2_err", out.RH_2_2_2_err);
-  br("RH_3_1_0", out.RH_3_1_0); br("RH_3_1_0_err", out.RH_3_1_0_err);
-  br("RH_3_1_1", out.RH_3_1_1); br("RH_3_1_1_err", out.RH_3_1_1_err);
+  // br("RH_3_1_0", out.RH_3_1_0); br("RH_3_1_0_err", out.RH_3_1_0_err);
+  // br("RH_3_1_1", out.RH_3_1_1); br("RH_3_1_1_err", out.RH_3_1_1_err);
   br("RH_3_2_1", out.RH_3_2_1); br("RH_3_2_1_err", out.RH_3_2_1_err);
   br("RH_3_2_2", out.RH_3_2_2); br("RH_3_2_2_err", out.RH_3_2_2_err);
 
   br("RH_5_0_0", out.RH_5_0_0); br("RH_5_0_0_err", out.RH_5_0_0_err);
-  br("RH_5_1_0", out.RH_5_1_0); br("RH_5_1_0_err", out.RH_5_1_0_err);
-  br("RH_5_1_1", out.RH_5_1_1); br("RH_5_1_1_err", out.RH_5_1_1_err);
+  // br("RH_5_1_0", out.RH_5_1_0); br("RH_5_1_0_err", out.RH_5_1_0_err);
+  // br("RH_5_1_1", out.RH_5_1_1); br("RH_5_1_1_err", out.RH_5_1_1_err);
   br("RH_5_2_0", out.RH_5_2_0); br("RH_5_2_0_err", out.RH_5_2_0_err);
   br("RH_5_2_1", out.RH_5_2_1); br("RH_5_2_1_err", out.RH_5_2_1_err);
   br("RH_5_2_2", out.RH_5_2_2); br("RH_5_2_2_err", out.RH_5_2_2_err);
 
-  br("RH_6_1_0", out.RH_6_1_0); br("RH_6_1_0_err", out.RH_6_1_0_err);
-  br("RH_6_1_1", out.RH_6_1_1); br("RH_6_1_1_err", out.RH_6_1_1_err);
+  // br("RH_6_1_0", out.RH_6_1_0); br("RH_6_1_0_err", out.RH_6_1_0_err);
+  // br("RH_6_1_1", out.RH_6_1_1); br("RH_6_1_1_err", out.RH_6_1_1_err);
   br("RH_6_2_1", out.RH_6_2_1); br("RH_6_2_1_err", out.RH_6_2_1_err);
   br("RH_6_2_2", out.RH_6_2_2); br("RH_6_2_2_err", out.RH_6_2_2_err);
-  br("RH_7_1_0", out.RH_7_1_0); br("RH_7_1_0_err", out.RH_7_1_0_err);
-  br("RH_7_1_1", out.RH_7_1_1); br("RH_7_1_1_err", out.RH_7_1_1_err);
+  // br("RH_7_1_0", out.RH_7_1_0); br("RH_7_1_0_err", out.RH_7_1_0_err);
+  // br("RH_7_1_1", out.RH_7_1_1); br("RH_7_1_1_err", out.RH_7_1_1_err);
   br("RH_7_2_1", out.RH_7_2_1); br("RH_7_2_1_err", out.RH_7_2_1_err);
   br("RH_7_2_2", out.RH_7_2_2); br("RH_7_2_2_err", out.RH_7_2_2_err);
 
   br("RH_8_0_0", out.RH_8_0_0); br("RH_8_0_0_err", out.RH_8_0_0_err);
-  br("RH_8_1_0", out.RH_8_1_0); br("RH_8_1_0_err", out.RH_8_1_0_err);
-  br("RH_8_1_1", out.RH_8_1_1); br("RH_8_1_1_err", out.RH_8_1_1_err);
+  // br("RH_8_1_0", out.RH_8_1_0); br("RH_8_1_0_err", out.RH_8_1_0_err);
+  // br("RH_8_1_1", out.RH_8_1_1); br("RH_8_1_1_err", out.RH_8_1_1_err);
   br("RH_8_2_0", out.RH_8_2_0); br("RH_8_2_0_err", out.RH_8_2_0_err);
   br("RH_8_2_1", out.RH_8_2_1); br("RH_8_2_1_err", out.RH_8_2_1_err);
   br("RH_8_2_2", out.RH_8_2_2); br("RH_8_2_2_err", out.RH_8_2_2_err);

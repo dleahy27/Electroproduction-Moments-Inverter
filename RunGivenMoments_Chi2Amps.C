@@ -26,6 +26,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -76,19 +77,19 @@ struct ParDef {
 };
 
 struct FitConfig {
-  int lmax = 2;
-  int mmax = 2;
+  int lmax = 1;
+  int mmax = 1;
   bool useNegRef = true;
   bool onlyEven = false;
   bool negm = true;
-  bool enforceLongitudinalParity = false;
+  bool enforceLongitudinalParity = true;
 
   double epsilon = 1.0;
 
   unsigned nStarts = 10000;
-  unsigned maxCalls = 50000;
-  unsigned maxIters = 50000;
-  double tolerance = 1e-6;
+  unsigned maxCalls = 10000;
+  unsigned maxIters = 10000;
+  double tolerance = 1e-3;
   int strategy = 2;
   int printLevel = 0;
   bool runHesse = true;
@@ -96,7 +97,7 @@ struct FitConfig {
 
 
   bool verbose = true;
-  bool useNumericalGradient = true;
+  bool useNumericalGradient = false;
 
   bool useMCMCPreScan = false;
   unsigned mcmcSteps = 2000;
@@ -109,6 +110,10 @@ struct FitConfig {
   double magnitudeMin = 0.0;
   double magnitudeMax = 5.0;
   bool photoProduction = false;
+
+  // Electroproduction normalisation: always use the highest-l,m a_T wave
+  // as a derived amplitude rather than an independent fit parameter.
+  double normalisationMomentTarget = 2.0;
 
   std::string momentsFile;
   std::string momentsTree;
@@ -139,24 +144,76 @@ struct MomentModel {
   std::vector<Term> terms;
 };
 
-static double ReadArrayBranchElement(TTree* t, const char* branchName, int bin, bool isErr) {
+static bool TryReadArrayBranchElement(TTree* t,
+                                      const char* branchName,
+                                      int bin,
+                                      bool isErr,
+                                      double& value) {
   TBranch* branch = t->GetBranch(branchName);
-  if (!branch) return isErr ? 0.001 : 0.0;
+  if (!branch) {
+    value = isErr ? 0.001 : 0.0;
+    return isErr;
+  }
 
   TLeaf* leaf = branch->GetLeaf(branchName);
   if (!leaf && branch->GetListOfLeaves() && branch->GetListOfLeaves()->GetEntries() > 0) {
     leaf = static_cast<TLeaf*>(branch->GetListOfLeaves()->At(0));
   }
-  if (!leaf) return isErr ? 0.001 : 0.0;
+  if (!leaf) {
+    value = isErr ? 0.001 : 0.0;
+    return isErr;
+  }
 
   t->GetEntry(0);
   const int nData = leaf->GetNdata();
-  if (nData <= 1) return leaf->GetValue(0);
-  if (bin < 0 || bin >= nData) throw std::runtime_error(std::string("Bin out of range for branch ") + branchName);
-  return leaf->GetValue(bin);
+  if (nData <= 1) {
+    value = leaf->GetValue(0);
+    return true;
+  }
+
+  if (bin < 0 || bin >= nData) {
+    value = isErr ? 0.001 : 0.0;
+    return isErr;
+  }
+
+  value = leaf->GetValue(bin);
+  return true;
+}
+
+static double ReadArrayBranchElement(TTree* t, const char* branchName, int bin, bool isErr) {
+  double value = isErr ? 0.001 : 0.0;
+  if (TryReadArrayBranchElement(t, branchName, bin, isErr, value)) return value;
+  throw std::runtime_error(std::string("Bin out of range for branch ") + branchName);
 }
 
 // Input file handling below here
+
+static bool BranchExists(TTree* t, const std::string& branchName) {
+  return t && t->GetBranch(branchName.c_str());
+}
+
+static bool ResolveMomentBranchNames(TTree* t,
+                                     const char* requestedVal,
+                                     const char* requestedErr,
+                                     std::string& valName,
+                                     std::string& errName) {
+  valName = requestedVal;
+  errName = requestedErr;
+  if (BranchExists(t, valName)) return true;
+
+  // Allow either the old RH/RH04 input names or the slimmer H/H04 names.
+  if (valName.rfind("RH04_", 0) == 0) {
+    std::string altVal = "H04_" + valName.substr(5);
+    std::string altErr = "H04_" + errName.substr(5);
+    if (BranchExists(t, altVal)) { valName = altVal; errName = altErr; return true; }
+  }
+  if (valName.rfind("RH_", 0) == 0) {
+    std::string altVal = "H_" + valName.substr(3);
+    std::string altErr = "H_" + errName.substr(3);
+    if (BranchExists(t, altVal)) { valName = altVal; errName = altErr; return true; }
+  }
+  return false;
+}
 
 static std::vector<ObservedMoment> BuildObservedMoments(const std::string& inFile,
                                                                            const std::string& treeName,
@@ -170,30 +227,53 @@ static std::vector<ObservedMoment> BuildObservedMoments(const std::string& inFil
   if (bin < 0 || bin >= kNumBins) throw std::runtime_error("Bin out of range");
 
   std::vector<ObservedMoment> obs;
-  obs.reserve(40);
+  obs.reserve(120);
   if (cfg.photoProduction) obs.reserve(18); // Photoproduction has max 12 elements
-  auto add = [&](int alpha, int L, int M, const char* valName, const char* errName, bool mixed04) {
+  auto add = [&](int alpha, int L, int M, const char* valNameIn, const char* errNameIn, bool mixed04) {
+    std::string valName, errName;
+    if (!ResolveMomentBranchNames(t, valNameIn, errNameIn, valName, errName)) return;
+
+    double val = 0.0;
+    double sig = 0.001;
+    if (!TryReadArrayBranchElement(t, valName.c_str(), bin, false, val)) {
+      if (cfg.verbose) {
+        std::cout << "Skipping " << valName
+                  << " because bin " << bin
+                  << " is not present in that branch." << std::endl;
+      }
+      return;
+    }
+    if (!TryReadArrayBranchElement(t, errName.c_str(), bin, true, sig)) sig = 0.001;
+    if (!(sig > 0.0) || !std::isfinite(sig)) sig = 0.001;
+
     ObservedMoment m;
-    m.alpha = alpha; m.L = L; m.M = M; m.value = ReadArrayBranchElement(t, valName, bin, false); m.sigma = ReadArrayBranchElement(t, errName, bin, true); m.isMixed04 = mixed04; m.name = valName;
+    m.alpha = alpha;
+    m.L = L;
+    m.M = M;
+    m.value = val;
+    m.sigma = sig;
+    m.isMixed04 = mixed04;
+    m.name = valName;
     obs.push_back(std::move(m));
   };
 
+  //! Make this bit loop using max L m etc etc, well if I do not end up moving to brufit that is
   if (cfg.photoProduction) {
     add(0,0,0,"RH_0_0_0","RH_0_0_0_err",false);
-    add(0,1,0,"RH_0_1_0","RH_0_1_0_err",false);
-    add(0,1,1,"RH_0_1_1","RH_0_1_1_err",false);
+    // add(0,1,0,"RH_0_1_0","RH_0_1_0_err",false);
+    // add(0,1,1,"RH_0_1_1","RH_0_1_1_err",false);
     add(0,2,0,"RH_0_2_0","RH_0_2_0_err",false);
     add(0,2,1,"RH_0_2_1","RH_0_2_1_err",false);
     add(0,2,2,"RH_0_2_2","RH_0_2_2_err",false);
 
     add(1,0,0,"RH_1_0_0","RH_1_0_0_err",false);
-    add(1,1,0,"RH_1_1_0","RH_1_1_0_err",false);
-    add(1,1,1,"RH_1_1_1","RH_1_1_1_err",false);
+    // add(1,1,0,"RH_1_1_0","RH_1_1_0_err",false);
+    // add(1,1,1,"RH_1_1_1","RH_1_1_1_err",false);
     add(1,2,0,"RH_1_2_0","RH_1_2_0_err",false);
     add(1,2,1,"RH_1_2_1","RH_1_2_1_err",false);
     add(1,2,2,"RH_1_2_2","RH_1_2_2_err",false);
 
-    add(2,1,1,"RH_2_1_1","RH_2_1_1_err",false);
+    // add(2,1,1,"RH_2_1_1","RH_2_1_1_err",false);
     add(2,2,1,"RH_2_2_1","RH_2_2_1_err",false);
     add(2,2,2,"RH_2_2_2","RH_2_2_2_err",false);
 
@@ -205,114 +285,114 @@ static std::vector<ObservedMoment> BuildObservedMoments(const std::string& inFil
     return obs;
   }
 
-  // Electroproduction / full moment set. RH04_0_0 is read directly from the input file.
-  add(0,0,0,"RH04_0_0","RH04_0_0_err",true);
-  add(0,1,0,"RH04_1_0","RH04_1_0_err",true);
-  add(0,1,1,"RH04_1_1","RH04_1_1_err",true);
+  // Electroproduction / full moment set. H04_0_0 is always enforced by
+  // amplitude normalisation and is therefore not included in the chi2.
+  // add(0,1,0,"RH04_1_0","RH04_1_0_err",true);
+  // add(0,1,1,"RH04_1_1","RH04_1_1_err",true);
   add(0,2,0,"RH04_2_0","RH04_2_0_err",true);
   add(0,2,1,"RH04_2_1","RH04_2_1_err",true);
   add(0,2,2,"RH04_2_2","RH04_2_2_err",true);
-  add(0,3,0,"RH04_3_0","RH04_3_0_err",true);
-  add(0,3,1,"RH04_3_1","RH04_3_1_err",true);
-  add(0,3,2,"RH04_3_2","RH04_3_2_err",true);
-  add(0,3,3,"RH04_3_3","RH04_3_3_err",true);
-  add(0,4,0,"RH04_4_0","RH04_4_0_err",true);
-  add(0,4,1,"RH04_4_1","RH04_4_1_err",true);
-  add(0,4,2,"RH04_4_2","RH04_4_2_err",true);
-  add(0,4,3,"RH04_4_3","RH04_4_3_err",true);
-  add(0,4,4,"RH04_4_4","RH04_4_4_err",true);
+  // add(0,3,0,"RH04_3_0","RH04_3_0_err",true);
+  // add(0,3,1,"RH04_3_1","RH04_3_1_err",true);
+  // add(0,3,2,"RH04_3_2","RH04_3_2_err",true);
+  // add(0,3,3,"RH04_3_3","RH04_3_3_err",true);
+  // add(0,4,0,"RH04_4_0","RH04_4_0_err",true);
+  // add(0,4,1,"RH04_4_1","RH04_4_1_err",true);
+  // add(0,4,2,"RH04_4_2","RH04_4_2_err",true);
+  // add(0,4,3,"RH04_4_3","RH04_4_3_err",true);
+  // add(0,4,4,"RH04_4_4","RH04_4_4_err",true);
 
   add(1,0,0,"RH_1_0_0","RH_1_0_0_err",false);
-  add(1,1,0,"RH_1_1_0","RH_1_1_0_err",false);
-  add(1,1,1,"RH_1_1_1","RH_1_1_1_err",false);
+  // add(1,1,0,"RH_1_1_0","RH_1_1_0_err",false);
+  // add(1,1,1,"RH_1_1_1","RH_1_1_1_err",false);
   add(1,2,0,"RH_1_2_0","RH_1_2_0_err",false);
   add(1,2,1,"RH_1_2_1","RH_1_2_1_err",false);
   add(1,2,2,"RH_1_2_2","RH_1_2_2_err",false);
-  add(1,3,0,"RH_1_3_0","RH_1_3_0_err",false);
-  add(1,3,1,"RH_1_3_1","RH_1_3_1_err",false);
-  add(1,3,2,"RH_1_3_2","RH_1_3_2_err",false);
-  add(1,3,3,"RH_1_3_3","RH_1_3_3_err",false);
-  add(1,4,0,"RH_1_4_0","RH_1_4_0_err",false);
-  add(1,4,1,"RH_1_4_1","RH_1_4_1_err",false);
-  add(1,4,2,"RH_1_4_2","RH_1_4_2_err",false);
-  add(1,4,3,"RH_1_4_3","RH_1_4_3_err",false);
-  add(1,4,4,"RH_1_4_4","RH_1_4_4_err",false);
+  // add(1,3,0,"RH_1_3_0","RH_1_3_0_err",false);
+  // add(1,3,1,"RH_1_3_1","RH_1_3_1_err",false);
+  // add(1,3,2,"RH_1_3_2","RH_1_3_2_err",false);
+  // add(1,3,3,"RH_1_3_3","RH_1_3_3_err",false);
+  // add(1,4,0,"RH_1_4_0","RH_1_4_0_err",false);
+  // add(1,4,1,"RH_1_4_1","RH_1_4_1_err",false);
+  // add(1,4,2,"RH_1_4_2","RH_1_4_2_err",false);
+  // add(1,4,3,"RH_1_4_3","RH_1_4_3_err",false);
+  // add(1,4,4,"RH_1_4_4","RH_1_4_4_err",false);
 
-  add(2,1,1,"RH_2_1_1","RH_2_1_1_err",false);
+  // add(2,1,1,"RH_2_1_1","RH_2_1_1_err",false);
   add(2,2,1,"RH_2_2_1","RH_2_2_1_err",false);
   add(2,2,2,"RH_2_2_2","RH_2_2_2_err",false);
-  add(2,3,1,"RH_2_3_1","RH_2_3_1_err",false);
-  add(2,3,2,"RH_2_3_2","RH_2_3_2_err",false);
-  add(2,3,3,"RH_2_3_3","RH_2_3_3_err",false);
-  add(2,4,1,"RH_2_4_1","RH_2_4_1_err",false);
-  add(2,4,2,"RH_2_4_2","RH_2_4_2_err",false);
-  add(2,4,3,"RH_2_4_3","RH_2_4_3_err",false);
-  add(2,4,4,"RH_2_4_4","RH_2_4_4_err",false);
+  // add(2,3,1,"RH_2_3_1","RH_2_3_1_err",false);
+  // add(2,3,2,"RH_2_3_2","RH_2_3_2_err",false);
+  // add(2,3,3,"RH_2_3_3","RH_2_3_3_err",false);
+  // add(2,4,1,"RH_2_4_1","RH_2_4_1_err",false);
+  // add(2,4,2,"RH_2_4_2","RH_2_4_2_err",false);
+  // add(2,4,3,"RH_2_4_3","RH_2_4_3_err",false);
+  // add(2,4,4,"RH_2_4_4","RH_2_4_4_err",false);
 
-  add(3,1,1,"RH_3_1_1","RH_3_1_1_err",false);
+  // add(3,1,1,"RH_3_1_1","RH_3_1_1_err",false);
   add(3,2,1,"RH_3_2_1","RH_3_2_1_err",false);
   add(3,2,2,"RH_3_2_2","RH_3_2_2_err",false);
-  add(3,3,1,"RH_3_3_1","RH_3_3_1_err",false);
-  add(3,3,2,"RH_3_3_2","RH_3_3_2_err",false);
-  add(3,3,3,"RH_3_3_3","RH_3_3_3_err",false);
-  add(3,4,1,"RH_3_4_1","RH_3_4_1_err",false);
-  add(3,4,2,"RH_3_4_2","RH_3_4_2_err",false);
-  add(3,4,3,"RH_3_4_3","RH_3_4_3_err",false);
-  add(3,4,4,"RH_3_4_4","RH_3_4_4_err",false);
+  // add(3,3,1,"RH_3_3_1","RH_3_3_1_err",false);
+  // add(3,3,2,"RH_3_3_2","RH_3_3_2_err",false);
+  // add(3,3,3,"RH_3_3_3","RH_3_3_3_err",false);
+  // add(3,4,1,"RH_3_4_1","RH_3_4_1_err",false);
+  // add(3,4,2,"RH_3_4_2","RH_3_4_2_err",false);
+  // add(3,4,3,"RH_3_4_3","RH_3_4_3_err",false);
+  // add(3,4,4,"RH_3_4_4","RH_3_4_4_err",false);
 
   add(5,0,0,"RH_5_0_0","RH_5_0_0_err",false);
-  add(5,1,0,"RH_5_1_0","RH_5_1_0_err",false);
-  add(5,1,1,"RH_5_1_1","RH_5_1_1_err",false);
+  // add(5,1,0,"RH_5_1_0","RH_5_1_0_err",false);
+  // add(5,1,1,"RH_5_1_1","RH_5_1_1_err",false);
   add(5,2,0,"RH_5_2_0","RH_5_2_0_err",false);
   add(5,2,1,"RH_5_2_1","RH_5_2_1_err",false);
   add(5,2,2,"RH_5_2_2","RH_5_2_2_err",false);
-  add(5,3,0,"RH_5_3_0","RH_5_3_0_err",false);
-  add(5,3,1,"RH_5_3_1","RH_5_3_1_err",false);
-  add(5,3,2,"RH_5_3_2","RH_5_3_2_err",false);
-  add(5,3,3,"RH_5_3_3","RH_5_3_3_err",false);
-  add(5,4,0,"RH_5_4_0","RH_5_4_0_err",false);
-  add(5,4,1,"RH_5_4_1","RH_5_4_1_err",false);
-  add(5,4,2,"RH_5_4_2","RH_5_4_2_err",false);
-  add(5,4,3,"RH_5_4_3","RH_5_4_3_err",false);
-  add(5,4,4,"RH_5_4_4","RH_5_4_4_err",false);
-
-  add(6,1,1,"RH_6_1_1","RH_6_1_1_err",false);
+  // add(5,3,0,"RH_5_3_0","RH_5_3_0_err",false);
+  // add(5,3,1,"RH_5_3_1","RH_5_3_1_err",false);
+  // add(5,3,2,"RH_5_3_2","RH_5_3_2_err",false);
+  // add(5,3,3,"RH_5_3_3","RH_5_3_3_err",false);
+  // add(5,4,0,"RH_5_4_0","RH_5_4_0_err",false);
+  // add(5,4,1,"RH_5_4_1","RH_5_4_1_err",false);
+  // add(5,4,2,"RH_5_4_2","RH_5_4_2_err",false);
+  // add(5,4,3,"RH_5_4_3","RH_5_4_3_err",false);
+  // add(5,4,4,"RH_5_4_4","RH_5_4_4_err",false);
+  //
+  // add(6,1,1,"RH_6_1_1","RH_6_1_1_err",false);
   add(6,2,1,"RH_6_2_1","RH_6_2_1_err",false);
   add(6,2,2,"RH_6_2_2","RH_6_2_2_err",false);
-  add(6,3,1,"RH_6_3_1","RH_6_3_1_err",false);
-  add(6,3,2,"RH_6_3_2","RH_6_3_2_err",false);
-  add(6,3,3,"RH_6_3_3","RH_6_3_3_err",false);
-  add(6,4,1,"RH_6_4_1","RH_6_4_1_err",false);
-  add(6,4,2,"RH_6_4_2","RH_6_4_2_err",false);
-  add(6,4,3,"RH_6_4_3","RH_6_4_3_err",false);
-  add(6,4,4,"RH_6_4_4","RH_6_4_4_err",false);
+  // add(6,3,1,"RH_6_3_1","RH_6_3_1_err",false);
+  // add(6,3,2,"RH_6_3_2","RH_6_3_2_err",false);
+  // add(6,3,3,"RH_6_3_3","RH_6_3_3_err",false);
+  // add(6,4,1,"RH_6_4_1","RH_6_4_1_err",false);
+  // add(6,4,2,"RH_6_4_2","RH_6_4_2_err",false);
+  // add(6,4,3,"RH_6_4_3","RH_6_4_3_err",false);
+  // add(6,4,4,"RH_6_4_4","RH_6_4_4_err",false);
 
-  add(7,1,1,"RH_7_1_1","RH_7_1_1_err",false);
+  // add(7,1,1,"RH_7_1_1","RH_7_1_1_err",false);
   add(7,2,1,"RH_7_2_1","RH_7_2_1_err",false);
   add(7,2,2,"RH_7_2_2","RH_7_2_2_err",false);
-  add(7,3,1,"RH_7_3_1","RH_7_3_1_err",false);
-  add(7,3,2,"RH_7_3_2","RH_7_3_2_err",false);
-  add(7,3,3,"RH_7_3_3","RH_7_3_3_err",false);
-  add(7,4,1,"RH_7_4_1","RH_7_4_1_err",false);
-  add(7,4,2,"RH_7_4_2","RH_7_4_2_err",false);
-  add(7,4,3,"RH_7_4_3","RH_7_4_3_err",false);
-  add(7,4,4,"RH_7_4_4","RH_7_4_4_err",false);
+  // add(7,3,1,"RH_7_3_1","RH_7_3_1_err",false);
+  // add(7,3,2,"RH_7_3_2","RH_7_3_2_err",false);
+  // add(7,3,3,"RH_7_3_3","RH_7_3_3_err",false);
+  // add(7,4,1,"RH_7_4_1","RH_7_4_1_err",false);
+  // add(7,4,2,"RH_7_4_2","RH_7_4_2_err",false);
+  // add(7,4,3,"RH_7_4_3","RH_7_4_3_err",false);
+  // add(7,4,4,"RH_7_4_4","RH_7_4_4_err",false);
 
   add(8,0,0,"RH_8_0_0","RH_8_0_0_err",false);
-  add(8,1,0,"RH_8_1_0","RH_8_1_0_err",false);
-  add(8,1,1,"RH_8_1_1","RH_8_1_1_err",false);
+  // add(8,1,0,"RH_8_1_0","RH_8_1_0_err",false);
+  // add(8,1,1,"RH_8_1_1","RH_8_1_1_err",false);
   add(8,2,0,"RH_8_2_0","RH_8_2_0_err",false);
   add(8,2,1,"RH_8_2_1","RH_8_2_1_err",false);
   add(8,2,2,"RH_8_2_2","RH_8_2_2_err",false);
-  add(8,3,0,"RH_8_3_0","RH_8_3_0_err",false);
-  add(8,3,1,"RH_8_3_1","RH_8_3_1_err",false);
-  add(8,3,2,"RH_8_3_2","RH_8_3_2_err",false);
-  add(8,3,3,"RH_8_3_3","RH_8_3_3_err",false);
-  add(8,4,0,"RH_8_4_0","RH_8_4_0_err",false);
-  add(8,4,1,"RH_8_4_1","RH_8_4_1_err",false);
-  add(8,4,2,"RH_8_4_2","RH_8_4_2_err",false);
-  add(8,4,3,"RH_8_4_3","RH_8_4_3_err",false);
-  add(8,4,4,"RH_8_4_4","RH_8_4_4_err",false);
+  // add(8,3,0,"RH_8_3_0","RH_8_3_0_err",false);
+  // add(8,3,1,"RH_8_3_1","RH_8_3_1_err",false);
+  // add(8,3,2,"RH_8_3_2","RH_8_3_2_err",false);
+  // add(8,3,3,"RH_8_3_3","RH_8_3_3_err",false);
+  // add(8,4,0,"RH_8_4_0","RH_8_4_0_err",false);
+  // add(8,4,1,"RH_8_4_1","RH_8_4_1_err",false);
+  // add(8,4,2,"RH_8_4_2","RH_8_4_2_err",false);
+  // add(8,4,3,"RH_8_4_3","RH_8_4_3_err",false);
+  // add(8,4,4,"RH_8_4_4","RH_8_4_4_err",false);
 
   return obs;
 }
@@ -378,9 +458,9 @@ static int ReflectivitySign(char refl) {
   return (refl == 'b') ? -1 : +1;
 }
 
-static int LongitudinalParitySign(char refl, int absM) {
+static int LongitudinalParitySign(int refl, int absM) {
   const int mParity = (absM & 1) ? -1 : +1;
-  return ReflectivitySign(refl) * mParity;
+  return refl * mParity;
 }
 
 static bool SkipLongitudinalNegativeM(const FitConfig& cfg, char orient, int m) {
@@ -398,7 +478,7 @@ static std::vector<ParDef> BuildAmplitudePhaseParameters(const FitConfig& cfg) {
     ParDef p;
     p.name = isPhase ? PhiName(refl, orient, l, m) : MagName(refl, orient, l, m);
     p.init = 0.0;
-    p.step = isPhase ? 0.3 : 0.05;
+    p.step = isPhase ? 1.0 : 0.2;
     if (cfg.photoProduction)
     {
       p.low = 0.0; // set to 0 for photoproduction due to ambiguity i.e. one appears in both sides
@@ -436,25 +516,12 @@ static std::vector<ParDef> BuildAmplitudePhaseParameters(const FitConfig& cfg) {
   };
 
   // Fix one transverse reference phase per reflectivity to remove the global phase ambiguity.
-  const int refL = cfg.lmax;
-  const int refM = std::min(cfg.mmax, refL);
-  fixTo(PhiName('a', 'T', 2, 2), 0.0);
-  fixTo(PhiName('b', 'T', 2, 2), 0.0);
+  fixTo(PhiName('a', 'T', 1, 1), 0.0);
+  fixTo(PhiName('b', 'T', 1, 1), 0.0);
 
-  // P-Wave Transveres
-  //fixTo("a_L_1_0", 0.0); fixTo("aphi_L_1_0", 0.0); //fixTo("b_L_1_0", 0.0); fixTo("bphi_L_1_0", 0.0);
-  // fixTo("a_L_1_1", 0.0); fixTo("aphi_L_1_1", 0.0); fixTo("b_L_1_1", 0.0); fixTo("bphi_L_1_1", 0.0);
-  // fixTo("a_L_1_m1", 0.0); fixTo("aphi_L_1_m1", 0.0); fixTo("b_L_1_m1", 0.0); fixTo("bphi_L_1_m1", 0.0);
-
-  // P-Wave Longitudinal
-  //fixTo("a_L_1_0", 0.0); fixTo("aphi_L_1_0", 0.0);
-  //fixTo("b_L_1_0", 0.0); fixTo("bphi_L_1_0", 0.0);
-  //fixTo("a_L_1_1", 0.0); fixTo("aphi_L_1_1", 0.0); fixTo("b_L_1_1", 0.0); fixTo("bphi_L_1_1", 0.0);
-  //fixTo("a_L_1_m1", 0.0); fixTo("aphi_L_1_m1", 0.0); fixTo("b_L_1_m1", 0.0); fixTo("bphi_L_1_m1", 0.0);
-
-  // S-Wave
- // fixTo("b_T_0_0", 0.0); fixTo("a_T_0_0", 0.0); fixTo("a_L_0_0", 0.0); fixTo("b_L_0_0", 0.0);
- // fixTo("bphi_T_0_0", 0.0); fixTo("aphi_T_0_0", 0.0); fixTo("aphi_L_0_0", 0.0); fixTo("bphi_L_0_0", 0.0);
+  // S-Wave is 0
+ fixTo("b_T_0_0", 0.0); fixTo("a_T_0_0", 0.0); fixTo("a_L_0_0", 0.0); fixTo("b_L_0_0", 0.0);
+ fixTo("bphi_T_0_0", 0.0); fixTo("aphi_T_0_0", 0.0); fixTo("aphi_L_0_0", 0.0); fixTo("bphi_L_0_0", 0.0);
 
   if (cfg.photoProduction) {
     for (auto& p : pars) {
@@ -484,25 +551,65 @@ struct BruSelection {
   TrigKind trig = TrigKind::kCos;
 };
 
-static bool ResolveBruSelection(int reflsign, double factor, int l, int m, int lpr, int mpr,
-                                int alpha, bool negm, bool orientSwap, BruSelection& out) {
+static bool ResolveBruSelection(int reflsign, double factor,
+                                int l, int m, int lpr, int mpr,
+                                int alpha, bool negm,
+                                bool orientSwap,
+                                BruSelection& out)
+{
   if (!negm && (m < 0 || mpr < 0)) return false;
+
   out.refl1 = (reflsign == -1) ? 'b' : 'a';
   out.refl2 = (reflsign == -1) ? 'b' : 'a';
 
   out.orient1 = 'T';
   out.orient2 = 'T';
-  if (alpha == 4) out.orient1 = out.orient2 = 'L';
-  if (alpha >= 5) { out.orient1 = 'L'; out.orient2 = 'T'; }
-  if (alpha >= 5 && orientSwap) { out.orient1 = 'T'; out.orient2 = 'L'; }
 
-  int reflfactor = 1;
-  if (alpha == 1 || alpha == 2) reflfactor = reflsign;
-  if (alpha == 8) factor *= -1.0;
+  if (alpha == 4) {
+    out.orient1 = 'L';
+    out.orient2 = 'L';
+  }
 
-  out.coeff = reflfactor * factor;
-  out.l1 = l; out.m1 = m; out.l2 = lpr; out.m2 = mpr;
-  out.trig = (alpha == 3 || alpha == 7 || alpha == 8) ? TrigKind::kSin : TrigKind::kCos;
+  if (alpha >= 5) {
+    out.orient1 = 'L';
+    out.orient2 = 'T';
+  }
+
+  if (alpha >= 5 && orientSwap) {
+    out.orient1 = 'T';
+    out.orient2 = 'L';
+  }
+
+  // There are no independent negative-m longitudinal amplitudes.
+    if(out.orient1=='L'&&m<0){
+      factor*=LongitudinalParitySign(reflsign,m);
+      m=-m;
+    }
+    if(out.orient2=='L'&&mpr<0){
+      factor*=LongitudinalParitySign(reflsign,mpr);
+      mpr=-mpr;
+    }
+
+  // rho^1 and rho^2 carry an overall reflectivity factor.
+
+  if (alpha==1 || alpha==2)
+  {
+    out.coeff = reflsign * factor;
+  }else
+  {
+    out.coeff = factor;
+  }
+
+  out.l1 = l;
+  out.m1 = m;
+  out.l2 = lpr;
+  out.m2 = mpr;
+
+  out.trig =
+      (alpha == 3 || alpha == 7 || alpha == 8)
+          ? TrigKind::kSin
+          : TrigKind::kCos;
+
   return out.coeff != 0.0;
 }
 
@@ -522,6 +629,7 @@ struct EvalContext {
   std::vector<PhasePair> phasePairs;
   int idxH0_00 = -1;
   int idxH4_00 = -1;
+  int normalisedMagFullIdx = -1;
 
   mutable unsigned callCount = 0;
   mutable TTree* iterTree = nullptr;
@@ -542,6 +650,7 @@ struct MCMCResult {
 
 static std::vector<MomentModel> BuildMomentModels(const FitConfig& cfg,
                                                   const std::unordered_map<long long, int>& paramIndex,
+                                                  const std::unordered_set<std::string>& neededMoments,
                                                   std::vector<PhasePair>& phasePairs) {
   std::vector<MomentModel> models;
   const int alphaMax = cfg.photoProduction ? 3 : 8;
@@ -594,24 +703,11 @@ static std::vector<MomentModel> BuildMomentModels(const FitConfig& cfg,
     return it->second;
   };
 
-  auto emit = [&](MomentModel& mm, int reflsign, double factor, int l, int m, int lpr, int mpr, int alpha, bool orientSwap) {
+  auto emit = [&](MomentModel& mm, int reflsign, double factor, int l, int m, int lpr, int mpr, int alpha, bool orientSwap, bool refl_bool = false) {
     BruSelection sel;
     if (!ResolveBruSelection(reflsign, factor, l, m, lpr, mpr, alpha, cfg.negm, orientSwap, sel)) return;
 
-    // Longitudinal parity relates the negative-m amplitude to the positive-m one,
-    // A_m = eps (-1)^m A_-m.  We therefore fit only m >= 0 longitudinal
-    // amplitudes and fold negative-m terms onto the positive-m parameter with the
-    // corresponding sign in the bilinear coefficient.
     double coeff = sel.coeff;
-    auto foldLongitudinalM = [&](char refl, char orient, int& waveM) {
-      if (!cfg.enforceLongitudinalParity || orient != 'L' || waveM >= 0) return;
-      const int absM = -waveM;
-      coeff *= LongitudinalParitySign(refl, absM);
-      waveM = absM;
-    };
-    foldLongitudinalM(sel.refl1, sel.orient1, sel.m1);
-    foldLongitudinalM(sel.refl2, sel.orient2, sel.m2);
-
     Term t;
     t.coeff = coeff;
     t.idxMag1 = paramIdx(sel.refl1, sel.orient1, sel.l1, sel.m1, false);
@@ -620,7 +716,7 @@ static std::vector<MomentModel> BuildMomentModels(const FitConfig& cfg,
     const int idxPhi2 = paramIdx(sel.refl2, sel.orient2, sel.l2, sel.m2, true);
     t.phasePairIdx = getPhasePairIdx(idxPhi1, idxPhi2);
     t.trig = sel.trig;
-    t.ignorePhase = (sel.l1 == sel.l2 && sel.m1 == sel.m2);
+    t.ignorePhase = (sel.orient1 == sel.orient2 && sel.l1 == sel.l2 && sel.m1 == sel.m2);
     mm.terms.push_back(t);
   };
 
@@ -629,9 +725,20 @@ static std::vector<MomentModel> BuildMomentModels(const FitConfig& cfg,
       for (int M = 0; M <= L; ++M)
       {
         MomentModel mm;
-        mm.alpha = alpha; mm.L = L; mm.M = M;
-        mm.name = std::string("H_") + std::to_string(alpha) + "_" + std::to_string(L) + "_" + std::to_string(M);
-        if ((alpha == 2 || alpha == 3 || alpha == 6 || alpha == 7) && M == 0) {
+        mm.alpha = alpha;
+        mm.L = L;
+        mm.M = M;
+        mm.name =
+            std::string("H_")
+            + std::to_string(alpha) + "_"
+            + std::to_string(L) + "_"
+            + std::to_string(M);
+
+        if (!neededMoments.empty() && neededMoments.find(mm.name) == neededMoments.end()) continue;
+
+        if ((alpha == 2 || alpha == 3 ||
+             alpha == 6 || alpha == 7) &&
+            M == 0) {
           models.push_back(std::move(mm));
           continue;
         }
@@ -640,107 +747,376 @@ static std::vector<MomentModel> BuildMomentModels(const FitConfig& cfg,
         {
           const int il = w1.first;
           const int im = w1.second;
+
           for (const auto& w2 : waves)
           {
             const int ilpr = w2.first;
             const int impr = w2.second;
 
-            const double CM = getCG(ilpr, L, il, impr, M, im);
+            const double CM =
+                getCG(ilpr, L, il, impr, M, im);
             if (CM == 0.0) continue;
-            const double C0 = getCG(ilpr, L, il, 0, 0, 0);
+
+            const double C0 =
+                getCG(ilpr, L, il, 0, 0, 0);
             if (C0 == 0.0) continue;
-            const double ccfactor = CM * C0 * std::sqrt((2.0 * ilpr + 1.0) / (2.0 * il + 1.0));
+
+            double ccfactor =
+                CM * C0
+                * std::sqrt(
+                      (2.0 * ilpr + 1.0)
+                      / (2.0 * il + 1.0));
+
             if (ccfactor == 0.0) continue;
 
-            const int mmprimesign = ((std::abs(im - impr) & 1) ? -1 : 1);
-            const int mprimesign = ((std::abs(impr) & 1) ? -1 : 1);
-            const int msign = ((std::abs(im) & 1) ? -1 : 1);
+            const int mmprimesign =
+                ((std::abs(im - impr) & 1) ? -1 : 1);
+
+            const int mprimesign =
+                ((std::abs(impr) & 1) ? -1 : 1);
+
+            const int msign =
+                ((std::abs(im) & 1) ? -1 : 1);
 
             if (alpha == 0) {
-              emit(mm, +1, ccfactor, il, im, ilpr, impr, 0, false);
-              emit(mm, +1, mmprimesign * ccfactor, il, -im, ilpr, -impr, 0, false);
-              if (cfg.useNegRef) { emit(mm, -1, ccfactor, il, im, ilpr, impr, 0, false); emit(mm, -1, mmprimesign * ccfactor, il, -im, ilpr, -impr, 0, false); }
-            } else if (alpha == 1) {
-              emit(mm, +1, msign * ccfactor, il, -im, ilpr, impr, 1, false);
-              emit(mm, +1, mprimesign * ccfactor, il, im, ilpr, -impr, 1, false);
-              if (cfg.useNegRef) { emit(mm, -1, msign * ccfactor, il, -im, ilpr, impr, 1, false); emit(mm, -1, mprimesign * ccfactor, il, im, ilpr, -impr, 1, false); }
-            } else if (alpha == 2) {
-              emit(mm, +1, msign * ccfactor, il, -im, ilpr, impr, 2, false);
-              emit(mm, +1, -mprimesign * ccfactor, il, im, ilpr, -impr, 2, false);
-              if (cfg.useNegRef) { emit(mm, -1, msign * ccfactor, il, -im, ilpr, impr, 2, false); emit(mm, -1, -mprimesign * ccfactor, il, im, ilpr, -impr, 2, false); }
-            } else if (alpha == 3) {
-              const double f = -ccfactor;
-              emit(mm, +1, f, il, im, ilpr, impr, 3, false);
-              emit(mm, +1, -mmprimesign * f, il, -im, ilpr, -impr, 3, false);
-              if (cfg.useNegRef) { emit(mm, -1, f, il, im, ilpr, impr, 3, false); emit(mm, -1, -mmprimesign * f, il, -im, ilpr, -impr, 3, false); }
-            } else if (alpha == 4) {
+              emit(mm, +1, ccfactor,
+                   il, im, ilpr, impr, 0, false);
+
+              emit(mm, +1, mmprimesign * ccfactor,
+                   il, -im, ilpr, -impr, 0, false);
+
+              if (cfg.useNegRef) {
+                emit(mm, -1, ccfactor,
+                     il, im, ilpr, impr, 0, false);
+
+                emit(mm, -1, mmprimesign * ccfactor,
+                     il, -im, ilpr, -impr, 0, false);
+              }
+            }
+
+            // alpha = 1 and 2 negatives cancel (-ve from moment definition)
+            else if (alpha == 1) {
+              emit(mm, +1, msign * ccfactor,
+                   il, -im, ilpr, impr, 1, false);
+
+              emit(mm, +1, mprimesign * ccfactor,
+                   il, im, ilpr, -impr, 1, false);
+
+              if (cfg.useNegRef) {
+                emit(mm, -1, msign * ccfactor,
+                     il, -im, ilpr, impr, 1, false);
+
+                emit(mm, -1, mprimesign * ccfactor,
+                     il, im, ilpr, -impr, 1, false);
+              }
+            }
+
+            else if (alpha == 2) {
+              emit(mm, +1, msign * ccfactor,
+                   il, -im, ilpr, impr, 2, false);
+
+              emit(mm, +1, -mprimesign * ccfactor,
+                   il, im, ilpr, -impr, 2, false);
+
+              if (cfg.useNegRef) {
+                emit(mm, -1, msign * ccfactor,
+                     il, -im, ilpr, impr, 2, false);
+
+                emit(mm, -1, -mprimesign * ccfactor,
+                     il, im, ilpr, -impr, 2, false);
+              }
+            }
+
+            // -ve factor from moment def same for rest other than 4
+            else if (alpha == 3) {
+              ccfactor *= -1;
+              emit(mm, +1, ccfactor,
+                   il, im, ilpr, impr, 3, false);
+
+              emit(mm, +1, -mmprimesign * ccfactor,
+                   il, -im, ilpr, -impr, 3, false);
+
+              if (cfg.useNegRef) {
+                emit(mm, -1, ccfactor,
+                     il, im, ilpr, impr, 3, false);
+
+                emit(mm, -1, -mmprimesign * ccfactor,
+                     il, -im, ilpr, -impr, 3, false);
+              }
+            }
+
+            else if (alpha == 4) {
               const double f = 2.0 * ccfactor;
-              emit(mm, +1, f, il, im, ilpr, impr, 4, false);
-              if (cfg.useNegRef) emit(mm, -1, f, il, im, ilpr, impr, 4, false);
-            }  else if (alpha == 5) {
-              int refl = +1;
-              double f = (-1.0 / TMath::Sqrt(2.0)) * ccfactor;
-              emit(mm, refl, f, il, im, ilpr, impr, 5, false);
-              emit(mm, refl, f, il, im, ilpr, impr, 5, true);
-              emit(mm, refl, -1 * mmprimesign * f, il, -im, ilpr, -impr, 5, false);
-              emit(mm, refl, -1 * mmprimesign * f, il, -im, ilpr, -impr, 5, true);
+
+              emit(mm, +1, f,
+                   il, im, ilpr, impr, 4, false);
+
               if (cfg.useNegRef) {
-                refl = -1;
-                emit(mm, refl, f, il, im, ilpr, impr, 5, false);
-                emit(mm, refl, f, il, im, ilpr, impr, 5, true);
-                emit(mm, refl, -1 * mmprimesign * f, il, -im, ilpr, -impr, 5, false);
-                emit(mm, refl, -1 * mmprimesign * f, il, -im, ilpr, -impr, 5, true);
+                emit(mm, -1, f,
+                     il, im, ilpr, impr, 4, false);
               }
-            } else if (alpha == 6) {
+            }
+
+            else if (alpha == 5) {
+              const double f =
+                  -ccfactor / TMath::Sqrt(2.0);
+
               int refl = +1;
-              double f = (1.0 / TMath::Sqrt(2.0)) * ccfactor;
-              emit(mm, refl, f, il, im, ilpr, impr, 6, false);
-              emit(mm, refl, f, il, im, ilpr, impr, 6, true);
-              emit(mm, refl, -1 * mmprimesign * f, il, -im, ilpr, -impr, 6, false);
-              emit(mm, refl, -1 * mmprimesign * f, il, -im, ilpr, -impr, 6, true);
+
+              emit(mm, refl, f,
+                   il, im, ilpr, impr, 5, false);
+
+              emit(mm, refl, f,
+                   il, im, ilpr, impr, 5, true);
+
+              emit(mm, refl, mmprimesign * f,
+                   il, -im, ilpr, -impr, 5, false);
+
+              emit(mm, refl, mmprimesign * f,
+                   il, -im, ilpr, -impr, 5, true);
+
               if (cfg.useNegRef) {
                 refl = -1;
-                emit(mm, refl, f, il, im, ilpr, impr, 6, false);
-                emit(mm, refl, f, il, im, ilpr, impr, 6, true);
-                emit(mm, refl, -1 * mmprimesign * f, il, -im, ilpr, -impr, 6, false);
-                emit(mm, refl, -1 * mmprimesign * f, il, -im, ilpr, -impr, 6, true);
+
+                emit(mm, refl, f,
+                   il, im, ilpr, impr, 5, false);
+
+                emit(mm, refl, f,
+                     il, im, ilpr, impr, 5, true);
+
+                emit(mm, refl, mmprimesign * f,
+                     il, -im, ilpr, -impr, 5, false);
+
+                emit(mm, refl, mmprimesign * f,
+                     il, -im, ilpr, -impr, 5, true);
               }
-            } else if (alpha == 7) {
+            }
+
+            else if (alpha == 6) {
+              const double f =
+                  -ccfactor / TMath::Sqrt(2.0);
+
               int refl = +1;
-              double f = (-1.0 / TMath::Sqrt(2.0)) * ccfactor;
-              emit(mm, refl, f, il, im, ilpr, impr, 7, false);
-              emit(mm, refl, f, il, im, ilpr, impr, 7, true);
-              emit(mm, refl, mmprimesign * f, il, -im, ilpr, -impr, 7, false);
-              emit(mm, refl, mmprimesign * f, il, -im, ilpr, -impr, 7, true);
+
+              emit(mm, refl, f,
+                   il, im, ilpr, impr, 6, false);
+
+              emit(mm, refl, -f,
+                   il, im, ilpr, impr, 6, true);
+
+              emit(mm, refl, -mmprimesign * f,
+                   il, -im, ilpr, -impr, 6, false);
+
+              emit(mm, refl, mmprimesign * f,
+                   il, -im, ilpr, -impr, 6, true);
+
               if (cfg.useNegRef) {
                 refl = -1;
-                emit(mm, refl, f, il, im, ilpr, impr, 7, false);
-                emit(mm, refl, f, il, im, ilpr, impr, 7, true);
-                emit(mm, refl, mmprimesign * f, il, -im, ilpr, -impr, 7, false);
-                emit(mm, refl, mmprimesign * f, il, -im, ilpr, -impr, 7, true);
+
+                emit(mm, refl, f,
+                   il, im, ilpr, impr, 6, false);
+
+                emit(mm, refl, -f,
+                     il, im, ilpr, impr, 6, true);
+
+                emit(mm, refl, -mmprimesign * f,
+                     il, -im, ilpr, -impr, 6, false);
+
+                emit(mm, refl, mmprimesign * f,
+                     il, -im, ilpr, -impr, 6, true);
               }
-            } else if (alpha == 8) {
+            }
+
+            else if (alpha == 7) {
+              const double f =
+                  -ccfactor / TMath::Sqrt(2.0);
+
               int refl = +1;
-              double f = (-1.0 / TMath::Sqrt(2.0)) * ccfactor;
-              emit(mm, refl, f, il, im, ilpr, impr, 8, false);
-              emit(mm, refl, -1 * f, il, im, ilpr, impr, 8, true);
-              emit(mm, refl, -1*mmprimesign * f, il, -im, ilpr, -impr, 8, false);
-              emit(mm, refl,  mmprimesign * f, il, -im, ilpr, -impr, 8, true);
+
+              emit(mm, refl, f,
+                   il, im, ilpr, impr, 7, false);
+
+              emit(mm, refl, f,
+                   il, im, ilpr, impr, 7, true);
+
+              emit(mm, refl, -mmprimesign * f,
+                   il, -im, ilpr, -impr, 7, false);
+
+              emit(mm, refl, -mmprimesign * f,
+                   il, -im, ilpr, -impr, 7, true);
+
               if (cfg.useNegRef) {
                 refl = -1;
-                emit(mm, refl, f, il, im, ilpr, impr, 8, false);
-                emit(mm, refl, -1 * f, il, im, ilpr, impr, 8, true);
-                emit(mm, refl, -1*mmprimesign * f, il, -im, ilpr, -impr, 8, false);
-                emit(mm, refl, mmprimesign * f, il, -im, ilpr, -impr, 8, true);
+
+                emit(mm, refl, f,
+                   il, im, ilpr, impr, 7, false);
+
+                emit(mm, refl, f,
+                     il, im, ilpr, impr, 7, true);
+
+                emit(mm, refl, -mmprimesign * f,
+                     il, -im, ilpr, -impr, 7, false);
+
+                emit(mm, refl, -mmprimesign * f,
+                     il, -im, ilpr, -impr, 7, true);
+              }
+            }
+
+            // no negative as it cancels with i^2 factor
+            else if (alpha == 8)
+            {
+              const double f =
+                  ccfactor / TMath::Sqrt(2.0);
+
+              int refl = +1;
+
+              emit(mm, refl, f,
+                   il, im, ilpr, impr, 8, false);
+
+              emit(mm, refl, -f,
+                   il, im, ilpr, impr, 8, true);
+
+              emit(mm, refl, mmprimesign * f,
+                   il, -im, ilpr, -impr, 8, false);
+
+              emit(mm, refl, -mmprimesign * f,
+                   il, -im, ilpr, -impr, 8, true);
+
+              if (cfg.useNegRef) {
+                refl = -1;
+
+                emit(mm, refl, f,
+                   il, im, ilpr, impr, 8, false);
+
+                emit(mm, refl, -f,
+                     il, im, ilpr, impr, 8, true);
+
+                emit(mm, refl, mmprimesign * f,
+                     il, -im, ilpr, -impr, 8, false);
+
+                emit(mm, refl, -mmprimesign * f,
+                     il, -im, ilpr, -impr, 8, true);
               }
             }
           }
         }
+
         models.push_back(std::move(mm));
       }
     }
   }
   return models;
+}
+
+static int SelectHighestATNormalisationIndex(const std::vector<ParDef>& pars) {
+  int bestIdx = -1;
+  int bestL = -1;
+  int bestM = -999999;
+
+  for (int i = 0; i < static_cast<int>(pars.size()); ++i) {
+    const auto& p = pars[static_cast<size_t>(i)];
+    if (p.isPhase || p.fixed) continue;
+
+    const auto label = ParseParamLabel(p.name);
+    if (!label.valid) continue;
+    if (label.refl != 'a' || label.orient != 'T') continue;
+
+    if (label.l > bestL || (label.l == bestL && label.m > bestM)) {
+      bestIdx = i;
+      bestL = label.l;
+      bestM = label.m;
+    }
+  }
+  return bestIdx;
+}
+
+static void MarkAmplitudeNormalisationParameter(EvalContext& ctx) {
+  if (ctx.cfg.photoProduction) return;
+
+  const int idx = SelectHighestATNormalisationIndex(ctx.fullPars);
+  if (idx < 0) {
+    throw std::runtime_error("Could not find an unfixed a_T magnitude to use for amplitude normalisation");
+  }
+
+  auto& p = ctx.fullPars[static_cast<size_t>(idx)];
+  p.init = 0.0;
+  p.fixed = true;
+  p.low = 0.0;
+  p.high = ctx.cfg.magnitudeMax;
+  p.step = 0.0;
+  ctx.normalisedMagFullIdx = idx;
+}
+
+static double NormalisationWeightForMagnitude(const EvalContext& ctx, int fullIdx) {
+  if (fullIdx == ctx.normalisedMagFullIdx) return 0.0;
+
+  const auto& p = ctx.fullPars[static_cast<size_t>(fullIdx)];
+  if (p.isPhase) return 0.0;
+
+  const auto label = ParseParamLabel(p.name);
+  if (!label.valid) return 0.0;
+
+  // The normalisation condition is
+  //   |a_T_norm|^2 = target/2 - (sum |T|^2 + epsilon sum |L|^2).
+  if (label.orient == 'T') return 1.0;
+  if (label.orient == 'L') {
+    double w = ctx.cfg.epsilon;
+    if (ctx.cfg.enforceLongitudinalParity && label.m > 0) w *= 2.0;
+    return w;
+  }
+  return 0.0;
+}
+
+static double EvalNormalisationSum(const EvalContext& ctx, const std::vector<double>& fullVals) {
+  double sum = 0.0;
+  for (int i = 0; i < static_cast<int>(ctx.fullPars.size()); ++i) {
+    const double w = NormalisationWeightForMagnitude(ctx, i);
+    if (w == 0.0) continue;
+    const double v = fullVals[static_cast<size_t>(i)];
+    sum += w * v * v;
+  }
+  return sum;
+}
+
+static bool ApplyAmplitudeNormalisation(const EvalContext& ctx, std::vector<double>& fullVals) {
+  if (ctx.normalisedMagFullIdx < 0) return true;
+
+  const double base = 0.5 * ctx.cfg.normalisationMomentTarget;
+  const double rest = EvalNormalisationSum(ctx, fullVals);
+  const double norm2 = base - rest;
+  if (!(norm2 >= 0.0) || !std::isfinite(norm2)) return false;
+
+  fullVals[static_cast<size_t>(ctx.normalisedMagFullIdx)] = std::sqrt(norm2);
+  return true;
+}
+
+static double NormalisedMagnitudeDerivative(const EvalContext& ctx,
+                                            const std::vector<double>& fullVals,
+                                            int wrtFullIdx) {
+  if (ctx.normalisedMagFullIdx < 0) return 0.0;
+
+  const double w = NormalisationWeightForMagnitude(ctx, wrtFullIdx);
+  if (w == 0.0) return 0.0;
+
+  const double normMag = fullVals[static_cast<size_t>(ctx.normalisedMagFullIdx)];
+  if (!(normMag > 0.0) || !std::isfinite(normMag)) return 0.0;
+
+  // a_norm = sqrt(target/2 - sum_i w_i a_i^2)
+  // d a_norm / d a_i = -w_i a_i / a_norm.
+  return -w * fullVals[static_cast<size_t>(wrtFullIdx)] / normMag;
+}
+
+static double ApplyNormalisationChainRule(const EvalContext& ctx,
+                                          const std::vector<double>& fullVals,
+                                          const std::vector<double>& dHdFull,
+                                          int wrtFullIdx) {
+  double dH = dHdFull[static_cast<size_t>(wrtFullIdx)];
+  if (ctx.normalisedMagFullIdx >= 0) {
+    const int normIdx = ctx.normalisedMagFullIdx;
+    dH += dHdFull[static_cast<size_t>(normIdx)]
+        * NormalisedMagnitudeDerivative(ctx, fullVals, wrtFullIdx);
+  }
+  return dH;
 }
 
 static double SampleGammaMT(TRandom3& rng, double shape, double scale = 1.0) {
@@ -764,9 +1140,9 @@ static double SampleGammaMT(TRandom3& rng, double shape, double scale = 1.0) {
   }
 }
 
-static bool FillFullFromFree(const EvalContext& ctx,
-                             const double* x,
-                             std::vector<double>& fullVals) {
+static bool FillFullFromFreeRaw(const EvalContext& ctx,
+                                const double* x,
+                                std::vector<double>& fullVals) {
   if (fullVals.size() != ctx.fullPars.size()) fullVals.resize(ctx.fullPars.size());
   for (size_t i = 0; i < ctx.fullPars.size(); ++i) fullVals[i] = ctx.fullPars[i].init;
 
@@ -779,6 +1155,13 @@ static bool FillFullFromFree(const EvalContext& ctx,
     fullVals[static_cast<size_t>(fullIdx)] = value;
   }
   return true;
+}
+
+static bool FillFullFromFree(const EvalContext& ctx,
+                             const double* x,
+                             std::vector<double>& fullVals) {
+  if (!FillFullFromFreeRaw(ctx, x, fullVals)) return false;
+  return ApplyAmplitudeNormalisation(ctx, fullVals);
 }
 
 static inline void EnsureSize(std::vector<double>& v, size_t n, double fill = 0.0) {
@@ -804,9 +1187,9 @@ static double EvalMomentOnly(const MomentModel& mm,
   double H = 0.0;
   for (const auto& t : mm.terms) {
     // Had these as we do not need to calculate these but stopped working...
-    //if (t.ignorePhase && (mm.alpha==3 || mm.alpha==7 || mm.alpha==8)) continue; // No imaginary parts for these
-    //const double trig = t.ignorePhase ? 1.0 : ((t.trig == TrigKind::kCos) ? pairCos[t.phasePairIdx] : pairSin[t.phasePairIdx]);
-    const double trig = (t.trig == TrigKind::kCos) ? pairCos[t.phasePairIdx] : pairSin[t.phasePairIdx];
+    if (t.ignorePhase && (mm.alpha==3 || mm.alpha==7 || mm.alpha==8)) continue; // No imaginary parts for these
+    const double trig = t.ignorePhase ? 1.0 : ((t.trig == TrigKind::kCos) ? pairCos[t.phasePairIdx] : pairSin[t.phasePairIdx]);
+    // const double trig = (t.trig == TrigKind::kCos) ? pairCos[t.phasePairIdx] : pairSin[t.phasePairIdx];
     H += t.coeff * fullVals[t.idxMag1] * fullVals[t.idxMag2] * trig;
   }
   return H;
@@ -825,9 +1208,21 @@ static double EvalMomentAndDerivFull(const EvalContext& ctx,
     const auto& pp = ctx.phasePairs[t.phasePairIdx];
     const double m1 = fullVals[t.idxMag1]; // Magnitudes
     const double m2 = fullVals[t.idxMag2];
-    //if (t.ignorePhase && (mm.alpha==3 || mm.alpha==7 || mm.alpha==8)) continue; // No imaginary parts for these
-    const double trig = (t.trig == TrigKind::kCos) ? pairCos[t.phasePairIdx] : pairSin[t.phasePairIdx];
-    const double dtrig =(t.trig == TrigKind::kCos) ? -pairSin[t.phasePairIdx] : pairCos[t.phasePairIdx];
+
+    // const double trig = (t.trig == TrigKind::kCos) ? pairCos[t.phasePairIdx] : pairSin[t.phasePairIdx];
+    // const double dtrig = (t.trig == TrigKind::kCos) ? -pairSin[t.phasePairIdx] : pairCos[t.phasePairIdx];
+
+    double trig;
+    double dtrig;
+    if (t.ignorePhase && (mm.alpha==3 || mm.alpha==7 || mm.alpha==8))
+    {
+       trig = 0.0;
+       dtrig = 1.0;
+    }else
+    {
+      trig = t.ignorePhase ? 1.0 : ((t.trig == TrigKind::kCos) ? pairCos[t.phasePairIdx] : pairSin[t.phasePairIdx]);
+      dtrig = t.ignorePhase ? 0.0 : ((t.trig == TrigKind::kCos) ? -pairSin[t.phasePairIdx] : pairCos[t.phasePairIdx]);
+    }
     const double val = t.coeff * m1 * m2 * trig;
     H += val;
     dHdFull[t.idxMag1] += t.coeff * m2 * trig;
@@ -1003,7 +1398,7 @@ public:
 
     for (size_t iobs = 0; iobs < ctx_->observed.size(); ++iobs) {
       const auto& ob = ctx_->observed[iobs];
-      const double sigma = (std::isfinite(ob.sigma) && std::abs(ob.sigma) > 0.0) ? std::abs(ob.sigma) : 1.0;
+      const double sigma = ob.sigma;
       double model = 0.0;
 
       if (ob.isMixed04) {
@@ -1018,8 +1413,9 @@ public:
 
         for (unsigned i = 0; i < NDim(); ++i) {
           const int fullIdx = ctx_->freeToFull[i];
-          const double dModel = buf_fullA_[static_cast<size_t>(fullIdx)]
-                              + ctx_->cfg.epsilon * buf_fullB_[static_cast<size_t>(fullIdx)];
+          const double dH0 = ApplyNormalisationChainRule(*ctx_, fullVals_, buf_fullA_, fullIdx);
+          const double dH4 = ApplyNormalisationChainRule(*ctx_, fullVals_, buf_fullB_, fullIdx);
+          const double dModel = dH0 + ctx_->cfg.epsilon * dH4;
           grad[i] += -2.0 * pull * dModel / sigma;
         }
       } else {
@@ -1031,7 +1427,7 @@ public:
 
         for (unsigned i = 0; i < NDim(); ++i) {
           const int fullIdx = ctx_->freeToFull[i];
-          const double dModel = buf_fullA_[static_cast<size_t>(fullIdx)];
+          const double dModel = ApplyNormalisationChainRule(*ctx_, fullVals_, buf_fullA_, fullIdx);
           grad[i] += -2.0 * pull * dModel / sigma;
         }
       }
@@ -1071,6 +1467,7 @@ static std::shared_ptr<EvalContext> BuildContext(const FitConfig& cfg) {
   auto ctx = std::make_shared<EvalContext>();
   ctx->cfg = cfg;
   ctx->fullPars = BuildAmplitudePhaseParameters(cfg);
+  MarkAmplitudeNormalisationParameter(*ctx);
 
   std::unordered_map<long long, int> paramIndex;
   paramIndex.reserve(ctx->fullPars.size() * 2);
@@ -1085,7 +1482,7 @@ static std::shared_ptr<EvalContext> BuildContext(const FitConfig& cfg) {
     std::cout << "Production mode: "
               << (cfg.photoProduction ? "photoproduction (alpha <= 3, L fixed to 0)" : "electroproduction/full")
               << std::endl;
-    std::cout << "Magnitude parameters are fitted directly with no unit-normalisation constraint. Longitudinal negative-m waves are folded onto m >= 0 using parity." << std::endl;
+    std::cout << "Longitudinal negative-m waves are folded onto m >= 0 using parity." << std::endl;
   }
 
   ctx->fullToFree.assign(ctx->fullPars.size(), -1);
@@ -1096,7 +1493,26 @@ static std::shared_ptr<EvalContext> BuildContext(const FitConfig& cfg) {
   }
 
   ctx->observed = BuildObservedMoments(cfg.momentsFile, cfg.momentsTree, cfg.bin, cfg);
-  ctx->modelsRec = BuildMomentModels(cfg, paramIndex, ctx->phasePairs);
+  if (ctx->observed.empty()) {
+    throw std::runtime_error("No requested moment branches were found in the input ROOT file");
+  }
+
+  std::unordered_set<std::string> neededMoments;
+  neededMoments.reserve(ctx->observed.size() * 2 + 4);
+  for (const auto& ob : ctx->observed) {
+    if (ob.isMixed04) {
+      neededMoments.insert(std::string("H_0_") + std::to_string(ob.L) + "_" + std::to_string(ob.M));
+      neededMoments.insert(std::string("H_4_") + std::to_string(ob.L) + "_" + std::to_string(ob.M));
+    } else {
+      neededMoments.insert(std::string("H_") + std::to_string(ob.alpha) + "_" + std::to_string(ob.L) + "_" + std::to_string(ob.M));
+    }
+  }
+
+  // These are not chi2 constraints when amplitude normalisation is enabled,
+  // but keep them in the output tree for later checks/analysis.
+  neededMoments.insert("H_0_0_0");
+  if (!cfg.photoProduction) neededMoments.insert("H_4_0_0");
+  ctx->modelsRec = BuildMomentModels(cfg, paramIndex, neededMoments, ctx->phasePairs);
   ctx->modelIndexByName.reserve(ctx->modelsRec.size() * 2);
   for (size_t i = 0; i < ctx->modelsRec.size(); ++i) ctx->modelIndexByName.emplace(ctx->modelsRec[i].name, i);
 
@@ -1189,6 +1605,26 @@ static void BuildRandomStartPoint(const EvalContext& ctx,
       xStart[i] = value;
     }
   }
+
+  if (ctx.normalisedMagFullIdx >= 0) {
+    std::vector<double> fullVals;
+    if (!FillFullFromFree(ctx, xStart.data(), fullVals)) {
+      // If the random point gives an invalid normalisation square-root, shrink
+      // all free magnitudes together and then calculate the derived a_T wave.
+      // This enforces sum |T|^2 + epsilon sum |L|^2 < target/2.
+      FillFullFromFreeRaw(ctx, xStart.data(), fullVals);
+      const double base = 0.5 * ctx.cfg.normalisationMomentTarget;
+      const double sum = EvalNormalisationSum(ctx, fullVals);
+      if (sum > 0.0) {
+        const double scale = std::sqrt(0.95 * base / sum);
+        for (unsigned i = 0; i < ctx.freeToFull.size(); ++i) {
+          const int fullIdx = ctx.freeToFull[i];
+          const auto& p = ctx.fullPars[static_cast<size_t>(fullIdx)];
+          if (!p.isPhase) xStart[i] *= scale;
+        }
+      }
+    }
+  }
 }
 
 } // namespace chi2_amp_fit_opt
@@ -1207,11 +1643,13 @@ void RunGivenMoments_Chi2Amps_Impl(const chi2_amp_fit_opt::FitConfig& cfg, const
 
   TTree* t = new TTree("fitResults", "Optimized chi2 fit results (per start)");
   double log_val = 0.0;
+  double val = 0.0;
   double start_log_val = -999.0;
   double prescan_log_val = -999.0;
   double mcmc_acceptance = 0.0;
 
   t->Branch("log_val", &log_val);
+  t->Branch("val", &val);
   if (cfg.useMCMCPreScan){
     t->Branch("start_log_val", &start_log_val);
     t->Branch("prescan_log_val", &prescan_log_val);
@@ -1223,13 +1661,15 @@ void RunGivenMoments_Chi2Amps_Impl(const chi2_amp_fit_opt::FitConfig& cfg, const
   MakeBranchesForMoments(t, ctx->modelsRec, momRecVals);
   MakeBranchesForObservedModel(t, ctx->observed, rhRecVals);
 
+  const bool useNumericalGradient = cfg.useNumericalGradient;
+
   Chi2FunctionNoGrad fcnNoGrad(ctx);
   Chi2Function fcn(ctx);
 
   if (cfg.verbose) {
-    std::cout << (cfg.useNumericalGradient
+    std::cout << (useNumericalGradient
                     ? "Using Minuit2 numerical derivatives (analytical gradient disabled)."
-                    : "Using analytical gradient.")
+                    : "Using analytical gradient, including the amplitude-normalisation chain rule.")
               << std::endl;
   }
   if (cfg.verbose && cfg.useMCMCPreScan && cfg.mcmcSteps > 0) {
@@ -1269,7 +1709,7 @@ void RunGivenMoments_Chi2Amps_Impl(const chi2_amp_fit_opt::FitConfig& cfg, const
     min->SetTolerance(cfg.tolerance);
     min->SetStrategy(cfg.strategy);
     min->SetPrintLevel(cfg.printLevel);
-    if (cfg.useNumericalGradient) {
+    if (useNumericalGradient) {
       min->SetFunction(fcnNoGrad);
     } else {
       min->SetFunction(fcn);
@@ -1286,8 +1726,8 @@ void RunGivenMoments_Chi2Amps_Impl(const chi2_amp_fit_opt::FitConfig& cfg, const
     int status = min->Status();
     //if (!ok) continue;
     if (cfg.runHesse) min->Hesse();
-    const double chi2 = min->MinValue();
-    log_val = std::log10(chi2);
+    val = min->MinValue()/7;
+    log_val = TMath::Log(val);
     if (!FillFullFromFree(*ctx, min->X(), parVals)) {
       throw std::runtime_error("Failed to map minimizer coordinates to physical amplitudes");
     }
@@ -1319,7 +1759,7 @@ void RunGivenMoments_Chi2Amps_Setup(const char* tableFile="InputFiles/Experiment
                                   const char* outFile = "resultsGivenMoments_chi2_amps.root",
                                   uint32_t seed = 0,
                                   double epsilon = 1.0,
-                                  bool useNumericalGradient = true,
+                                  bool useNumericalGradient = false,
                                   bool useMCMCPreScan = false,
                                   unsigned mcmcSteps = 2000,
                                   double mcmcProposalMagSigma = 0.03,
