@@ -1,56 +1,15 @@
-# Prerequisites
-*.d
+/build/
+/OutputFiles/*
+!/OutputFiles/.gitkeep
+/InputFiles/Generated/*
+!/InputFiles/Generated/.gitkeep
+*.part_*.root
+.idea/
+cmake-build-*/
 
-# Compiled Object files
-*.slo
-*.lo
-*.o
-*.obj
-
-# Precompiled Headers
-*.gch
-*.pch
-
-# Linker files
-*.ilk
-
-# Debugger Files
-*.pdb
-
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
-
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
-
-# Executables
-*.exe
-*.out
-*.app
-
-# debug information files
-*.dwo
-
-# Ignore pdfs and pngs etc
-*.pdf
+# Image types
 *.png
-*.jpeg
+*.pdf
 *.jpg
-# Adding output files directory, ignores all stuff like generated root scripts etc
-OutputFiles/
-AnalysisScripts/outputs/
-
-# Generate.C files can already generate all of the files used in analysis
-InputFiles/
-
-# Ignore run.sh, that is there just so I can run everything overnight
-run.sh
+*.jpeg
+*.gif

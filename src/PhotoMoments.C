@@ -1,3 +1,5 @@
+#include "emi/Runner.h"
+
 #include "TFile.h"
 #include "TTree.h"
 #include "TParameter.h"
@@ -9,6 +11,10 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <filesystem>
+
+namespace emi {
+namespace {
 
 constexpr double kSqrt6Over5  = 0.48989794855663561963945681494118;
 constexpr double kSqrt12Over5 = 0.69282032302755092063339055356909;
@@ -117,7 +123,6 @@ static void FillBin(OutputArrays& out, std::size_t i, double mean_t, const SDMEs
   out.RH_2_2_2[i]     = 2.0 * kSqrt6Over5 * p.im_r1m1_2.v;
   out.RH_2_2_2_err[i] = kSqrt6Over5 * s_im_r1m1_2;
 
-  // Why do I have this? was it to double check when photoprod was going wrong
   if (i == 15) {
     out.RH_0_2_0[i] = -0.2955;
     out.RH_0_2_1[i] =  0.0360;
@@ -243,20 +248,28 @@ static void BuildOutputs(const DatasetSpec& ds, OutputArrays& out) {
   for (std::size_t i = 0; i < ds.mean_t.size(); ++i) FillBin(out, i, ds.mean_t[i], ds.bins[i]);
 }
 
-void MakePhotoMoments(const char* dataset = "gluex",
-                      const char* outFile = "",
-                      const char* treeName = "expMoments"){
-  const DatasetSpec ds = GetDatasetSpec(dataset ? dataset : "gluex");
-  const std::string outName = (outFile && std::string(outFile).size()) ? outFile : DefaultOutFile(ds.key);
-  const std::string outPath = "./InputFiles/Experiment/" + outName;
+} // namespace
+
+void MakePhotoproductionMoments(const std::string& dataset,
+                                const std::filesystem::path& output,
+                                const std::string& treeName) {
+  const DatasetSpec ds = GetDatasetSpec(dataset.empty() ? "gluex" : dataset);
+  const std::filesystem::path outPath = output.empty()
+      ? std::filesystem::path("InputFiles/Experiment") / DefaultOutFile(ds.key)
+      : output;
+  if (!outPath.parent_path().empty()) {
+    std::filesystem::create_directories(outPath.parent_path());
+  }
 
   OutputArrays out;
   BuildOutputs(ds, out);
 
   TFile fout(outPath.c_str(), "RECREATE");
-  if (fout.IsZombie()) throw std::runtime_error("Failed to open output file: " + outPath);
+  if (fout.IsZombie()) {
+    throw std::runtime_error("Failed to open output file: " + outPath.string());
+  }
 
-  TTree tree(treeName, (std::string("Experimental RH moments and uncertainties vs mean -t for ") + ds.title).c_str());
+  TTree tree(treeName.c_str(), (std::string("Experimental RH moments and uncertainties vs mean -t for ") + ds.title).c_str());
   tree.Branch("Nbins", &out.Nbins, "Nbins/I");
   auto br = [&](const char* name, double* arr) {
     tree.Branch(name, arr, (std::string(name) + "[Nbins]/D").c_str());
@@ -297,4 +310,4 @@ void MakePhotoMoments(const char* dataset = "gluex",
   std::cout << "Saved dataset '" << ds.key << "' (" << ds.title << ") to " << outPath << std::endl;
 }
 
-// Similar to electroprod but should add bins for W and remove Q2 stuff
+} // namespace emi

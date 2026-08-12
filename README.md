@@ -1,798 +1,309 @@
-# Electroproduction-Moments-Inverter — reconstructed README
+# Electroproduction Moments Inverter
 
-## What this repository does
+This program reconstructs complex partial-wave amplitudes from measured
+vector-meson moments. It can run ordinary fits or Gaussian bootstrap fits,
+rebuild the supplied experimental moment tables, and generate synthetic/random moment
+samples for closure tests.
 
-This project takes **published spin-density matrix elements (SDMEs)** for exclusive vector-meson production and turns them into a set of **moment observables** \(the `RH...` and `RH04...` quantities\), then **inverts** those moments back to complex production amplitudes by fitting a partial-wave model.
+The application is C++17 and ROOT based. CMake compiles the physics and fitting
+code into a reusable library and links the small command-line program against
+it.
 
-In practical terms, the repository supports three related tasks:
+## Requirements
 
-1. **Build ROOT input tables** of experimental moments from hard-coded SDME measurements.
-2. **Fit amplitudes** to those moments with many randomized minimization starts.
-3. **Study uncertainties and ambiguities** through bootstrap toys and synthetic “known-truth” datasets.
+- A C++17 compiler (GCC 9, Clang 10, or newer)
+- CMake 3.18 or newer
+- ROOT 6.26 or newer with Tree, MathMore, Minuit2, and multiprocessing support
 
-The code is written as a set of **ROOT macros** rather than as a compiled package with a build system.
-
----
-
-## Physics background
-
-### The underlying problem
-
-For exclusive production of spin-1 vector mesons such as \(\rho^0\) and \(\omega\), the angular distribution of the decay products contains information about the helicity structure of the production amplitude. Experimental papers often report this information in terms of **SDMEs** rather than directly in terms of amplitudes.
-
-This repository sits between those two descriptions:
-
-- **Published SDMEs** \(\rightarrow\) converted into **moments**
-- **Moments** \(\rightarrow\) fitted with a model written in terms of **complex amplitudes**
-
-That inversion is useful because the amplitudes are much closer to the underlying reaction mechanism than the SDMEs are.
-
-### What the moments are doing here
-
-The fit is organized around moment labels like
-
-- `RH04_L_M`
-- `RH_alpha_L_M`
-- internally reconstructed `H_alpha_L_M`
-
-The code builds moment models from Clebsch–Gordan / Wigner-3j couplings and evaluates them from a chosen set of partial-wave amplitudes. In electroproduction mode, the code reconstructs a longitudinal/transverse ratio
-
-\[
-R = -\frac{H^4_{00}}{H^0_{00}}
-\]
-
-and uses it to rescale the raw `H` moments into the experimentally observed `RH` and `RH04` combinations.
-
-### Amplitude basis used by the code
-
-The parameter names tell you the basis directly:
-
-- `a_*` and `b_*` = positive / negative reflectivity sectors
-- `T` and `L` = transverse / longitudinal photon couplings
-- `l,m` indices are encoded in names like `a_T_1_0`, `b_L_1_m1`
-- phases are stored separately as `aphi_*`, `bphi_*`
-
-With the default settings the code is effectively set up for **S- and P-wave spin-1 production**:
-- \(l_{\max}=1\)
-- \(m_{\max}=1\)
-
-So the active wave content is basically the \(S\) and \(P\) sectors.
-
-### Electroproduction vs photoproduction
-
-The repository supports two physics modes:
-
-- **Electroproduction / leptoproduction**
-  - full set of moments including longitudinal and LT-interference structures
-  - uses the `epsR4` parameter and the reconstructed \(R\)
-- **Photoproduction**
-  - turns on `photoProduction=true`
-  - only keeps the lower moment sector (\(\alpha \le 3\))
-  - all longitudinal amplitudes/phases are fixed to zero
-
----
-
-## Repository structure
-
-### Top level
-
-- `MakeLeptoMoments.C`  
-  Converts hard-coded **electro/leptoproduction SDMEs** into ROOT trees of experimental moments.
-
-- `MakePhotoMoments.C`  
-  Converts hard-coded **GlueX photoproduction SDMEs** into ROOT trees of experimental moments.
-
-- `RunGivenMoments_Chi2Amps.C`  
-  The **core fitter**. Reads an input ROOT moment table, builds the moment model, and runs many randomized minimizations.
-
-- `RunGivenMoments_Chi2Amps_Bootstrap.C`  
-  Wraps the fitter in a **toy/bootstrap procedure** by Gaussian-throwing the observed moments and refitting each toy.
-
-- `GenerateMomentsFromFixedAmplitudes.C`  
-  Creates a **synthetic input dataset** from a user-chosen set of amplitudes/phases. Useful for closure tests and ambiguity studies.
-
-- `HERMES_analysis.ipynb`  
-  A notebook in the repository root. It appears to be an older or lighter analysis notebook relative to the versions in `AnalysisScripts/`.
-
-- `README.md`  
-  Currently just a placeholder in the repository.
-
-- `LICENSE`  
-  GPL-3.0.
-
-- `.gitignore`
-
-### `AnalysisScripts/`
-
-- `GlueX_analysis.ipynb`
-- `HERMES_analysis.ipynb`
-- `R_analysis.ipynb`
-- `fixed_amp_analysis.ipynb`
-
-These are post-processing / plotting notebooks, not part of the core fitting engine.
-
----
-
-## Dependencies
-
-### Required C++ / ROOT side
-
-You need a ROOT installation that provides at least:
-
-- `TFile`, `TTree`
-- `TRandom3`
-- `TBenchmark`
-- `ROOT::Math::Minimizer`
-- `Minuit2`
-- `MathMore` / Wigner-3j support
-- `ROOT::TProcessExecutor`
-- `TFileMerger`
-
-A working ROOT 6 installation with PyROOT available is the safest assumption.
-
-### Required Python side for notebooks
-
-The notebooks use:
-
-- `numpy`
-- `matplotlib`
-- `ROOT` (PyROOT)
-- `scipy` (`R_analysis.ipynb` uses `curve_fit`)
-
-A minimal environment is something like:
+Activate ROOT before configuring the project. For a binary ROOT installation:
 
 ```bash
-python -m pip install numpy matplotlib scipy
+source /path/to/root/bin/thisroot.sh
+root-config --version
 ```
 
-with ROOT/PyROOT already available from your ROOT installation.
+## Build
 
----
-
-## Directory layout expected by the macros
-
-The macros assume these folders already exist:
+From the repository root:
 
 ```bash
-mkdir -p InputFiles/Experiment
-mkdir -p InputFiles/Generated
-mkdir -p OutputFiles
+./scripts/build.sh
 ```
 
-The code writes to those directories directly and does **not** create them for you.
+This configures CMake and compiles a native executable at `build/emi`. The
+`emi` executable is built from `app/main.C` and linked against the project's
+`emi_core` library and ROOT; it is not a ROOT macro and does not need to be
+launched through the `root` command.
 
-- `MakeLeptoMoments.C` writes to `./InputFiles/Experiment/`
-- `MakePhotoMoments.C` writes to `./InputFiles/Experiment/`
-- `GenerateMomentsFromFixedAmplitudes.C` writes to `./InputFiles/Generated/`
-- `RunGivenMoments_Chi2Amps.C` writes final fit results to `./OutputFiles/`
-
----
-
-## End-to-end workflows
-
-## 1. Electroproduction / leptoproduction workflow
-
-### Step 1: build an experimental moment table
-
-For electron \(\rho\):
+Run it directly:
 
 ```bash
-root -l -q 'MakeLeptoMoments.C("e_rho")'
+./build/emi --help
 ```
 
-For muon \(\rho\):
+The supplied run scripts also use this repository-local executable, so no
+installation or `PATH` changes are needed. To configure and build without the
+helper script, use:
 
 ```bash
-root -l -q 'MakeLeptoMoments.C("mu_rho")'
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --parallel
+alias emi = ./build/emi
 ```
 
-For electron \(\omega\):
+### Optional installation
+
+Install only if you want to run `emi` from any directory without writing its
+path explicitly:
 
 ```bash
-root -l -q 'MakeLeptoMoments.C("e_omega")'
+cmake --install build --prefix "$HOME/.local"
 ```
 
-For muon \(\omega\):
+This places the executable at `$HOME/.local/bin/emi`. If that directory is not
+already on `PATH`, add the following to your shell configuration. For Bash,
+Zsh, and other Bourne-style shells:
 
 ```bash
-root -l -q 'MakeLeptoMoments.C("mu_omega")'
+export PATH="$HOME/.local/bin:$PATH"
+emi --help
 ```
 
-This creates a ROOT file in `InputFiles/Experiment/` containing one tree (default name: `expMoments`) with arrays of moment values and moment uncertainties vs. \(Q^2\).
+For Csh or Tcsh:
 
-### Step 2: fit one bin
+```csh
+setenv PATH "${HOME}/.local/bin:${PATH}"
+emi --help
+```
 
-Example: fit the first \(Q^2\) bin of HERMES \(\rho\)
+In both cases, ROOT must still be active in the shell as described above.
+
+## Choose the physics model
+
+The routine choices are kept in `app/UserSettings.h`, next to the executable
+source. Edit this file and rebuild. This avoids a long command line for settings
+that normally stay fixed throughout a study.
+
+The fit model is an explicit list of `(l,m)` waves:
+
+```cpp
+inline ModelConfig Model() {
+  ModelConfig model;
+  model
+      .SetWaves({
+          {1, -1},
+          {1,  0},
+          {1,  1},
+      })
+      .UseReflectivities(true, false) // positive only
+      .EnforceLongitudinalParity(true);
+  model.normalisationMoment = 2.0;
+  return model;
+}
+```
+
+`UseReflectivities(positive, negative)` accepts positive only `(true, false)`,
+negative only `(false, true)`, or both `(true, true)`. At least one must be
+enabled. Each selected wave must satisfy `l >= 0` and `|m| <= l`.
+
+An explicit wave list is used instead of `lmax` and `mmax` as the max parameters resulted in null moments being created.
+In particular, say you want to fit a purely D-wave process you do not want to limit time constructing S-wave and P-wave moments.
+Moment models are also derived from the selected waves. Clebsch-Gordan-forbidden
+moments have no terms and are not constructed. An input moment is used only when
+the selected model can construct it and its quoted uncertainty is finite and
+strictly positive. This is important for vector-meson-only tables containing
+placeholder zero values with zero errors.
+
+`GenerationModel()` in the same file controls the fixed and random generators.
+`ConfigureFit()` and `ConfigureBootstrap()` contain the default run counts,
+worker count, random seed, Hessian choice, and gradient choice:
+
+```cpp
+fit
+    .SetStarts(10000)
+    .SetWorkers(0)
+    .SetSeed(0)
+    .UseHesse(true)
+    .UseNumericalGradients(false);
+```
+
+Parameter limits, minimizer tolerances, start-distribution widths, and step sizes
+are implementation defaults. If one wants to change them, this will require going into the actual code itself to change.
+
+## Run a fit
+
+The supplied script fits electron-rho bin zero:
 
 ```bash
-root -l -q 'RunGivenMoments_Chi2Amps.C("InputFiles/Experiment/e_rho_moments.root","expMoments",0,"HERMES_results_0.root",1.0,false)'
+./scripts/run-fit.sh 0
 ```
 
-Arguments are:
-
-1. input ROOT file
-2. tree name
-3. bin index
-4. output filename (written under `./OutputFiles/`)
-5. `epsR4`
-6. `photoProduction`
-
-For electroproduction, use `photoProduction=false`.
-
-### Step 3: loop over bins
-
-For HERMES \(\rho\) (4 bins):
+It uses the model and run defaults in `app/UserSettings.h`. Environment
+variables are available for quick, temporary overrides:
 
 ```bash
-for i in 0 1 2 3; do
-  root -l -q "RunGivenMoments_Chi2Amps.C(\"InputFiles/Experiment/e_rho_moments.root\",\"expMoments\",$i,\"HERMES_results_${i}.root\",1.0,false)"
-done
+STARTS=100 WORKERS=2 ./scripts/run-fit.sh 0
 ```
 
-Similarly:
-
-- `mu_rho` has 4 bins
-- `e_omega` has 3 bins
-- `mu_omega` has 3 bins
-
-### Step 4: bootstrap the uncertainties
+For another input file:
 
 ```bash
-root -l -q 'RunGivenMoments_Chi2Amps_Bootstrap.C("InputFiles/Experiment/e_rho_moments.root","expMoments",0,"HERMES_bootstrap_0.root",1.0,false)'
+emi fit \
+  --input InputFiles/Experiment/e_rho_moments.root \
+  --tree expMoments \
+  --bin 0 \
+  --epsilon 0.8 \
+  --output OutputFiles/e_rho_fit_0.root
 ```
 
-This generates toy datasets by fluctuating the observed moments and refitting each one.
+Paths, tree name, bin, and epsilon remain command-line values because they vary
+between datasets. Run `emi --help` for optional runtime overrides.
 
----
-
-## 2. Photoproduction workflow
-
-### Step 1: build the GlueX moment table
+Analytical gradients are used by default. Set
+`.UseNumericalGradients(true)` in `UserSettings.h`, or pass
+`--numerical-gradients` to use. An example script implementing a controlled comparison is provided:
 
 ```bash
-root -l -q 'MakePhotoMoments.C("gluex")'
+./scripts/compare-gradients.sh 0 100
 ```
 
-This writes a ROOT file under `InputFiles/Experiment/` with 18 \(-\bar t\) bins.
-
-### Step 2: fit one GlueX bin
+## Run a bootstrap
 
 ```bash
-root -l -q 'RunGivenMoments_Chi2Amps.C("InputFiles/Experiment/gluex_moments.root","expMoments",0,"gluex_results_0.root",1.0,true)'
+./scripts/run-bootstrap.sh 0
 ```
 
-Important:
-- for photoproduction, set the last argument to `true`
-
-### Step 3: bootstrap one GlueX bin
+For a short installation check:
 
 ```bash
-root -l -q 'RunGivenMoments_Chi2Amps_Bootstrap.C("InputFiles/Experiment/gluex_moments.root","expMoments",0,"gluex_bootstrap_0.root",1.0,true)'
+TOYS=2 STARTS_PER_TOY=2 WORKERS=1 ./scripts/run-bootstrap.sh 0
 ```
 
-### Step 4: loop over all 18 bins
+Each bootstrap independently samples from a Gaussian that is constructed from the published SDME values, with the width given by the quadrature of the published errors.
+The standard minimization procedure outlined earlier is then ran for starts per worker and it retains the best valid minimum from its random starts. Hessian calculation is off
+for bootstrap by default because the bootstrap distribution supplies the uncertainty.
+
+The direct command is:
 
 ```bash
-for i in $(seq 0 17); do
-  root -l -q "RunGivenMoments_Chi2Amps.C(\"InputFiles/Experiment/gluex_moments.root\",\"expMoments\",$i,\"gluex_results_${i}.root\",1.0,true)"
-done
+emi bootstrap \
+  --input InputFiles/Experiment/e_rho_moments.root \
+  --tree expMoments \
+  --bin 0 \
+  --epsilon 0.8 \
+  --output OutputFiles/e_rho_bootstrap_0.root
 ```
 
-and similarly for bootstrap.
+## Experimental and synthetic inputs
 
----
-
-## 3. Synthetic / closure-test workflow
-
-This is the best way to test whether the inversion machinery can recover a known amplitude point.
-
-### Step 1: generate fake moments from a fixed amplitude set
-
-With defaults:
+The repository includes the source needed to regenerate both the fixed/random test data
+and the experimental moments. Experimental tables are rebuilt from the SDME
+values in `src/LeptoMoments.C` and `src/PhotoMoments.C`:
 
 ```bash
-root -l -q 'GenerateMomentsFromFixedAmplitudes.C()'
+emi make-lepto --dataset e_rho
+emi make-lepto --dataset mu_rho
+emi make-lepto --dataset e_omega
+emi make-lepto --dataset mu_omega
+emi make-lepto --dataset e_phi
+emi make-photo --dataset gluex
 ```
 
-This writes a generated ROOT file to `InputFiles/Generated/`.
+The default destination is `InputFiles/Experiment/<dataset>_moments.root`.
+Use `--output FILE` to choose a different path.
 
-### Step 2: fit the generated moments back
+Synthetic inputs use the waves in `GenerationModel()` and do not contain a
+hard-coded list of amplitude names or moments:
 
 ```bash
-root -l -q 'RunGivenMoments_Chi2Amps.C("InputFiles/Generated/fixed_input_moments.root","genMoments",0,"fixedamps.root",1.0,false)'
+emi generate-fixed \
+  --epsilon 0.8 \
+  --output InputFiles/Generated/fixed_test.root
+
+emi generate-random \
+  --events 100000 \
+  --epsilon 0.8 \
+  --seed 12345 \
+  --output InputFiles/Generated/random_input_moments.root
 ```
 
-### Step 3: inspect the output with the fixed-amplitude notebook
-
-The `fixed_amp_analysis.ipynb` notebook is designed for this use case.
-
----
-
-## File-by-file technical explanation
-
-## `MakeLeptoMoments.C`
-
-### Purpose
-
-This macro hard-codes published SDME tables and converts them into the moment basis expected by the fitter.
-
-### Datasets implemented in code
-
-The file contains hard-coded datasets for:
-
-- `e_rho`
-- `mu_rho`
-- `e_omega`
-- `mu_omega`
-
-with their associated \(Q^2\) bin centers and SDME values.
-
-### Output
-
-It writes a tree (default `expMoments`) containing:
-
-- `Nbins`
-- `Q2`
-- all relevant electroproduction moment arrays:
-  - `RH04_...`
-  - `RH_1_...`
-  - `RH_2_...`
-  - `RH_3_...`
-  - `RH_5_...`
-  - `RH_6_...`
-  - `RH_7_...`
-  - `RH_8_...`
-- corresponding `_err` branches for each moment
-- metadata objects:
-  - `dataset_key`
-  - `dataset_title`
-  - `NbinsMeta`
-
-### Important implementation details
-
-- Statistical and systematic uncertainties are combined in quadrature:
-  \[
-  \sigma = \sqrt{\sigma_{\rm stat}^2 + \sigma_{\rm syst}^2}
-  \]
-- Some \(L=1\) moments are filled with small placeholder values/errors via `SetMissingL1`.
-- The SDME-to-moment conversion factors are encoded explicitly in `FillBin(...)`.
-
-### Caveats
-
-1. The comments at the top are stale:
-   - they mention `MakeExperimentalMomentsTable_leptoproduction.C`
-   - the actual file/function is `MakeLeptoMoments.C` / `MakeLeptoMoments(...)`
-
-2. The comments/examples suggest that `"omega"` is a supported key, but the actual dataset dispatcher is written around `e_omega` and `mu_omega`. Use those explicit keys.
-
-3. The fitter later assumes a fixed maximum of 18 bins internally. That matches GlueX, but it means you should only pass meaningful bin indices for the specific dataset:
-   - HERMES/COMPASS \(\rho\): 0–3
-   - \(\omega\): 0–2
-
----
-
-## `MakePhotoMoments.C`
-
-### Purpose
-
-This macro creates the photoproduction input table, currently for GlueX \(\rho\) photoproduction.
-
-### Dataset implemented
-
-- `gluex`
-
-with 18 mean-\(-t\) bins:
-- 0.107, 0.121, 0.138, …, 0.940
-
-### Output
-
-The default output tree is `expMoments`, and it contains:
-
-- `Nbins`
-- `Q2`
-- `mtbar`
-- `t`
-- photoproduction moments:
-  - `RH_0_...`
-  - `RH_1_...`
-  - `RH_2_...`
-  - `RH_3_...`
-- corresponding `_err` branches
-- metadata:
-  - `dataset_key`
-  - `dataset_title`
-  - `NbinsMeta`
-
-### Why does it store `Q2`, `mtbar`, and `t` all together?
-
-For GlueX photoproduction there is no \(Q^2\)-bin structure like in electroproduction, so the file reuses the same mean-\(-t\) value in all three arrays. This appears to be for downstream convenience / compatibility with plotting code that expects a `Q2` branch.
-
-### Important implementation details
-
-- `RH_0_0_0` is hard-wired to `2.0`
-- several formally absent moments are forced to zero with a small default error
-- one bin (`i == 15`) is manually overridden with hard-coded numbers after the standard conversion
-
-That bin-specific override is worth knowing if you are auditing exact numerical agreement.
-
----
-
-## `RunGivenMoments_Chi2Amps.C`
-
-### Purpose
-
-This is the central inversion engine.
-
-It:
-
-1. reads an experimental or generated moment table,
-2. builds the allowed amplitude parameters,
-3. constructs the moment model \(H^\alpha_{LM}\),
-4. runs many random minimization starts,
-5. writes all fit attempts to a ROOT tree.
-
-### Main internal components
-
-#### `FitConfig`
-Controls:
-- wave truncation (`lmax`, `mmax`)
-- electro vs photo mode
-- number of starts
-- minimizer settings
-- MCMC prescan options
-- random seed
-- input file / tree / bin
-- `epsR4`
-
-#### `BuildObservedMoments(...)`
-Reads the observed moments from the input ROOT file for one bin.
-
-#### `BuildAmplitudePhaseParameters(...)`
-Creates the full list of magnitude and phase parameters:
-- `a_T_*`, `a_L_*`, `b_T_*`, `b_L_*`
-- `aphi_*`, `bphi_*`
-
-It also fixes several phases/amplitudes to remove trivial gauge/normalization freedoms and to impose the current model choices.
-
-#### `BuildMomentModels(...)`
-Builds the full model of the reconstructed moments `H_alpha_L_M` using Clebsch–Gordan coefficients and cached phase-pair trigonometric factors.
-
-#### `Chi2Function`
-Evaluates the fit objective.
-
-#### `RunGivenMoments_Chi2Amps(...)`
-The top-level user macro:
-- splits starts across cores with `ROOT::TProcessExecutor`
-- launches worker fits
-- merges `.part_*.root` files into one final output
-
-### How the parameterization works
-
-The code uses a **simplex / logit parameterization** for the free magnitude variables so that the total magnitude norm is constrained. In other words, the fit is not just independently varying every magnitude between 0 and 1; it is enforcing a normalized amplitude set.
-
-That is physically sensible because the moments are sensitive mostly to relative magnitudes/phases and an overall normalization freedom must be fixed somewhere.
-
-### Output
-
-The main fit macro writes a ROOT file under `OutputFiles/` with a tree named:
-
-- `fitResults`
-
-Each entry corresponds to **one random start / one local minimization attempt**.
-
-The tree contains:
-
-- `log_val`
-- all amplitude parameters
-- all reconstructed model moments `H_alpha_L_M`
-- the observed-like `RH...` / `RH04...` values reconstructed from the fitted amplitudes
-
-### Important caveats
-
-1. **The objective is not a conventional error-weighted chi-square.**  
-   The code reads uncertainties into `moment.sigma`, but in the main fit objective it minimizes plain sums of squared residuals:
-   \[
-   \chi^2_{\text{code}} = \sum_i (m_i^{\rm obs} - m_i^{\rm model})^2
-   \]
-   rather than \(\sum_i [(m_i^{\rm obs} - m_i^{\rm model})/\sigma_i]^2\).
-
-2. **Bin numbering is zero-based.**  
-   Pass `bin=0` for the first bin, `bin=1` for the second, etc.
-
-3. **The internal bin upper bound is hard-coded to 18.**  
-   This is compatible with GlueX, but for smaller electroproduction datasets you should only use the bins that actually exist.
-
-4. **Photoproduction mode is special.**  
-   You must set `photoProduction=true`; otherwise the code will try to reconstruct electroproduction scaling quantities that do not belong in the pure photo case.
-
----
-
-## `RunGivenMoments_Chi2Amps_Bootstrap.C`
-
-### Purpose
-
-This file quantifies uncertainties by throwing toy moment sets and refitting them.
-
-### What it does
-
-For each toy:
-
-1. clone the nominal observed moments,
-2. Gaussian-throw each moment using its stored uncertainty,
-3. run the same fit machinery,
-4. keep the best-fit solution for that toy.
-
-### Output
-
-The output tree is:
-
-- `PartialWaves`
-
-Each row is one toy fit result.
-
-Branches include:
-- `toy`
-- `log_val`
-- the toy-thrown observed moments
-- fitted amplitudes
-- reconstructed model moments
-
-### Parallelization
-
-The code parallelizes over workers, writes `.part_*.root` files, merges them, then deletes the temporary parts.
-
-### Default settings inside the macro
-
-At present the wrapper hard-codes:
-
-- `nToys = 1000`
-- `nStartsPerToy = 1000`
-- `nCores = 10`
-
-If you need other values, you will likely want to edit the macro or call the lower-level setup helper.
-
-### Caveat
-
-Some notebooks still look for a tree called `toyFitResults` for part of the GlueX workflow, but the current bootstrap macro writes `PartialWaves`.
-
----
-
-## `GenerateMomentsFromFixedAmplitudes.C`
-
-### Purpose
-
-This file creates a known-truth synthetic dataset.
-
-It is useful for:
-
-- closure tests,
-- ambiguity studies,
-- checking whether two apparently different amplitude solutions generate the same observable moments.
-
-### What you edit
-
-The main editable part is `FillUserAmplitudes(...)`, where the code explicitly sets values like:
-
-- `a_T_1_1`
-- `a_T_1_0`
-- `a_T_1_m1`
-- `a_L_1_1`
-- etc.
-- and the corresponding phases.
-
-After that, the code normalizes the amplitudes, computes all model moments, reconstructs `RH` / `RH04`, and writes them to a ROOT tree.
-
-### Output
-
-The output tree is:
-
-- `genMoments`
-
-and includes:
-- `R`
-- all parameter branches
-- full `RH04_*_*`
-- the exact observed subset used by the fitter
-- corresponding `_err` branches
-- `Q2`
-
-### Best use case
-
-Use this file when you want to answer questions like:
-
-- “If I generate data from this amplitude point, does the fitter recover it?”
-- “Does flipping these two phases leave the observed moments unchanged?”
-- “Are two minima physically ambiguous or just numerically different?”
-
-### Caveat
-
-The `Q2vals` argument is declared as a `std::vector<double>`, but the branch creation only names a single `Q2` branch. In practice, treat this as a **single-value input** unless you refactor the branch-writing logic.
-
----
+Generated moment files use the same `RH04_*`/`RH_*` value and `_err` branch
+convention as experimental input, so they can be passed straight back to `fit`.
+
+## ROOT output
+
+Single-run output contains a `fitResults` tree with one row per random start.
+Bootstrap output contains a `PartialWaves` tree with one row per toy. Both store
+only:
+
+- fit identity and minimizer status (`fit_ok`/`valid`, `status`, `chi2`, etc.);
+- fitted amplitude magnitudes and phases;
+- the physical moments `H04` and `H1`, `H2`, `H3`, `H5`, `H6`, `H7`, `H8`
+  that can be constructed from the selected waves;
+- the longitudinal/transverse ratio `R` where applicable.
+
+Single-run output also stores `err__*` parameter and physical-moment errors when
+HESSE succeeds.
+
+Raw input values always remain readable from the original experimental or
+generated moment file.
+
+## Code layout
+
+```text
+app/main.C                 command dispatch
+app/UserSettings.h         editable model and run defaults
+include/emi/Config.h       public configuration types and setters
+include/emi/Runner.h       public library entry points
+src/Input.C                ROOT input discovery and validation
+src/Model.C                amplitudes and Clebsch-Gordan moment construction
+src/Evaluation.C           moments, chi-square, and gradients
+src/Context.C              fit context, normalisation, and Hessian products
+src/Minimizer.C            Minuit2 setup
+src/FitRunner.C            ordinary-fit orchestration
+src/Bootstrap.C            bootstrap orchestration
+src/LeptoMoments.C         electroproduction experimental tables
+src/PhotoMoments.C         photoproduction experimental tables
+src/FixedMoments.C         fixed synthetic input
+src/RandomMoments.C        random synthetic inputs
+```
+
+`include/emi` is a normal public-header directory, not a second copy of the
+program. `emi` is short for Electroproduction Moments Inverter and is also the
+C++ namespace.
+The library can be called directly from C++:
+
+```cpp
+#include "emi/Runner.h"
+
+emi::ModelConfig model;
+model.SetWaves({{1, -1}, {1, 0}, {1, 1}})
+     .UseReflectivities(true, false);
+
+emi::FitConfig fit;
+fit.input = "InputFiles/Experiment/e_rho_moments.root";
+fit.output = "OutputFiles/check.root";
+fit.bin = 0;
+fit.epsilon = 0.8;
+fit.SetStarts(100).SetWorkers(1).SetSeed(123);
+
+emi::RunFit(fit, model);
+```
+
+## Reproducibility
+
+- Use a non-zero seed when comparing changes.
+- Use one worker for the simplest analytical/numerical comparison.
+- Multiple workers receive deterministic offsets from a non-zero base seed.
+- Worker files are merged automatically and removed after a successful merge.
+- Build products and generated ROOT output are ignored by Git.
 
 ## Analysis notebooks
 
-## `AnalysisScripts/HERMES_analysis.ipynb`
+`AnalysisScripts/` contains the existing PyROOT notebooks, these were used for my thesis work and for the plots within the paper ..... They are not required
+to compile or run the inverter. Typical notebook dependencies are PyROOT, NumPy,
+SciPy, and Matplotlib.
 
-### Purpose
+## License
 
-Post-processes the electroproduction fits for:
-
-- `e_rho`
-- `mu_rho`
-- `e_omega`
-- `mu_omega`
-
-### What it does
-
-- reads `fitResults` trees from files like
-  - `HERMES_results_i.root`
-  - `MuRho_results_i.root`
-  - `ElOmega_results_i.root`
-  - `Omega_results_i.root`
-- reads bootstrap outputs from files like
-  - `HERMES_bootstrap_i.root`
-  - etc.
-- converts amplitude magnitudes/phases into complex-plane points
-- makes “elliptical” uncertainty plots
-- studies amplitude scaling vs. \(Q^2\)
-
-### Important note
-
-The notebook uses **absolute file paths from the original author’s machine**. You will need to edit those paths.
-
----
-
-## `AnalysisScripts/GlueX_analysis.ipynb`
-
-### Purpose
-
-Post-processes GlueX photoproduction fits and compares the extracted amplitudes with another fit framework.
-
-### What it does
-
-- reads `gluex_results_i.root`
-- reads `gluex_bootstrap_i.root`
-- plots complex amplitudes vs. \(-\bar t\)
-- compares this project’s output against an external BruFit-style result file
-
-### Important note
-
-This notebook also contains hard-coded absolute file paths and a tree-name assumption that appears older than the current bootstrap macro.
-
----
-
-## `AnalysisScripts/R_analysis.ipynb`
-
-### Purpose
-
-Studies the ratio \(R\) as a function of \(Q^2\) for the electroproduction channels.
-
-### What it does
-
-- reads bootstrap outputs,
-- extracts means / spreads,
-- compares against externally quoted \(R\) values,
-- fits simple VMD-style parameterizations using `scipy.optimize.curve_fit`.
-
-This notebook is more physics-summary oriented than inversion-engine oriented.
-
----
-
-## `AnalysisScripts/fixed_amp_analysis.ipynb`
-
-### Purpose
-
-This is the natural follow-up notebook for `GenerateMomentsFromFixedAmplitudes.C`.
-
-### What it does
-
-- loads a closure-test output file like `fixedamps.root`
-- compares recovered amplitudes to the known truth
-- visualizes the result in magnitude/phase space and in the complex plane
-
-This is probably the best notebook to start with if you want to understand solution ambiguities.
-
----
-
-## Recommended practical usage order
-
-If you are new to the repository, I would use it in this order:
-
-1. **Create the directory structure**
-2. **Run `GenerateMomentsFromFixedAmplitudes.C`**
-3. **Fit that generated file with `RunGivenMoments_Chi2Amps.C`**
-4. **Inspect with `fixed_amp_analysis.ipynb`**
-5. **Then move to a real dataset**
-   - `MakeLeptoMoments.C` for electroproduction
-   - `MakePhotoMoments.C` for GlueX photoproduction
-6. **Run the bootstrap wrapper**
-7. **Use the analysis notebooks only after editing paths/tree names**
-
-That order lets you debug the inversion with a known truth before touching real data.
-
----
-
-## Suggested naming convention for outputs
-
-The notebooks already expect a naming pattern close to:
-
-### Electroproduction
-- `HERMES_results_0.root`, ..., `HERMES_results_3.root`
-- `HERMES_bootstrap_0.root`, ..., `HERMES_bootstrap_3.root`
-- `MuRho_results_0.root`, ...
-- `MuRho_bootstrap_0.root`, ...
-- `ElOmega_results_0.root`, ...
-- `Omega_results_0.root`, ...
-
-### Photoproduction
-- `gluex_results_0.root`, ..., `gluex_results_17.root`
-- `gluex_bootstrap_0.root`, ..., `gluex_bootstrap_17.root`
-
-If you follow that convention, the plotting notebooks will need fewer edits.
-
----
-
-## Common pitfalls
-
-1. **Forgetting to create the output directories**
-2. **Using 1-based rather than 0-based bin numbering**
-3. **Passing `photoProduction=false` for GlueX**
-4. **Using notebook paths from the author’s machine without editing them**
-5. **Assuming `"omega"` is a working dataset key in `MakeLeptoMoments.C`**
-6. **Assuming the main fit uses experimental errors in the chi-square weights**
-7. **Trying to interpret every local minimum as unique physics rather than as a discrete ambiguity**
-8. **Using more bins than the dataset actually contains**
-
----
-
-## Short “how do I run everything?” checklist
-
-### Electroproduction example
-```bash
-mkdir -p InputFiles/Experiment InputFiles/Generated OutputFiles
-
-root -l -q 'MakeLeptoMoments.C("e_rho")'
-
-for i in 0 1 2 3; do
-  root -l -q "RunGivenMoments_Chi2Amps.C(\"InputFiles/Experiment/e_rho_moments.root\",\"expMoments\",$i,\"HERMES_results_${i}.root\",1.0,false)"
-  root -l -q "RunGivenMoments_Chi2Amps_Bootstrap.C(\"InputFiles/Experiment/e_rho_moments.root\",\"expMoments\",$i,\"HERMES_bootstrap_${i}.root\",1.0,false)"
-done
-```
-
-### Photoproduction example
-```bash
-root -l -q 'MakePhotoMoments.C("gluex")'
-
-for i in $(seq 0 17); do
-  root -l -q "RunGivenMoments_Chi2Amps.C(\"InputFiles/Experiment/gluex_moments.root\",\"expMoments\",$i,\"gluex_results_${i}.root\",1.0,true)"
-  root -l -q "RunGivenMoments_Chi2Amps_Bootstrap.C(\"InputFiles/Experiment/gluex_moments.root\",\"expMoments\",$i,\"gluex_bootstrap_${i}.root\",1.0,true)"
-done
-```
-
-### Closure-test example
-```bash
-root -l -q 'GenerateMomentsFromFixedAmplitudes.C()'
-root -l -q 'RunGivenMoments_Chi2Amps.C("InputFiles/Generated/fixed_input_moments.root","genMoments",0,"fixedamps.root",1.0,false)'
-```
-
----
-
-## Final assessment
-
-This repository is not a polished package yet; it is much closer to a **research working codebase**. But the core logic is clear and scientifically meaningful:
-
-- translate SDMEs into moments,
-- encode the moment formalism in a reflectivity amplitude basis,
-- fit amplitudes with many randomized starts,
-- propagate uncertainties with toy Monte Carlo,
-- analyze discrete ambiguities with notebooks and synthetic tests.
-
-If you wanted to improve it next, the highest-impact upgrades would be:
-
-1. switch the fit objective to a truly error-weighted chi-square,
-2. clean up dataset-key handling in `MakeLeptoMoments.C`,
-3. remove hard-coded notebook paths,
-4. move the macros into headers/sources or at least a cleaner reusable structure,
-5. add a real README and a reproducible environment file.
-
+See `LICENSE`.

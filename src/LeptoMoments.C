@@ -1,3 +1,5 @@
+#include "emi/Runner.h"
+
 #include "TFile.h"
 #include "TTree.h"
 #include "TParameter.h"
@@ -10,23 +12,11 @@
 #include <array>
 #include <vector>
 #include <algorithm>
+#include <filesystem>
 
-// Unified leptoproduction SDME -> moment table builder.
-//
-// Supported datasets:
-//   - e_rho     : HERMES electroproduction rho (electron beam)
-//   - e_phi     : HERMES electroproduction phi (hydrogen target only)
-//   - e_omega   : HERMES leptoproduction omega (electron beam)
-//   - mu_rho    : muon leptoproduction rho
-//   - mu_omega  : muon leptoproduction omega
-//
-// Example usage:
-//   root -l -q 'MakeLeptoMoments.C("e_rho")'
-//   root -l -q 'MakeLeptoMoments.C("e_phi", "e_phi_hydrogen_moments.root")'
-//   root -l -q 'MakeLeptoMoments.C("mu_rho", "mu_rho_expMoments.root")'
-//   root -l -q 'MakeLeptoMoments.C("mu_omega", "omega_expMoments.root", "expMoments")'
-//
-// To add a new leptoproduction table, define another DatasetSpec in GetDatasetSpec().
+namespace emi {
+namespace {
+
 
 constexpr double kSqrt6Over5  = 0.48989794855663561963945681494118;
 constexpr double kSqrt12Over5 = 0.69282032302755092063339055356909;
@@ -45,7 +35,6 @@ inline double Comb(const ValErr2& x) {
   return std::sqrt(x.stat * x.stat + x.syst * x.syst);
 }
 
-// Common 23-SDME layout for spin-1 electro/leptoproduction datasets.
 struct SDMEsTable {
   ValErr2 r00_04, re_r10_04, r1m1_04;
   ValErr2 r1m1_1, re_r10_1, im_r10_2, r00_1, im_r10_3, r00_8;
@@ -82,35 +71,8 @@ static void ResizeOutputs(OutputArrays& out, std::size_t n) {
   out.Nbins = static_cast<int>(n);
 }
 
-static void SetMissingL1(OutputArrays& out, int i) {
-  // Maybe find a better way to do this...
-  // Could intrinsically set them to 0 in the code then have options for circ vs lin for photo where this is issue?
-  constexpr double kMissingMoment = 0.0;
-  constexpr double kMissingError  = 0.001;
-
-  out.RH04_1_0[i] = kMissingMoment; out.RH04_1_0_err[i] = kMissingError;
-  out.RH04_1_1[i] = kMissingMoment; out.RH04_1_1_err[i] = kMissingError;
-
-  out.RH_1_1_0[i] = kMissingMoment; out.RH_1_1_0_err[i] = kMissingError;
-  out.RH_1_1_1[i] = kMissingMoment; out.RH_1_1_1_err[i] = kMissingError;
-  out.RH_2_1_0[i] = kMissingMoment; out.RH_2_1_0_err[i] = kMissingError;
-  out.RH_2_1_1[i] = kMissingMoment; out.RH_2_1_1_err[i] = kMissingError;
-  out.RH_3_1_0[i] = kMissingMoment; out.RH_3_1_0_err[i] = kMissingError;
-  out.RH_3_1_1[i] = kMissingMoment; out.RH_3_1_1_err[i] = kMissingError;
-
-  out.RH_5_1_0[i] = kMissingMoment; out.RH_5_1_0_err[i] = kMissingError;
-  out.RH_5_1_1[i] = kMissingMoment; out.RH_5_1_1_err[i] = kMissingError;
-  out.RH_6_1_0[i] = kMissingMoment; out.RH_6_1_0_err[i] = kMissingError;
-  out.RH_6_1_1[i] = kMissingMoment; out.RH_6_1_1_err[i] = kMissingError;
-  out.RH_7_1_0[i] = kMissingMoment; out.RH_7_1_0_err[i] = kMissingError;
-  out.RH_7_1_1[i] = kMissingMoment; out.RH_7_1_1_err[i] = kMissingError;
-  out.RH_8_1_0[i] = kMissingMoment; out.RH_8_1_0_err[i] = kMissingError;
-  out.RH_8_1_1[i] = kMissingMoment; out.RH_8_1_1_err[i] = kMissingError;
-}
-
 static void FillBin(OutputArrays& out, int i, double q2, const SDMEsTable& p) {
   out.Q2[i] = q2;
-  // SetMissingL1(out, i);
 
   const double s_r00_04    = Comb(p.r00_04);
   const double s_re_r10_04 = Comb(p.re_r10_04);
@@ -228,8 +190,6 @@ static DatasetSpec GetDatasetSpec(const std::string& requestedKey) {
     DatasetSpec ds;
     ds.key = "e_phi";
     ds.title = "HERMES electroproduction phi (hydrogen target only)";
-    // Hydrogen Q2-bin centres for source bins: [1.0,1.4], [1.4,2.0], [2.0,7.0] GeV^2.
-    // Hydrogen t range in the source tables: -0.40 < t < 0.00 GeV^2.
     ds.q2 = {1.20, 1.70, 4.50};
     ds.bins = {
       SDMEsTable{
@@ -373,23 +333,29 @@ static void BuildOutputs(const DatasetSpec& ds, OutputArrays& out) {
   }
 }
 
-void MakeLeptoMoments(const char* dataset = "e_rho",
-                      const char* outFile = "",
-                      const char* treeName = "expMoments") {
+} // namespace
 
-  const DatasetSpec ds = GetDatasetSpec(dataset ? dataset : "e_rho");
-  const std::string outName = (outFile && std::string(outFile).size()) ? outFile : DefaultOutFile(ds.key);
-  const std::string outPath = "./InputFiles/Experiment/" + outName;
+void MakeLeptoproductionMoments(const std::string& dataset,
+                                const std::filesystem::path& output,
+                                const std::string& treeName) {
+
+  const DatasetSpec ds = GetDatasetSpec(dataset.empty() ? "e_rho" : dataset);
+  const std::filesystem::path outPath = output.empty()
+      ? std::filesystem::path("InputFiles/Experiment") / DefaultOutFile(ds.key)
+      : output;
+  if (!outPath.parent_path().empty()) {
+    std::filesystem::create_directories(outPath.parent_path());
+  }
 
   OutputArrays out;
   BuildOutputs(ds, out);
 
   TFile fout(outPath.c_str(), "RECREATE");
   if (fout.IsZombie()) {
-    throw std::runtime_error("Failed to open output file: " + outPath);
+    throw std::runtime_error("Failed to open output file: " + outPath.string());
   }
 
-  TTree tree(treeName, (std::string("Experimental moments and uncertainties vs Q2 for ") + ds.title).c_str());
+  TTree tree(treeName.c_str(), (std::string("Experimental moments and uncertainties vs Q2 for ") + ds.title).c_str());
 
   tree.Branch("Nbins", &out.Nbins, "Nbins/I");
   auto br = [&](const char* name, double* arr) {
@@ -398,47 +364,30 @@ void MakeLeptoMoments(const char* dataset = "e_rho",
 
   br("Q2", out.Q2);
   br("RH04_0_0", out.RH04_0_0); br("RH04_0_0_err", out.RH04_0_0_err);
-  // br("RH04_1_0", out.RH04_1_0); br("RH04_1_0_err", out.RH04_1_0_err);
-  // br("RH04_1_1", out.RH04_1_1); br("RH04_1_1_err", out.RH04_1_1_err);
   br("RH04_2_0", out.RH04_2_0); br("RH04_2_0_err", out.RH04_2_0_err);
   br("RH04_2_1", out.RH04_2_1); br("RH04_2_1_err", out.RH04_2_1_err);
   br("RH04_2_2", out.RH04_2_2); br("RH04_2_2_err", out.RH04_2_2_err);
 
   br("RH_1_0_0", out.RH_1_0_0); br("RH_1_0_0_err", out.RH_1_0_0_err);
-  // br("RH_1_1_0", out.RH_1_1_0); br("RH_1_1_0_err", out.RH_1_1_0_err);
-  // br("RH_1_1_1", out.RH_1_1_1); br("RH_1_1_1_err", out.RH_1_1_1_err);
   br("RH_1_2_0", out.RH_1_2_0); br("RH_1_2_0_err", out.RH_1_2_0_err);
   br("RH_1_2_1", out.RH_1_2_1); br("RH_1_2_1_err", out.RH_1_2_1_err);
   br("RH_1_2_2", out.RH_1_2_2); br("RH_1_2_2_err", out.RH_1_2_2_err);
-  //
-  // br("RH_2_1_0", out.RH_2_1_0); br("RH_2_1_0_err", out.RH_2_1_0_err);
-  // br("RH_2_1_1", out.RH_2_1_1); br("RH_2_1_1_err", out.RH_2_1_1_err);
   br("RH_2_2_1", out.RH_2_2_1); br("RH_2_2_1_err", out.RH_2_2_1_err);
   br("RH_2_2_2", out.RH_2_2_2); br("RH_2_2_2_err", out.RH_2_2_2_err);
-  // br("RH_3_1_0", out.RH_3_1_0); br("RH_3_1_0_err", out.RH_3_1_0_err);
-  // br("RH_3_1_1", out.RH_3_1_1); br("RH_3_1_1_err", out.RH_3_1_1_err);
   br("RH_3_2_1", out.RH_3_2_1); br("RH_3_2_1_err", out.RH_3_2_1_err);
   br("RH_3_2_2", out.RH_3_2_2); br("RH_3_2_2_err", out.RH_3_2_2_err);
 
   br("RH_5_0_0", out.RH_5_0_0); br("RH_5_0_0_err", out.RH_5_0_0_err);
-  // br("RH_5_1_0", out.RH_5_1_0); br("RH_5_1_0_err", out.RH_5_1_0_err);
-  // br("RH_5_1_1", out.RH_5_1_1); br("RH_5_1_1_err", out.RH_5_1_1_err);
   br("RH_5_2_0", out.RH_5_2_0); br("RH_5_2_0_err", out.RH_5_2_0_err);
   br("RH_5_2_1", out.RH_5_2_1); br("RH_5_2_1_err", out.RH_5_2_1_err);
   br("RH_5_2_2", out.RH_5_2_2); br("RH_5_2_2_err", out.RH_5_2_2_err);
 
-  // br("RH_6_1_0", out.RH_6_1_0); br("RH_6_1_0_err", out.RH_6_1_0_err);
-  // br("RH_6_1_1", out.RH_6_1_1); br("RH_6_1_1_err", out.RH_6_1_1_err);
   br("RH_6_2_1", out.RH_6_2_1); br("RH_6_2_1_err", out.RH_6_2_1_err);
   br("RH_6_2_2", out.RH_6_2_2); br("RH_6_2_2_err", out.RH_6_2_2_err);
-  // br("RH_7_1_0", out.RH_7_1_0); br("RH_7_1_0_err", out.RH_7_1_0_err);
-  // br("RH_7_1_1", out.RH_7_1_1); br("RH_7_1_1_err", out.RH_7_1_1_err);
   br("RH_7_2_1", out.RH_7_2_1); br("RH_7_2_1_err", out.RH_7_2_1_err);
   br("RH_7_2_2", out.RH_7_2_2); br("RH_7_2_2_err", out.RH_7_2_2_err);
 
   br("RH_8_0_0", out.RH_8_0_0); br("RH_8_0_0_err", out.RH_8_0_0_err);
-  // br("RH_8_1_0", out.RH_8_1_0); br("RH_8_1_0_err", out.RH_8_1_0_err);
-  // br("RH_8_1_1", out.RH_8_1_1); br("RH_8_1_1_err", out.RH_8_1_1_err);
   br("RH_8_2_0", out.RH_8_2_0); br("RH_8_2_0_err", out.RH_8_2_0_err);
   br("RH_8_2_1", out.RH_8_2_1); br("RH_8_2_1_err", out.RH_8_2_1_err);
   br("RH_8_2_2", out.RH_8_2_2); br("RH_8_2_2_err", out.RH_8_2_2_err);
@@ -461,7 +410,4 @@ void MakeLeptoMoments(const char* dataset = "e_rho",
   std::cout << std::endl;
 }
 
-// FUTURE UPDATES:
-// Extend bins to stuff like t and invariant masses W etc,
-// Store the information too will be different to above if it comes binned that way
-// Have verbose mode that prints out the moments
+} // namespace emi
