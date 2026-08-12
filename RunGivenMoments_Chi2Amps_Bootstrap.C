@@ -10,15 +10,9 @@
 #include <thread>
 #include <vector>
 
-// Load the minimiser implementation.  The first include is the name I would use
-// in the repository; the second allows this uploaded copy to run without being
-// renamed first.
-#if __has_include("RunGivenMoments_Chi2Amps_normalised_analyticgrad.C")
-#include "RunGivenMoments_Chi2Amps_normalised_analyticgrad.C"
-#elif __has_include("RunGivenMoments_Chi2Amps_normalised_analyticgrad(1).C")
-#include "RunGivenMoments_Chi2Amps_normalised_analyticgrad(1).C"
-#else
-#error "Could not find RunGivenMoments_Chi2Amps_normalised_analyticgrad.C"
+// Load the minimiser implementation.
+#if __has_include("RunGivenMoments_Chi2Amps.C")
+#include "RunGivenMoments_Chi2Amps.C"
 #endif
 
 namespace chi2_amp_fit_toys {

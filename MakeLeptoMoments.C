@@ -8,19 +8,23 @@
 #include <stdexcept>
 #include <string>
 #include <array>
+#include <vector>
 #include <algorithm>
 
 // Unified leptoproduction SDME -> moment table builder.
 //
 // Supported datasets:
 //   - e_rho     : HERMES electroproduction rho (electron beam)
+//   - e_phi     : HERMES electroproduction phi (hydrogen target only)
+//   - e_omega   : HERMES leptoproduction omega (electron beam)
 //   - mu_rho    : muon leptoproduction rho
-//   - omega     : muon leptoproduction omega
+//   - mu_omega  : muon leptoproduction omega
 //
 // Example usage:
-//   root -l -q 'MakeExperimentalMomentsTable_leptoproduction.C("e_rho")'
-//   root -l -q 'MakeExperimentalMomentsTable_leptoproduction.C("mu_rho", "mu_rho_expMoments.root")'
-//   root -l -q 'MakeExperimentalMomentsTable_leptoproduction.C("omega", "omega_expMoments.root", "expMoments")'
+//   root -l -q 'MakeLeptoMoments.C("e_rho")'
+//   root -l -q 'MakeLeptoMoments.C("e_phi", "e_phi_hydrogen_moments.root")'
+//   root -l -q 'MakeLeptoMoments.C("mu_rho", "mu_rho_expMoments.root")'
+//   root -l -q 'MakeLeptoMoments.C("mu_omega", "omega_expMoments.root", "expMoments")'
 //
 // To add a new leptoproduction table, define another DatasetSpec in GetDatasetSpec().
 
@@ -171,8 +175,10 @@ static void FillBin(OutputArrays& out, int i, double q2, const SDMEsTable& p) {
 static std::string NormalizeKey(std::string key) {
   std::transform(key.begin(), key.end(), key.begin(), [](unsigned char c) { return std::tolower(c); });
   if (key == "rho" || key == "e-rho" || key == "electron_rho" || key == "hermes" || key == "hermes_rho") return "e_rho";
+  if (key == "phi" || key == "e-phi" || key == "electron_phi" || key == "hermes_phi" || key == "e_phi_h" || key == "phi_h" || key == "phi_hydrogen") return "e_phi";
+  if (key == "e-omega" || key == "electron_omega" || key == "hermes_omega") return "e_omega";
   if (key == "mu-rho" || key == "muon_rho" || key == "m_rho") return "mu_rho";
-  if (key == "mu-omega" || key == "muon_omega" || key == "m_omega") return "omega";
+  if (key == "omega" || key == "mu-omega" || key == "muon_omega" || key == "m_omega") return "mu_omega";
   return key;
 }
 
@@ -212,6 +218,37 @@ static DatasetSpec GetDatasetSpec(const std::string& requestedKey) {
         VE(0.204,0.017,0.012), VE(-0.009,0.013,0.010), VE(0.022,0.013,0.008), VE(0.037,0.034,0.002), VE(0.048,0.024,0.006), VE(0.010,0.085,0.016),
         VE(-0.021,0.006,0.016), VE(0.020,0.007,0.008), VE(-0.010,0.007,0.007), VE(-0.109,0.047,0.004), VE(-0.002,0.035,0.005), VE(0.004,0.045,0.014),
         VE(-0.018,0.012,0.010), VE(-0.026,0.028,0.005), VE(-0.197,0.017,0.012), VE(0.141,0.006,0.008), VE(-0.156,0.006,0.010), VE(0.187,0.034,0.018), VE(0.098,0.032,0.005), VE(0.151,0.015,0.007)
+      }
+    };
+    return ds;
+  }
+
+
+  if (key == "e_phi") {
+    DatasetSpec ds;
+    ds.key = "e_phi";
+    ds.title = "HERMES electroproduction phi (hydrogen target only)";
+    // Hydrogen Q2-bin centres for source bins: [1.0,1.4], [1.4,2.0], [2.0,7.0] GeV^2.
+    // Hydrogen t range in the source tables: -0.40 < t < 0.00 GeV^2.
+    ds.q2 = {1.20, 1.70, 4.50};
+    ds.bins = {
+      SDMEsTable{
+        VE(0.26587,0.01747,0.00898), VE(-0.01791,0.01363,0.02109), VE(-0.00560,0.01949,0.00554),
+        VE(0.31918,0.02780,0.00435), VE(0.01965,0.01914,0.03653), VE(-0.00778,0.01975,0.02628), VE(0.04024,0.02424,0.00360), VE(0.00772,0.06678,0.00674), VE(0.14508,0.13646,0.04381),
+        VE(-0.01891,0.01186,0.02587), VE(0.01249,0.01561,0.00930), VE(-0.02733,0.01480,0.00972), VE(-0.12475,0.15702,0.01144), VE(-0.13716,0.10893,0.02097), VE(-0.24102,0.13534,0.01771),
+        VE(-0.02139,0.02424,0.01095), VE(-0.08304,0.10327,0.01463), VE(-0.27705,0.02854,0.01162), VE(0.17033,0.00955,0.01217), VE(-0.14678,0.00914,0.00393), VE(0.02572,0.08588,0.02175), VE(0.08476,0.07824,0.01492), VE(-0.01768,0.01362,0.02586)
+      },
+      SDMEsTable{
+        VE(0.34252,0.01965,0.00919), VE(-0.00440,0.01221,0.01444), VE(0.02598,0.01865,0.00826),
+        VE(0.28006,0.02684,0.01108), VE(-0.00920,0.01618,0.04668), VE(-0.01632,0.01745,0.00879), VE(-0.00281,0.02999,0.00474), VE(0.09648,0.05523,0.01392), VE(-0.20985,0.14228,0.00837),
+        VE(-0.00042,0.01119,0.02339), VE(0.00177,0.01421,0.01114), VE(-0.02196,0.01398,0.00752), VE(-0.07973,0.11871,0.00798), VE(0.00648,0.09232,0.01549), VE(-0.15893,0.11723,0.00675),
+        VE(0.02931,0.02305,0.01632), VE(-0.08855,0.07884,0.00406), VE(-0.26642,0.02632,0.02976), VE(0.16208,0.00860,0.00875), VE(-0.16801,0.00867,0.00655), VE(0.16662,0.06566,0.01911), VE(0.10157,0.07364,0.01133), VE(0.02859,0.01744,0.02096)
+      },
+      SDMEsTable{
+        VE(0.40301,0.02022,0.01855), VE(-0.01809,0.01275,0.01803), VE(-0.02619,0.01746,0.01435),
+        VE(0.26413,0.02369,0.02038), VE(0.00418,0.01848,0.02072), VE(-0.00443,0.01820,0.02672), VE(0.01879,0.03502,0.02007), VE(-0.04420,0.05054,0.01140), VE(0.29582,0.14240,0.02704),
+        VE(0.01220,0.01083,0.02672), VE(-0.01883,0.01326,0.01451), VE(-0.01407,0.01256,0.00680), VE(-0.08306,0.10176,0.01025), VE(-0.15341,0.08244,0.00616), VE(0.08515,0.10236,0.01747),
+        VE(-0.00178,0.02187,0.01718), VE(0.01682,0.06746,0.01041), VE(-0.23127,0.02351,0.00530), VE(0.14914,0.00968,0.00675), VE(-0.18073,0.00884,0.00701), VE(-0.05928,0.06387,0.01189), VE(0.16047,0.06218,0.01116), VE(0.02543,0.01886,0.01851)
       }
     };
     return ds;
@@ -321,7 +358,7 @@ static DatasetSpec GetDatasetSpec(const std::string& requestedKey) {
 
   throw std::runtime_error(
     "Unknown dataset key '" + requestedKey +
-    "'. Supported keys: e_rho, mu_rho, e_omega or mu_omega."
+    "'. Supported keys: e_rho, e_phi, e_omega, mu_rho or mu_omega."
   );
 }
 

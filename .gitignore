@@ -40,8 +40,17 @@
 # debug information files
 *.dwo
 
+# Ignore pdfs and pngs etc
+*.pdf
+*.png
+*.jpeg
+*.jpg
 # Adding output files directory, ignores all stuff like generated root scripts etc
 OutputFiles/
+AnalysisScripts/outputs/
 
-# Should I add input files? Possibly just generated ones
-InputFiles/Generated/
+# Generate.C files can already generate all of the files used in analysis
+InputFiles/
+
+# Ignore run.sh, that is there just so I can run everything overnight
+run.sh

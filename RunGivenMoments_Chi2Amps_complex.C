@@ -20,7 +20,6 @@
 #include <cmath>
 #include <cstdint>
 #include <iostream>
-#include <limits>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
@@ -74,6 +73,10 @@ struct ParDef {
   double low = -1.0;
   double high = 1.0;
   bool fixed = false;
+
+  // In the Cartesian parameterisation this flag marks the imaginary
+  // component.  It keeps the rest of the indexing code simple because the
+  // old magnitude/phase code also had two real parameters per amplitude.
   bool isPhase = false;
 };
 
@@ -88,9 +91,9 @@ struct FitConfig {
   double epsilon = 1.0;
 
   unsigned nStarts = 10000;
-  unsigned maxCalls = 1000000;
-  unsigned maxIters = 1000000;
-  double tolerance = 1e-8;
+  unsigned maxCalls = 5000;
+  unsigned maxIters = 5000;
+  double tolerance = 1e-3;
   int strategy = 2;
   int printLevel = 0;
   bool runHesse = true;
@@ -130,9 +133,10 @@ struct PhasePair {
 
 struct Term {
   double coeff = 0.0;
-  int idxMag1 = -1;
-  int idxMag2 = -1;
-  int phasePairIdx = -1;
+  int idxRe1 = -1;
+  int idxIm1 = -1;
+  int idxRe2 = -1;
+  int idxIm2 = -1;
   TrigKind trig = TrigKind::kCos;
   bool ignorePhase = false;
 };
@@ -261,28 +265,28 @@ static std::vector<ObservedMoment> BuildObservedMoments(const std::string& inFil
   //! Make this bit loop using max L m etc etc, well if I do not end up moving to brufit that is
   if (cfg.photoProduction) {
     add(0,0,0,"RH_0_0_0","RH_0_0_0_err",false);
-    add(0,1,0,"RH_0_1_0","RH_0_1_0_err",false);
-    add(0,1,1,"RH_0_1_1","RH_0_1_1_err",false);
+    // add(0,1,0,"RH_0_1_0","RH_0_1_0_err",false);
+    // add(0,1,1,"RH_0_1_1","RH_0_1_1_err",false);
     add(0,2,0,"RH_0_2_0","RH_0_2_0_err",false);
     add(0,2,1,"RH_0_2_1","RH_0_2_1_err",false);
     add(0,2,2,"RH_0_2_2","RH_0_2_2_err",false);
 
     add(1,0,0,"RH_1_0_0","RH_1_0_0_err",false);
-    add(1,1,0,"RH_1_1_0","RH_1_1_0_err",false);
-    add(1,1,1,"RH_1_1_1","RH_1_1_1_err",false);
+    // add(1,1,0,"RH_1_1_0","RH_1_1_0_err",false);
+    // add(1,1,1,"RH_1_1_1","RH_1_1_1_err",false);
     add(1,2,0,"RH_1_2_0","RH_1_2_0_err",false);
     add(1,2,1,"RH_1_2_1","RH_1_2_1_err",false);
     add(1,2,2,"RH_1_2_2","RH_1_2_2_err",false);
 
-    add(2,1,1,"RH_2_1_1","RH_2_1_1_err",false);
+    // add(2,1,1,"RH_2_1_1","RH_2_1_1_err",false);
     add(2,2,1,"RH_2_2_1","RH_2_2_1_err",false);
     add(2,2,2,"RH_2_2_2","RH_2_2_2_err",false);
 
     // Need to add options for circular vs linear pol gluex in linear
     // Cant have these values zeroed out as they effect the plot,  not 0 in practice
-    add(3,1,1,"RH_3_1_1","RH_3_1_1_err",false);
-    add(3,2,1,"RH_3_2_1","RH_3_2_1_err",false);
-    add(3,2,2,"RH_3_2_2","RH_3_2_2_err",false);
+    //add(3,1,1,"RH_3_1_1","RH_3_1_1_err",false);
+    //add(3,2,1,"RH_3_2_1","RH_3_2_1_err",false);
+    //add(3,2,2,"RH_3_2_2","RH_3_2_2_err",false);
     return obs;
   }
 
@@ -329,7 +333,7 @@ static std::vector<ObservedMoment> BuildObservedMoments(const std::string& inFil
   // add(2,4,2,"RH_2_4_2","RH_2_4_2_err",false);
   // add(2,4,3,"RH_2_4_3","RH_2_4_3_err",false);
   // add(2,4,4,"RH_2_4_4","RH_2_4_4_err",false);
-  //
+
   // add(3,1,1,"RH_3_1_1","RH_3_1_1_err",false);
   add(3,2,1,"RH_3_2_1","RH_3_2_1_err",false);
   add(3,2,2,"RH_3_2_2","RH_3_2_2_err",false);
@@ -416,8 +420,14 @@ static std::vector<std::pair<int, int>> EnumerateWaves(int lmax, int mmax, bool 
 }
 
 static std::string MString(int m) { return (m < 0) ? "m"+std::to_string(-m) : std::to_string(m); }
-static std::string MagName(char refl, char orient, int l, int m) { return std::string(1, refl) + '_' + orient + '_' + std::to_string(l) + '_' + MString(m); }
-static std::string PhiName(char refl, char orient, int l, int m) { return std::string(1, refl) + "phi_" + orient + '_' + std::to_string(l) + '_' + MString(m); }
+static std::string ReName(char refl, char orient, int l, int m) { return std::string(1, refl) + "Re_" + orient + '_' + std::to_string(l) + '_' + MString(m); }
+static std::string ImName(char refl, char orient, int l, int m) { return std::string(1, refl) + "Im_" + orient + '_' + std::to_string(l) + '_' + MString(m); }
+
+// Backwards-compatible aliases for any helper macros that still ask for the
+// old parameter names.  In this Cartesian version "MagName" means real part
+// and "PhiName" means imaginary part.
+static std::string MagName(char refl, char orient, int l, int m) { return ReName(refl, orient, l, m); }
+static std::string PhiName(char refl, char orient, int l, int m) { return ImName(refl, orient, l, m); }
 
 struct ParamLabel {
   char refl = '\0';
@@ -430,10 +440,19 @@ struct ParamLabel {
 
 static ParamLabel ParseParamLabel(const std::string& name) {
   ParamLabel out;
-  if (name.size() < 5) return out;
+  if (name.size() < 6) return out;
   out.refl = name[0];
-  out.isPhase = (name.find("phi_") != std::string::npos);
-  out.orient = (name.find("_L_") != std::string::npos || name.find("phi_L_") != std::string::npos) ? 'L' : 'T';
+
+  // Cartesian amplitude names are aRe_T_l_m, aIm_T_l_m, bRe_T_l_m, ...
+  // The old flag name is kept: isPhase == true now means imaginary part.
+  out.isPhase = (name.rfind("aIm_", 0) == 0 || name.rfind("bIm_", 0) == 0);
+
+  if (!(name.rfind("aRe_", 0) == 0 || name.rfind("aIm_", 0) == 0 ||
+        name.rfind("bRe_", 0) == 0 || name.rfind("bIm_", 0) == 0)) {
+    return out;
+  }
+
+  out.orient = (name.find("_L_") != std::string::npos) ? 'L' : 'T';
   const size_t last = name.find_last_of('_');
   if (last == std::string::npos || last + 1 >= name.size()) return out;
   const size_t prev = name.find_last_of('_', last - 1);
@@ -459,47 +478,29 @@ static int ReflectivitySign(char refl) {
   return (refl == 'b') ? -1 : +1;
 }
 
-static int LongitudinalParitySign(int refl, int absM) {
-  const int mParity = (absM & 1) ? -1 : +1;
-  return refl * mParity;
+static int LongitudinalParitySign(int refl, int m) {
+  return refl * std::pow(-1,m);
 }
 
 static bool SkipLongitudinalNegativeM(const FitConfig& cfg, char orient, int m) {
   return cfg.enforceLongitudinalParity && orient == 'L' && m < 0;
 }
 
-static std::vector<ParDef> BuildAmplitudePhaseParameters(const FitConfig& cfg) {
+static std::vector<ParDef> BuildComplexAmplitudeParameters(const FitConfig& cfg) {
   std::vector<ParDef> pars;
   const auto waves = EnumerateWaves(cfg.lmax, cfg.mmax, cfg.negm, cfg.onlyEven);
   pars.reserve(waves.size() * 8);
 
-  auto add = [&](char refl, char orient, int l, int m, bool isPhase) {
+  auto add = [&](char refl, char orient, int l, int m, bool isImag) {
     if (SkipLongitudinalNegativeM(cfg, orient, m)) return;
 
     ParDef p;
-    p.name = isPhase ? PhiName(refl, orient, l, m) : MagName(refl, orient, l, m);
+    p.name = isImag ? ImName(refl, orient, l, m) : ReName(refl, orient, l, m);
     p.init = 0.0;
-    p.step = isPhase ? 0.6 : 0.2;
-    if (cfg.photoProduction)
-    {
-      p.low = 0.0; // set to 0 for photoproduction due to ambiguity i.e. one appears in both sides
-    } else
-    {
-      p.low = isPhase ? -kPi : 0.0;
-    }
-    p.high = isPhase ? kPi : cfg.magnitudeMax;
-    p.isPhase = isPhase;
-
-    // For longitudinal m=0, negative reflectivity is odd under the parity relation
-    // A_m = eps (-1)^m A_-m and therefore vanishes.
-    if (cfg.enforceLongitudinalParity && orient == 'L' && refl == 'b' && m == 0) {
-      p.init = 0.0;
-      p.fixed = true;
-      p.low = 0.0;
-      p.high = 0.0;
-      p.step = 0.0;
-    }
-
+    p.step = 0.05;
+    p.low = -cfg.magnitudeMax;
+    p.high = cfg.magnitudeMax;
+    p.isPhase = isImag;
     pars.push_back(std::move(p));
   };
 
@@ -513,16 +514,37 @@ static std::vector<ParDef> BuildAmplitudePhaseParameters(const FitConfig& cfg) {
   auto fixTo = [&](const std::string& name, double value) {
     auto it = std::find_if(pars.begin(), pars.end(), [&](const ParDef& p) { return p.name == name; });
     if (it == pars.end()) throw std::runtime_error("Parameter not found to fix: " + name);
-    it->init = value; it->fixed = true; it->low = value; it->high = value; it->step = 0.0;
+    it->init = value;
+    it->fixed = true;
+    it->low = value;
+    it->high = value;
+    it->step = 0.0;
   };
 
-  // Fix one transverse reference phase per reflectivity to remove the global phase ambiguity.
-  fixTo(PhiName('a', 'T', 1, 1), 0.0);
-  fixTo(PhiName('b', 'T', 1, 1), 0.0);
+  // Fix one imaginary reference component per reflectivity to remove the
+  // global phase ambiguity: the chosen reference amplitudes are real.
+  fixTo(ImName('a', 'T', 1, 1), 0.0);
+  fixTo(ImName('b', 'T', 1, 1), 0.0);
 
- //  // S-Wave is 0
- fixTo("b_T_0_0", 0.0); fixTo("a_T_0_0", 0.0); fixTo("a_L_0_0", 0.0);// fixTo("b_L_0_0", 0.0);
- fixTo("bphi_T_0_0", 0.0); fixTo("aphi_T_0_0", 0.0); fixTo("aphi_L_0_0", 0.0);// fixTo("bphi_L_0_0", 0.0);
+  auto forceNonNegative = [&](const std::string& name) {
+    auto it = std::find_if(pars.begin(), pars.end(), [&](const ParDef& p) { return p.name == name; });
+    if (it == pars.end()) throw std::runtime_error("Parameter not found to bound: " + name);
+    it->low = 0.0;
+  };
+
+  // Remove the remaining discrete sign choice for the b-reflectivity reference.
+  forceNonNegative(ReName('b', 'T', 1, 1));
+
+  // Same physical constraints as before, but now both real and imaginary
+  // components of a forbidden complex amplitude must be fixed.
+  //fixTo(ReName('b', 'L', 2, 0), 0.0); fixTo(ImName('b', 'L', 2, 0), 0.0);
+  fixTo(ReName('b', 'L', 1, 0), 0.0); fixTo(ImName('b', 'L', 1, 0), 0.0);
+  fixTo(ReName('b', 'L', 0, 0), 0.0); fixTo(ImName('b', 'L', 0, 0), 0.0);
+
+  //fixTo(ReName('a', 'T', 1, 1), 0.0); fixTo(ImName('a', 'L', 1, 0), 0.0);
+  fixTo(ReName('a', 'L', 0, 0), 0.0); fixTo(ImName('a', 'L', 0, 0), 0.0);
+  fixTo(ReName('a', 'T', 0, 0), 0.0); fixTo(ImName('a', 'T', 0, 0), 0.0);
+  fixTo(ReName('b', 'T', 0, 0), 0.0); fixTo(ImName('b', 'T', 0, 0), 0.0);
 
   if (cfg.photoProduction) {
     for (auto& p : pars) {
@@ -537,6 +559,10 @@ static std::vector<ParDef> BuildAmplitudePhaseParameters(const FitConfig& cfg) {
   }
 
   return pars;
+}
+
+static std::vector<ParDef> BuildAmplitudePhaseParameters(const FitConfig& cfg) {
+  return BuildComplexAmplitudeParameters(cfg);
 }
 
 struct BruSelection {
@@ -582,6 +608,9 @@ static bool ResolveBruSelection(int reflsign, double factor,
   }
 
   // There are no independent negative-m longitudinal amplitudes.
+  // if (out.orient1 == 'L' && reflsign == -1 && m == 0) return false;
+  // if (out.orient2 == 'L' && reflsign == -1 && mpr == 0) return false;
+
     if(out.orient1=='L'&&m<0){
       factor*=LongitudinalParitySign(reflsign,m);
       m=-m;
@@ -655,7 +684,7 @@ static std::vector<MomentModel> BuildMomentModels(const FitConfig& cfg,
                                                   std::vector<PhasePair>& phasePairs) {
   std::vector<MomentModel> models;
   const int alphaMax = cfg.photoProduction ? 3 : 8;
-  models.reserve((alphaMax + 1) * (2 * cfg.lmax + 1) * (2 * cfg.lmax + 2) / 2);
+  models.reserve((alphaMax + 1) * (2 * cfg.lmax + 1) * (2 * cfg.lmax + 2));
 
   std::unordered_map<long long, int> phasePairLookup;
   const auto waves = EnumerateWaves(cfg.lmax, cfg.mmax, cfg.negm, cfg.onlyEven);
@@ -684,21 +713,13 @@ static std::vector<MomentModel> BuildMomentModels(const FitConfig& cfg,
     return v;
   };
 
-  auto getPhasePairIdx = [&](int idxPhi1, int idxPhi2) {
-    const long long key = (static_cast<long long>(idxPhi1) << 32) | static_cast<unsigned int>(idxPhi2);
-    auto it = phasePairLookup.find(key);
-    if (it != phasePairLookup.end()) return it->second;
-    const int idx = static_cast<int>(phasePairs.size());
-    phasePairs.push_back({idxPhi1, idxPhi2});
-    phasePairLookup.emplace(key, idx);
-    return idx;
-  };
 
-  auto paramIdx = [&](char refl, char orient, int l, int m, bool isPhase) -> int {
-    const auto it = paramIndex.find(MakeParamKey(refl, orient, l, m, isPhase));
+
+  auto paramIdx = [&](char refl, char orient, int l, int m, bool isImag) -> int {
+    const auto it = paramIndex.find(MakeParamKey(refl, orient, l, m, isImag));
     if (it == paramIndex.end()) {
       std::ostringstream os;
-      os << "Missing parameter index for " << (isPhase ? "phi" : "mag") << ' ' << refl << ' ' << orient << ' ' << l << ' ' << m;
+      os << "Missing parameter index for " << (isImag ? "imag" : "real") << ' ' << refl << ' ' << orient << ' ' << l << ' ' << m;
       throw std::runtime_error(os.str());
     }
     return it->second;
@@ -711,11 +732,10 @@ static std::vector<MomentModel> BuildMomentModels(const FitConfig& cfg,
     double coeff = sel.coeff;
     Term t;
     t.coeff = coeff;
-    t.idxMag1 = paramIdx(sel.refl1, sel.orient1, sel.l1, sel.m1, false);
-    t.idxMag2 = paramIdx(sel.refl2, sel.orient2, sel.l2, sel.m2, false);
-    const int idxPhi1 = paramIdx(sel.refl1, sel.orient1, sel.l1, sel.m1, true);
-    const int idxPhi2 = paramIdx(sel.refl2, sel.orient2, sel.l2, sel.m2, true);
-    t.phasePairIdx = getPhasePairIdx(idxPhi1, idxPhi2);
+    t.idxRe1 = paramIdx(sel.refl1, sel.orient1, sel.l1, sel.m1, false);
+    t.idxIm1 = paramIdx(sel.refl1, sel.orient1, sel.l1, sel.m1, true);
+    t.idxRe2 = paramIdx(sel.refl2, sel.orient2, sel.l2, sel.m2, false);
+    t.idxIm2 = paramIdx(sel.refl2, sel.orient2, sel.l2, sel.m2, true);
     t.trig = sel.trig;
     t.ignorePhase = (sel.orient1 == sel.orient2 && sel.l1 == sel.l2 && sel.m1 == sel.m2);
     mm.terms.push_back(t);
@@ -769,6 +789,7 @@ static std::vector<MomentModel> BuildMomentModels(const FitConfig& cfg,
                       / (2.0 * il + 1.0));
 
             if (ccfactor == 0.0) continue;
+            if (M==0) ccfactor *= 0.5;
 
             const int mmprimesign =
                 ((std::abs(im - impr) & 1) ? -1 : 1);
@@ -847,7 +868,7 @@ static std::vector<MomentModel> BuildMomentModels(const FitConfig& cfg,
             }
 
             else if (alpha == 4) {
-              const double f = 2.0 * ccfactor;
+              const double f = 2*ccfactor;
 
               emit(mm, +1, f,
                    il, im, ilpr, impr, 4, false);
@@ -859,8 +880,7 @@ static std::vector<MomentModel> BuildMomentModels(const FitConfig& cfg,
             }
 
             else if (alpha == 5) {
-              const double f =
-                  -ccfactor / TMath::Sqrt(2.0);
+              const double f = -ccfactor / TMath::Sqrt(2.0);
 
               int refl = +1;
 
@@ -870,11 +890,11 @@ static std::vector<MomentModel> BuildMomentModels(const FitConfig& cfg,
               emit(mm, refl, f,
                    il, im, ilpr, impr, 5, true);
 
-              emit(mm, refl, mmprimesign * f,
-                   il, -im, ilpr, -impr, 5, false);
+              emit(mm, refl, refl * mprimesign * f,
+                   il, im, ilpr, -impr, 5, false);
 
-              emit(mm, refl, mmprimesign * f,
-                   il, -im, ilpr, -impr, 5, true);
+              emit(mm, refl, refl * msign * f,
+                   il, -im, ilpr, impr, 5, true);
 
               if (cfg.useNegRef) {
                 refl = -1;
@@ -885,17 +905,17 @@ static std::vector<MomentModel> BuildMomentModels(const FitConfig& cfg,
                 emit(mm, refl, f,
                      il, im, ilpr, impr, 5, true);
 
-                emit(mm, refl, mmprimesign * f,
-                     il, -im, ilpr, -impr, 5, false);
+                emit(mm, refl, refl * mprimesign * f,
+                     il, im, ilpr, -impr, 5, false);
 
-                emit(mm, refl, mmprimesign * f,
-                     il, -im, ilpr, -impr, 5, true);
+                emit(mm, refl, refl * msign * f,
+                     il, -im, ilpr, impr, 5, true);
               }
             }
 
             else if (alpha == 6) {
               const double f =
-                  -ccfactor / TMath::Sqrt(2.0);
+                  -ccfactor / TMath::Sqrt(2.0);;
 
               int refl = +1;
 
@@ -905,11 +925,11 @@ static std::vector<MomentModel> BuildMomentModels(const FitConfig& cfg,
               emit(mm, refl, -f,
                    il, im, ilpr, impr, 6, true);
 
-              emit(mm, refl, -mmprimesign * f,
-                   il, -im, ilpr, -impr, 6, false);
+              emit(mm, refl, -refl * mprimesign * f,
+                   il, im, ilpr, -impr, 6, false);
 
-              emit(mm, refl, mmprimesign * f,
-                   il, -im, ilpr, -impr, 6, true);
+              emit(mm, refl, refl * msign * f,
+                   il, -im, ilpr, impr, 6, true);
 
               if (cfg.useNegRef) {
                 refl = -1;
@@ -920,17 +940,17 @@ static std::vector<MomentModel> BuildMomentModels(const FitConfig& cfg,
                 emit(mm, refl, -f,
                      il, im, ilpr, impr, 6, true);
 
-                emit(mm, refl, -mmprimesign * f,
-                     il, -im, ilpr, -impr, 6, false);
+                emit(mm, refl, -refl * mprimesign * f,
+                     il, im, ilpr, -impr, 6, false);
 
-                emit(mm, refl, mmprimesign * f,
-                     il, -im, ilpr, -impr, 6, true);
+                emit(mm, refl, refl * msign * f,
+                     il, -im, ilpr, impr, 6, true);
               }
             }
 
             else if (alpha == 7) {
               const double f =
-                  -ccfactor / TMath::Sqrt(2.0);
+                  -ccfactor / TMath::Sqrt(2.0);;
 
               int refl = +1;
 
@@ -940,11 +960,11 @@ static std::vector<MomentModel> BuildMomentModels(const FitConfig& cfg,
               emit(mm, refl, f,
                    il, im, ilpr, impr, 7, true);
 
-              emit(mm, refl, -mmprimesign * f,
-                   il, -im, ilpr, -impr, 7, false);
+              emit(mm, refl, -refl * mprimesign * f,
+                   il, im, ilpr, -impr, 7, false);
 
-              emit(mm, refl, -mmprimesign * f,
-                   il, -im, ilpr, -impr, 7, true);
+              emit(mm, refl, -refl * msign * f,
+                   il, -im, ilpr, impr, 7, true);
 
               if (cfg.useNegRef) {
                 refl = -1;
@@ -955,11 +975,11 @@ static std::vector<MomentModel> BuildMomentModels(const FitConfig& cfg,
                 emit(mm, refl, f,
                      il, im, ilpr, impr, 7, true);
 
-                emit(mm, refl, -mmprimesign * f,
-                     il, -im, ilpr, -impr, 7, false);
+                emit(mm, refl, -refl * mprimesign * f,
+                     il, im, ilpr, -impr, 7, false);
 
-                emit(mm, refl, -mmprimesign * f,
-                     il, -im, ilpr, -impr, 7, true);
+                emit(mm, refl, -refl * msign * f,
+                     il, -im, ilpr, impr, 7, true);
               }
             }
 
@@ -967,7 +987,7 @@ static std::vector<MomentModel> BuildMomentModels(const FitConfig& cfg,
             else if (alpha == 8)
             {
               const double f =
-                  ccfactor / TMath::Sqrt(2.0);
+                  -ccfactor / TMath::Sqrt(2.0);;
 
               int refl = +1;
 
@@ -977,11 +997,11 @@ static std::vector<MomentModel> BuildMomentModels(const FitConfig& cfg,
               emit(mm, refl, -f,
                    il, im, ilpr, impr, 8, true);
 
-              emit(mm, refl, mmprimesign * f,
-                   il, -im, ilpr, -impr, 8, false);
+              emit(mm, refl, refl * msign * f,
+                   il, -im, ilpr, impr, 8, false);
 
-              emit(mm, refl, -mmprimesign * f,
-                   il, -im, ilpr, -impr, 8, true);
+              emit(mm, refl, -refl * mprimesign * f,
+                   il, im, ilpr, -impr, 8, true);
 
               if (cfg.useNegRef) {
                 refl = -1;
@@ -992,11 +1012,11 @@ static std::vector<MomentModel> BuildMomentModels(const FitConfig& cfg,
                 emit(mm, refl, -f,
                      il, im, ilpr, impr, 8, true);
 
-                emit(mm, refl, mmprimesign * f,
-                     il, -im, ilpr, -impr, 8, false);
+                emit(mm, refl, refl * msign * f,
+                     il, -im, ilpr, impr, 8, false);
 
-                emit(mm, refl, -mmprimesign * f,
-                     il, -im, ilpr, -impr, 8, true);
+                emit(mm, refl, -refl * mprimesign * f,
+                     il, im, ilpr, -impr, 8, true);
               }
             }
           }
@@ -1036,7 +1056,7 @@ static void MarkAmplitudeNormalisationParameter(EvalContext& ctx) {
 
   const int idx = SelectHighestATNormalisationIndex(ctx.fullPars);
   if (idx < 0) {
-    throw std::runtime_error("Could not find an unfixed a_T magnitude to use for amplitude normalisation");
+    throw std::runtime_error("Could not find an unfixed a_T real component to use for amplitude normalisation");
   }
 
   auto& p = ctx.fullPars[static_cast<size_t>(idx)];
@@ -1052,17 +1072,16 @@ static double NormalisationWeightForMagnitude(const EvalContext& ctx, int fullId
   if (fullIdx == ctx.normalisedMagFullIdx) return 0.0;
 
   const auto& p = ctx.fullPars[static_cast<size_t>(fullIdx)];
-  if (p.isPhase) return 0.0;
-
   const auto label = ParseParamLabel(p.name);
   if (!label.valid) return 0.0;
 
-  // The normalisation condition is
-  //   |a_T_norm|^2 = target/2 - (sum |T|^2 + epsilon sum |L|^2).
+  // Cartesian version of the same constraint:
+  //   Re(a_T_norm)^2 = target/2 - sum_i w_i (Re_i^2 + Im_i^2),
+  // with Im(a_T_norm) fixed to zero by the reference-phase convention.
   if (label.orient == 'T') return 1.0;
   if (label.orient == 'L') {
     double w = ctx.cfg.epsilon;
-    if (ctx.cfg.enforceLongitudinalParity && label.m > 0) w *= 2.0;
+    if (label.m > 0) w *= 2.0;
     return w;
   }
   return 0.0;
@@ -1152,7 +1171,7 @@ static bool FillFullFromFreeRaw(const EvalContext& ctx,
     const auto& p = ctx.fullPars[static_cast<size_t>(fullIdx)];
     const double value = x[i];
     if (!std::isfinite(value)) return false;
-    if (!p.isPhase && (value < p.low || value > p.high)) return false;
+    if (value < p.low || value > p.high) return false;
     fullVals[static_cast<size_t>(fullIdx)] = value;
   }
   return true;
@@ -1169,29 +1188,35 @@ static inline void EnsureSize(std::vector<double>& v, size_t n, double fill = 0.
   if (v.size() != n) v.assign(n, fill);
 }
 
-static void BuildPhasePairTrigCache(const EvalContext& ctx,
-                                    const std::vector<double>& fullVals,
+static void BuildPhasePairTrigCache(const EvalContext&,
+                                    const std::vector<double>&,
                                     std::vector<double>& pairSin,
                                     std::vector<double>& pairCos) {
-  EnsureSize(pairSin, ctx.phasePairs.size());
-  EnsureSize(pairCos, ctx.phasePairs.size());
-  for (size_t i = 0; i < ctx.phasePairs.size(); ++i) {
-    const auto& pp = ctx.phasePairs[i];
-    FastSinCos(fullVals[pp.idxPhi1] - fullVals[pp.idxPhi2], pairSin[i], pairCos[i]);
-  }
+  pairSin.clear();
+  pairCos.clear();
+}
+
+static inline double EvalTermBilinear(const Term& t,
+                                      const std::vector<double>& fullVals) {
+  const double r1 = fullVals[static_cast<size_t>(t.idxRe1)];
+  const double i1 = fullVals[static_cast<size_t>(t.idxIm1)];
+  const double r2 = fullVals[static_cast<size_t>(t.idxRe2)];
+  const double i2 = fullVals[static_cast<size_t>(t.idxIm2)];
+
+  // A1 * conj(A2) = (r1 r2 + i1 i2) + i(i1 r2 - r1 i2)
+  return (t.trig == TrigKind::kCos)
+           ? (r1 * r2 + i1 * i2)
+           : (i1 * r2 - r1 * i2);
 }
 
 static double EvalMomentOnly(const MomentModel& mm,
                              const std::vector<double>& fullVals,
-                             const std::vector<double>& pairSin,
-                             const std::vector<double>& pairCos) {
+                             const std::vector<double>&,
+                             const std::vector<double>&) {
   double H = 0.0;
   for (const auto& t : mm.terms) {
-    // Had these as we do not need to calculate these but stopped working...
-    if (t.ignorePhase && (mm.alpha==3 || mm.alpha==7 || mm.alpha==8)) continue; // No imaginary parts for these
-    const double trig = t.ignorePhase ? 1.0 : ((t.trig == TrigKind::kCos) ? pairCos[t.phasePairIdx] : pairSin[t.phasePairIdx]);
-    // const double trig = (t.trig == TrigKind::kCos) ? pairCos[t.phasePairIdx] : pairSin[t.phasePairIdx];
-    H += t.coeff * fullVals[t.idxMag1] * fullVals[t.idxMag2] * trig;
+    if (t.ignorePhase && (mm.alpha == 3 || mm.alpha == 7 || mm.alpha == 8)) continue;
+    H += t.coeff * EvalTermBilinear(t, fullVals);
   }
   return H;
 }
@@ -1199,40 +1224,36 @@ static double EvalMomentOnly(const MomentModel& mm,
 static double EvalMomentAndDerivFull(const EvalContext& ctx,
                                      const MomentModel& mm,
                                      const std::vector<double>& fullVals,
-                                     const std::vector<double>& pairSin,
-                                     const std::vector<double>& pairCos,
+                                     const std::vector<double>&,
+                                     const std::vector<double>&,
                                      std::vector<double>& dHdFull) {
   EnsureSize(dHdFull, ctx.fullPars.size());
   std::fill(dHdFull.begin(), dHdFull.end(), 0.0);
+
   double H = 0.0;
   for (const auto& t : mm.terms) {
-    const auto& pp = ctx.phasePairs[t.phasePairIdx];
-    const double m1 = fullVals[t.idxMag1]; // Magnitudes
-    const double m2 = fullVals[t.idxMag2];
+    if (t.ignorePhase && (mm.alpha == 3 || mm.alpha == 7 || mm.alpha == 8)) continue;
 
-    // const double trig = (t.trig == TrigKind::kCos) ? pairCos[t.phasePairIdx] : pairSin[t.phasePairIdx];
-    // const double dtrig = (t.trig == TrigKind::kCos) ? -pairSin[t.phasePairIdx] : pairCos[t.phasePairIdx];
+    const double r1 = fullVals[static_cast<size_t>(t.idxRe1)];
+    const double i1 = fullVals[static_cast<size_t>(t.idxIm1)];
+    const double r2 = fullVals[static_cast<size_t>(t.idxRe2)];
+    const double i2 = fullVals[static_cast<size_t>(t.idxIm2)];
 
-    double trig;
-    double dtrig;
-    if (t.ignorePhase && (mm.alpha==3 || mm.alpha==7 || mm.alpha==8))
-    {
-       trig = 0.0;
-       dtrig = 1.0;
-    }else
-    {
-      trig = t.ignorePhase ? 1.0 : ((t.trig == TrigKind::kCos) ? pairCos[t.phasePairIdx] : pairSin[t.phasePairIdx]);
-      dtrig = t.ignorePhase ? 0.0 : ((t.trig == TrigKind::kCos) ? -pairSin[t.phasePairIdx] : pairCos[t.phasePairIdx]);
+    if (t.trig == TrigKind::kCos) {
+      const double bilinear = r1 * r2 + i1 * i2;
+      H += t.coeff * bilinear;
+      dHdFull[static_cast<size_t>(t.idxRe1)] += t.coeff * r2;
+      dHdFull[static_cast<size_t>(t.idxIm1)] += t.coeff * i2;
+      dHdFull[static_cast<size_t>(t.idxRe2)] += t.coeff * r1;
+      dHdFull[static_cast<size_t>(t.idxIm2)] += t.coeff * i1;
+    } else {
+      const double bilinear = i1 * r2 - r1 * i2;
+      H += t.coeff * bilinear;
+      dHdFull[static_cast<size_t>(t.idxRe1)] += -t.coeff * i2;
+      dHdFull[static_cast<size_t>(t.idxIm1)] +=  t.coeff * r2;
+      dHdFull[static_cast<size_t>(t.idxRe2)] +=  t.coeff * i1;
+      dHdFull[static_cast<size_t>(t.idxIm2)] += -t.coeff * r1;
     }
-    const double val = t.coeff * m1 * m2 * trig;
-    H += val;
-    dHdFull[t.idxMag1] += t.coeff * m2 * trig;
-    dHdFull[t.idxMag2] += t.coeff * m1 * trig;
-    //if (!t.ignorePhase) {
-    const double common = t.coeff * m1 * m2 * dtrig;
-    dHdFull[pp.idxPhi1] += common;
-    dHdFull[pp.idxPhi2] -= common;
-    //}
   }
   return H;
 }
@@ -1274,12 +1295,9 @@ static void ProposeMCMCStep(const EvalContext& ctx,
   const unsigned iFree = rng.Integer(proposal.size());
   const int fullIdx = ctx.freeToFull[iFree];
   const auto& p = ctx.fullPars[static_cast<size_t>(fullIdx)];
-  const double step = p.isPhase
-                        ? std::max(cfg.mcmcProposalPhaseSigma, (p.step > 0.0 ? p.step : 0.0))
-                        : std::max(cfg.mcmcProposalMagSigma, (p.step > 0.0 ? p.step : 0.0));
+  const double step = std::max(cfg.mcmcProposalMagSigma, (p.step > 0.0 ? p.step : 0.0));
   const double trial = proposal[iFree] + rng.Gaus(0.0, step);
-  proposal[iFree] = p.isPhase ? WrapToRange(trial, p.low, p.high)
-                              : std::min(std::max(trial, p.low), p.high);
+  proposal[iFree] = std::min(std::max(trial, p.low), p.high);
 }
 
 static MCMCResult RunMCMCPreScan(const EvalContext& ctx,
@@ -1483,7 +1501,7 @@ static std::shared_ptr<EvalContext> BuildContext(const FitConfig& cfg) {
     std::cout << "Production mode: "
               << (cfg.photoProduction ? "photoproduction (alpha <= 3, L fixed to 0)" : "electroproduction/full")
               << std::endl;
-    std::cout << "Longitudinal negative-m waves are folded onto m >= 0 using parity." << std::endl;
+    if (cfg.enforceLongitudinalParity) std::cout << "Longitudinal negative-m waves are folded onto m >= 0 using parity." << std::endl;
   }
 
   ctx->fullToFree.assign(ctx->fullPars.size(), -1);
@@ -1513,6 +1531,7 @@ static std::shared_ptr<EvalContext> BuildContext(const FitConfig& cfg) {
   // but keep them in the output tree for later checks/analysis.
   neededMoments.insert("H_0_0_0");
   if (!cfg.photoProduction) neededMoments.insert("H_4_0_0");
+  ctx->phasePairs.clear();
   ctx->modelsRec = BuildMomentModels(cfg, paramIndex, neededMoments, ctx->phasePairs);
   ctx->modelIndexByName.reserve(ctx->modelsRec.size() * 2);
   for (size_t i = 0; i < ctx->modelsRec.size(); ++i) ctx->modelIndexByName.emplace(ctx->modelsRec[i].name, i);
@@ -1588,167 +1607,6 @@ static void FillObservedModelValues(const EvalContext& ctx,
   }
 }
 
-template <typename NamedValue>
-static void MakePrefixedBranches(TTree* t,
-                                 const std::vector<NamedValue>& definitions,
-                                 const std::string& prefix,
-                                 std::vector<double>& storage) {
-  storage.assign(definitions.size(), std::numeric_limits<double>::quiet_NaN());
-  for (size_t i = 0; i < definitions.size(); ++i) {
-    t->Branch((prefix + definitions[i].name).c_str(), &storage[i]);
-  }
-}
-
-static void MakePhysicalCovarianceBranches(TTree* t,
-                                           const std::vector<ParDef>& pars,
-                                           std::vector<std::pair<size_t, size_t>>& pairs,
-                                           std::vector<double>& storage) {
-  pairs.clear();
-  for (size_t i = 0; i < pars.size(); ++i) {
-    for (size_t j = i; j < pars.size(); ++j) pairs.emplace_back(i, j);
-  }
-  storage.assign(pairs.size(), std::numeric_limits<double>::quiet_NaN());
-  for (size_t k = 0; k < pairs.size(); ++k) {
-    const auto [i, j] = pairs[k];
-    t->Branch(("cov__" + pars[i].name + "__" + pars[j].name).c_str(), &storage[k]);
-  }
-}
-
-static double VarianceFromGradient(const std::vector<double>& gradient,
-                                   const std::vector<double>& covariance) {
-  const size_t n = gradient.size();
-  if (covariance.size() != n * n) return std::numeric_limits<double>::quiet_NaN();
-  double variance = 0.0;
-  for (size_t i = 0; i < n; ++i) {
-    for (size_t j = 0; j < n; ++j) {
-      variance += gradient[i] * covariance[i * n + j] * gradient[j];
-    }
-  }
-  if (variance < 0.0 && variance > -1e-12) variance = 0.0;
-  return (variance >= 0.0 && std::isfinite(variance))
-           ? variance
-           : std::numeric_limits<double>::quiet_NaN();
-}
-
-static void FillHessianProducts(const EvalContext& ctx,
-                                const ROOT::Math::Minimizer& min,
-                                const std::vector<double>& fullVals,
-                                bool covarianceIsUsable,
-                                std::vector<double>& parErrors,
-                                const std::vector<std::pair<size_t, size_t>>& physicalCovPairs,
-                                std::vector<double>& physicalCovValues,
-                                std::vector<double>& momentErrors,
-                                std::vector<double>& observedErrors,
-                                double& ratioR,
-                                double& ratioRError) {
-  const double nan = std::numeric_limits<double>::quiet_NaN();
-  std::fill(parErrors.begin(), parErrors.end(), nan);
-  std::fill(physicalCovValues.begin(), physicalCovValues.end(), nan);
-  std::fill(momentErrors.begin(), momentErrors.end(), nan);
-  std::fill(observedErrors.begin(), observedErrors.end(), nan);
-  ratioR = nan;
-  ratioRError = nan;
-
-  const size_t nFree = ctx.freeToFull.size();
-  if (!covarianceIsUsable || nFree == 0) return;
-
-  std::vector<double> freeCov(nFree * nFree, 0.0);
-  for (size_t i = 0; i < nFree; ++i) {
-    for (size_t j = 0; j < nFree; ++j) {
-      freeCov[i * nFree + j] = min.CovMatrix(static_cast<unsigned>(i), static_cast<unsigned>(j));
-    }
-  }
-
-  // Jacobian from the independent Minuit coordinates to the complete physical
-  // amplitude basis.  This includes the amplitude fixed by normalisation.
-  std::vector<double> fullJac(ctx.fullPars.size() * nFree, 0.0);
-  for (size_t p = 0; p < ctx.fullPars.size(); ++p) {
-    const int freeIndex = ctx.fullToFree[p];
-    if (freeIndex >= 0) fullJac[p * nFree + static_cast<size_t>(freeIndex)] = 1.0;
-    if (static_cast<int>(p) == ctx.normalisedMagFullIdx) {
-      for (size_t i = 0; i < nFree; ++i) {
-        fullJac[p * nFree + i] = NormalisedMagnitudeDerivative(
-            ctx, fullVals, ctx.freeToFull[i]);
-      }
-    }
-  }
-
-  std::vector<double> fullCov(ctx.fullPars.size() * ctx.fullPars.size(), 0.0);
-  for (size_t p = 0; p < ctx.fullPars.size(); ++p) {
-    for (size_t q = 0; q < ctx.fullPars.size(); ++q) {
-      double value = 0.0;
-      for (size_t i = 0; i < nFree; ++i) {
-        for (size_t j = 0; j < nFree; ++j) {
-          value += fullJac[p * nFree + i] * freeCov[i * nFree + j]
-                 * fullJac[q * nFree + j];
-        }
-      }
-      fullCov[p * ctx.fullPars.size() + q] = value;
-    }
-  }
-
-  for (size_t p = 0; p < ctx.fullPars.size(); ++p) {
-    double variance = fullCov[p * ctx.fullPars.size() + p];
-    if (variance < 0.0 && variance > -1e-12) variance = 0.0;
-    parErrors[p] = (variance >= 0.0 && std::isfinite(variance)) ? std::sqrt(variance) : nan;
-  }
-  for (size_t k = 0; k < physicalCovPairs.size(); ++k) {
-    const auto [p, q] = physicalCovPairs[k];
-    physicalCovValues[k] = fullCov[p * ctx.fullPars.size() + q];
-  }
-
-  std::vector<double> pairSin, pairCos;
-  BuildPhasePairTrigCache(ctx, fullVals, pairSin, pairCos);
-  std::vector<double> dFull, dFull2, gradient(nFree, 0.0), gradient2(nFree, 0.0);
-
-  auto momentGradient = [&](int modelIndex, std::vector<double>& out) {
-    EvalMomentAndDerivFull(ctx, ctx.modelsRec[static_cast<size_t>(modelIndex)],
-                          fullVals, pairSin, pairCos, dFull);
-    out.assign(nFree, 0.0);
-    for (size_t i = 0; i < nFree; ++i) {
-      out[i] = ApplyNormalisationChainRule(ctx, fullVals, dFull, ctx.freeToFull[i]);
-    }
-  };
-
-  for (size_t m = 0; m < ctx.modelsRec.size(); ++m) {
-    momentGradient(static_cast<int>(m), gradient);
-    const double variance = VarianceFromGradient(gradient, freeCov);
-    momentErrors[m] = std::isfinite(variance) ? std::sqrt(variance) : nan;
-  }
-
-  for (size_t m = 0; m < ctx.observed.size(); ++m) {
-    if (ctx.observed[m].isMixed04) {
-      momentGradient(ctx.observedModelIdx0[m], gradient);
-      momentGradient(ctx.observedModelIdx4[m], gradient2);
-      for (size_t i = 0; i < nFree; ++i) gradient[i] += ctx.cfg.epsilon * gradient2[i];
-    } else {
-      momentGradient(ctx.observedModelIdx[m], gradient);
-    }
-    const double variance = VarianceFromGradient(gradient, freeCov);
-    observedErrors[m] = std::isfinite(variance) ? std::sqrt(variance) : nan;
-  }
-
-  const auto h0It = ctx.modelIndexByName.find("H_0_0_0");
-  const auto h4It = ctx.modelIndexByName.find("H_4_0_0");
-  if (h0It != ctx.modelIndexByName.end() && h4It != ctx.modelIndexByName.end()) {
-    const double h0 = EvalMomentAndDerivFull(ctx, ctx.modelsRec[h0It->second],
-                                             fullVals, pairSin, pairCos, dFull);
-    const double h4 = EvalMomentAndDerivFull(ctx, ctx.modelsRec[h4It->second],
-                                             fullVals, pairSin, pairCos, dFull2);
-    if (std::abs(h0) > 1e-15) {
-      ratioR = h4 / h0;
-      for (size_t i = 0; i < nFree; ++i) {
-        const int fullIndex = ctx.freeToFull[i];
-        const double dh0 = ApplyNormalisationChainRule(ctx, fullVals, dFull, fullIndex);
-        const double dh4 = ApplyNormalisationChainRule(ctx, fullVals, dFull2, fullIndex);
-        gradient[i] = (dh4 * h0 - h4 * dh0) / (h0 * h0);
-      }
-      const double variance = VarianceFromGradient(gradient, freeCov);
-      ratioRError = std::isfinite(variance) ? std::sqrt(variance) : nan;
-    }
-  }
-}
-
 static void BuildRandomStartPoint(const EvalContext& ctx,
                                   TRandom3& rng,
                                   std::vector<double>& xStart) {
@@ -1757,32 +1615,31 @@ static void BuildRandomStartPoint(const EvalContext& ctx,
   for (unsigned i = 0; i < ctx.freeToFull.size(); ++i) {
     const int fullIdx = ctx.freeToFull[i];
     const auto& p = ctx.fullPars[static_cast<size_t>(fullIdx)];
-    if (p.isPhase) {
-      xStart[i] = rng.Uniform(p.low, p.high);
-    } else {
-      double value = rng.Gaus(ctx.cfg.magnitudeStartMean, ctx.cfg.magnitudeStartSigma);
-      while (value < p.low || value > p.high) {
-        value = rng.Gaus(ctx.cfg.magnitudeStartMean, ctx.cfg.magnitudeStartSigma);
-      }
-      xStart[i] = value;
+
+    // Cartesian amplitudes are sampled directly as real components.  The old
+    // magnitudeStartSigma setting is reused as the Cartesian component width.
+    double value = rng.Gaus(0.0, ctx.cfg.magnitudeStartSigma);
+    unsigned guard = 0;
+    while ((value < p.low || value > p.high) && guard++ < 10000) {
+      value = rng.Gaus(0.0, ctx.cfg.magnitudeStartSigma);
     }
+    if (value < p.low || value > p.high) value = rng.Uniform(p.low, p.high);
+    xStart[i] = value;
   }
 
   if (ctx.normalisedMagFullIdx >= 0) {
     std::vector<double> fullVals;
     if (!FillFullFromFree(ctx, xStart.data(), fullVals)) {
       // If the random point gives an invalid normalisation square-root, shrink
-      // all free magnitudes together and then calculate the derived a_T wave.
-      // This enforces sum |T|^2 + epsilon sum |L|^2 < target/2.
+      // all free Cartesian components together and then calculate the derived
+      // real reference wave.
       FillFullFromFreeRaw(ctx, xStart.data(), fullVals);
       const double base = 0.5 * ctx.cfg.normalisationMomentTarget;
       const double sum = EvalNormalisationSum(ctx, fullVals);
       if (sum > 0.0) {
-        const double scale = std::sqrt(0.95 * base / sum);
+        const double scale = std::sqrt(0.5 * base / sum);
         for (unsigned i = 0; i < ctx.freeToFull.size(); ++i) {
-          const int fullIdx = ctx.freeToFull[i];
-          const auto& p = ctx.fullPars[static_cast<size_t>(fullIdx)];
-          if (!p.isPhase) xStart[i] *= scale;
+          xStart[i] *= scale;
         }
       }
     }
@@ -1804,24 +1661,12 @@ void RunGivenMoments_Chi2Amps_Impl(const chi2_amp_fit_opt::FitConfig& cfg, const
   if (!fout || fout->IsZombie()) throw std::runtime_error(std::string("Failed to open output file: ") + outFile);
 
   TTree* t = new TTree("fitResults", "Optimized chi2 fit results (per start)");
-  bool fit_ok = false;
-  bool hesse_ok = false;
-  int status = -999;
-  int cov_status = -1;
-  double edm = std::numeric_limits<double>::quiet_NaN();
-  double chi2 = std::numeric_limits<double>::quiet_NaN();
   double log_val = 0.0;
   double val = 0.0;
   double start_log_val = -999.0;
   double prescan_log_val = -999.0;
   double mcmc_acceptance = 0.0;
 
-  t->Branch("fit_ok", &fit_ok);
-  t->Branch("hesse_ok", &hesse_ok);
-  t->Branch("status", &status);
-  t->Branch("cov_status", &cov_status);
-  t->Branch("edm", &edm);
-  t->Branch("chi2", &chi2);
   t->Branch("log_val", &log_val);
   t->Branch("val", &val);
   if (cfg.useMCMCPreScan){
@@ -1831,20 +1676,9 @@ void RunGivenMoments_Chi2Amps_Impl(const chi2_amp_fit_opt::FitConfig& cfg, const
   }
 
   std::vector<double> parVals, momRecVals, rhRecVals;
-  std::vector<double> parErrVals, momErrVals, rhErrVals;
-  std::vector<std::pair<size_t, size_t>> physicalCovPairs;
-  std::vector<double> physicalCovVals;
-  double ratioR = std::numeric_limits<double>::quiet_NaN();
-  double ratioRError = std::numeric_limits<double>::quiet_NaN();
   MakeBranchesForPars(t, ctx->fullPars, parVals);
   MakeBranchesForMoments(t, ctx->modelsRec, momRecVals);
   MakeBranchesForObservedModel(t, ctx->observed, rhRecVals);
-  MakePrefixedBranches(t, ctx->fullPars, "err__", parErrVals);
-  MakePrefixedBranches(t, ctx->modelsRec, "err__", momErrVals);
-  MakePrefixedBranches(t, ctx->observed, "err__", rhErrVals);
-  MakePhysicalCovarianceBranches(t, ctx->fullPars, physicalCovPairs, physicalCovVals);
-  t->Branch("R", &ratioR);
-  t->Branch("err__R", &ratioRError);
 
   const bool useNumericalGradient = cfg.useNumericalGradient;
 
@@ -1854,14 +1688,13 @@ void RunGivenMoments_Chi2Amps_Impl(const chi2_amp_fit_opt::FitConfig& cfg, const
   if (cfg.verbose) {
     std::cout << (useNumericalGradient
                     ? "Using Minuit2 numerical derivatives (analytical gradient disabled)."
-                    : "Using analytical gradient, including the amplitude-normalisation chain rule.")
+                    : "Using analytical Cartesian gradient, including the amplitude-normalisation chain rule.")
               << std::endl;
   }
   if (cfg.verbose && cfg.useMCMCPreScan && cfg.mcmcSteps > 0) {
     std::cout << "Using MCMC pre-scan before each Minuit fit: steps=" << cfg.mcmcSteps
               << ", T=" << cfg.mcmcTemperature
-              << ", magSigma=" << cfg.mcmcProposalMagSigma
-              << ", phaseSigma=" << cfg.mcmcProposalPhaseSigma << std::endl;
+              << ", componentSigma=" << cfg.mcmcProposalMagSigma << std::endl;
   }
 
   TBenchmark bench;
@@ -1894,9 +1727,6 @@ void RunGivenMoments_Chi2Amps_Impl(const chi2_amp_fit_opt::FitConfig& cfg, const
     min->SetTolerance(cfg.tolerance);
     min->SetStrategy(cfg.strategy);
     min->SetPrintLevel(cfg.printLevel);
-    // The fitted objective is a chi-square, so one-standard-deviation errors
-    // correspond to Delta chi2 = 1.
-    min->SetErrorDef(1.0);
     if (useNumericalGradient) {
       min->SetFunction(fcnNoGrad);
     } else {
@@ -1910,23 +1740,23 @@ void RunGivenMoments_Chi2Amps_Impl(const chi2_amp_fit_opt::FitConfig& cfg, const
       min->SetLimitedVariable(i, p.name.c_str(), startVals[i], step, p.low, p.high);
     }
 
-    fit_ok = min->Minimize();
-    hesse_ok = cfg.runHesse ? min->Hesse() : false;
-    status = min->Status();
-    cov_status = min->CovMatrixStatus();
-    edm = min->Edm();
-    chi2 = min->MinValue();
-    val = chi2 / 7.0;
-    log_val = (val > 0.0) ? TMath::Log(val) : -std::numeric_limits<double>::infinity();
+    bool ok = min->Minimize();
+    int status = min->Status();
+    //if (!ok) continue;
+    if (cfg.runHesse)
+    {
+      min->Hesse();
+      ok = min->Minimize();
+      status = min->Status();
+    }
+
+    val = min->MinValue();
+    log_val = TMath::Log(val);
     if (!FillFullFromFree(*ctx, min->X(), parVals)) {
       throw std::runtime_error("Failed to map minimizer coordinates to physical amplitudes");
     }
     EvalAllMoments(*ctx, parVals, momRecVals);
     FillObservedModelValues(*ctx, momRecVals, rhRecVals);
-    FillHessianProducts(*ctx, *min, parVals,
-                        hesse_ok && cov_status >= 1,
-                        parErrVals, physicalCovPairs, physicalCovVals,
-                        momErrVals, rhErrVals, ratioR, ratioRError);
     t->Fill();
   }
 
@@ -1984,7 +1814,7 @@ void RunGivenMoments_Chi2Amps_Setup(const char* tableFile="InputFiles/Experiment
 }
 
 // Macro function, filenames and bin as cml args so that bins can be looped over by  a script
-void RunGivenMoments_Chi2Amps(const char* tableFile = "InputFiles/Experiment/e_rho_moments.root", const char* treeName = "expMoments", const int bin = 1, const std::string outFile = "Hermestest.root", const double epsilon = 1, const bool photoProduction = false) {
+void RunGivenMoments_Chi2Amps_complex(const char* tableFile = "InputFiles/Experiment/e_rho_moments.root", const char* treeName = "expMoments", const int bin = 1, const std::string outFile = "Hermestest.root", const double epsilon = 1, const bool photoProduction = false) {
 
   // Setup
   // User settings
@@ -1995,7 +1825,7 @@ void RunGivenMoments_Chi2Amps(const char* tableFile = "InputFiles/Experiment/e_r
 
   // Fit / model options
   // photoProduction = true fits only alpha <= 3 and fixes longitudinal amplitudes/phases to 0.
-  const bool useNumericalGradient = false;
+  const bool useNumericalGradient = true;
   const double magnitudeStartMean = 0.5;
   const double magnitudeStartSigma = 0.5;
 
