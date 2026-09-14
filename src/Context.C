@@ -18,6 +18,12 @@ InternalConfig MakeInternalConfig(const FitConfig& fit, const ModelConfig& model
   config.usePositiveReflectivity = model.usePositiveReflectivity;
   config.useNegativeReflectivity = model.useNegativeReflectivity;
   config.enforceLongitudinalParity = model.enforceLongitudinalParity;
+  config.nucleonPolarization = model.nucleonPolarization;
+  config.kMixingGauge = model.kMixingGauge;
+  if (config.kMixingGauge && config.enforceLongitudinalParity &&
+      config.kMixingGauge->orientation == 'L') {
+    config.kMixingGauge->m = std::abs(config.kMixingGauge->m);
+  }
   config.normalisationMomentTarget = model.normalisationMoment;
   config.epsilon = fit.epsilon;
   config.photoproduction = fit.photoproduction;
@@ -36,6 +42,7 @@ std::shared_ptr<EvaluationContext> BuildContext(const InternalConfig& cfg) {
   auto ctx = std::make_shared<EvaluationContext>();
   ctx->cfg = cfg;
   ctx->fullPars = BuildParameters(cfg);
+  ApplyPolarizationGauge(*ctx);
   MarkAmplitudeNormalisationParameter(*ctx);
 
   std::unordered_map<long long, int> paramIndex;
@@ -44,14 +51,37 @@ std::shared_ptr<EvaluationContext> BuildContext(const InternalConfig& cfg) {
     const auto& p = ctx->fullPars[static_cast<size_t>(i)];
     const auto label = ParseParameterLabel(p.name);
     if (!label.valid) throw std::runtime_error("Could not parse parameter label: " + p.name);
-    paramIndex.emplace(MakeParameterKey(label.reflectivity, label.orientation, label.l, label.m, p.phase), i);
+    paramIndex.emplace(MakeParameterKey(label.reflectivity, label.orientation,
+                                        label.k, label.l, label.m, p.phase), i);
   }
 
   if (cfg.verbose) {
     std::cout << "Production mode: "
-              << (cfg.photoproduction ? "photoproduction (alpha <= 3, L fixed to 0)" : "electroproduction/full")
+              << (cfg.photoproduction
+                      ? "photoproduction (alpha <= 3, no longitudinal amplitudes)"
+                      : "electroproduction/full")
               << std::endl;
     std::cout << "Longitudinal negative-m waves are folded onto m >= 0 using parity." << std::endl;
+    if (cfg.nucleonPolarization != NucleonPolarization::None) {
+      const char* mode =
+          cfg.nucleonPolarization == NucleonPolarization::Initial
+              ? "initial"
+              : cfg.nucleonPolarization == NucleonPolarization::Recoil
+                    ? "recoil" : "initial and recoil";
+      std::cout << "Nucleon polarization: " << mode
+                << " (explicit k=+/-1 amplitudes)." << std::endl;
+      const auto& phaseReference =
+          ctx->fullPars[static_cast<size_t>(ctx->phaseReferenceMagFullIdx)];
+      std::cout << "Overall phase fixed by " << phaseReference.name
+                << " real and nonnegative." << std::endl;
+      if (ctx->rotationGaugeMagFullIdx >= 0) {
+        const auto& rotationReference =
+            ctx->fullPars[static_cast<size_t>(ctx->rotationGaugeMagFullIdx)];
+        std::cout << "The k-basis mixing angle is fixed by Im("
+                  << rotationReference.name << ") = 0; its stored magnitude "
+                  << "is a signed real coordinate." << std::endl;
+      }
+    }
   }
 
   ctx->fullToFree.assign(ctx->fullPars.size(), -1);
@@ -70,25 +100,28 @@ std::shared_ptr<EvaluationContext> BuildContext(const InternalConfig& cfg) {
   ctx->modelIndexByName.reserve(ctx->modelsRec.size() * 2);
   for (size_t i = 0; i < ctx->modelsRec.size(); ++i) ctx->modelIndexByName.emplace(ctx->modelsRec[i].name, i);
 
-  auto it0 = ctx->modelIndexByName.find("H_0_0_0");
-  auto it4 = ctx->modelIndexByName.find("H_4_0_0");
+  const std::string h0Name = MakeMomentName(cfg, 0, 0, 0, 0, 0);
+  const std::string h4Name = MakeMomentName(cfg, 4, 0, 0, 0, 0);
+  auto it0 = ctx->modelIndexByName.find(h0Name);
+  auto it4 = ctx->modelIndexByName.find(h4Name);
   if (it0 != ctx->modelIndexByName.end()) ctx->idxH0_00 = static_cast<int>(it0->second);
   if (it4 != ctx->modelIndexByName.end()) ctx->idxH4_00 = static_cast<int>(it4->second);
+  SetAmplitudeNormalisationWeights(*ctx);
 
   for (const auto& ob : inputMoments) {
     int modelIndex = -1;
     int modelIndex0 = -1;
     int modelIndex4 = -1;
     if (ob.isMixed04) {
-      const std::string key0 = std::string("H_0_") + std::to_string(ob.L) + "_" + std::to_string(ob.M);
-      const std::string key4 = std::string("H_4_") + std::to_string(ob.L) + "_" + std::to_string(ob.M);
+      const std::string key0 = MakeMomentName(cfg, 0, ob.beta, ob.delta, ob.L, ob.M);
+      const std::string key4 = MakeMomentName(cfg, 4, ob.beta, ob.delta, ob.L, ob.M);
       auto itObs0 = ctx->modelIndexByName.find(key0);
       auto itObs4 = ctx->modelIndexByName.find(key4);
       if (itObs0 != ctx->modelIndexByName.end()) modelIndex0 = static_cast<int>(itObs0->second);
       if (itObs4 != ctx->modelIndexByName.end()) modelIndex4 = static_cast<int>(itObs4->second);
     } else {
-      std::string key = ob.name;
-      if (key.rfind("RH_", 0) == 0) key = "H_" + key.substr(3);
+      const std::string key = MakeMomentName(cfg, ob.alpha, ob.beta, ob.delta,
+                                             ob.L, ob.M);
       auto it = ctx->modelIndexByName.find(key);
       if (it != ctx->modelIndexByName.end()) modelIndex = static_cast<int>(it->second);
     }
@@ -111,16 +144,29 @@ std::shared_ptr<EvaluationContext> BuildContext(const InternalConfig& cfg) {
 
   for (const auto& moment : ctx->modelsRec) {
     if (moment.alpha == 0) {
-      const std::string suffix = std::to_string(moment.L) + "_" + std::to_string(moment.M);
+      std::string suffix;
+      if (cfg.nucleonPolarization != NucleonPolarization::None) {
+        suffix = std::to_string(moment.beta) + "_" + std::to_string(moment.delta) + "_";
+      }
+      suffix += std::to_string(moment.L) + "_" + std::to_string(moment.M);
       int second = -1;
       if (!cfg.photoproduction) {
-        const auto h4 = ctx->modelIndexByName.find("H_4_" + suffix);
+        const auto h4 = ctx->modelIndexByName.find(
+            MakeMomentName(cfg, 4, moment.beta, moment.delta, moment.L, moment.M));
         if (h4 == ctx->modelIndexByName.end()) continue;
         second = static_cast<int>(h4->second);
       }
       ctx->outputMoments.push_back({"H04_" + suffix,
                                     static_cast<int>(ctx->modelIndexByName.at(moment.name)),
                                     second, cfg.epsilon});
+      if (!cfg.photoproduction) {
+        ctx->outputMoments.push_back({
+            moment.name,
+            static_cast<int>(ctx->modelIndexByName.at(moment.name)),
+            -1, 0.0});
+        const auto& h4Moment = ctx->modelsRec[static_cast<size_t>(second)];
+        ctx->outputMoments.push_back({h4Moment.name, second, -1, 0.0});
+      }
     }
   }
   for (const auto& moment : ctx->modelsRec) {
@@ -136,6 +182,14 @@ std::shared_ptr<EvaluationContext> BuildContext(const InternalConfig& cfg) {
 void MakeParameterBranches(TTree* t, const std::vector<Parameter>& pars, std::vector<double>& storage) {
   storage.assign(pars.size(), 0.0);
   for (size_t i = 0; i < pars.size(); ++i) t->Branch(pars[i].name.c_str(), &storage[i]);
+}
+
+void MakeNamedBranches(TTree* t, const std::vector<std::string>& names,
+                       std::vector<double>& storage) {
+  storage.assign(names.size(), 0.0);
+  for (size_t i = 0; i < names.size(); ++i) {
+    t->Branch(names[i].c_str(), &storage[i]);
+  }
 }
 
 void MakeOutputMomentBranches(TTree* t, const std::vector<OutputMoment>& models,
@@ -256,8 +310,10 @@ void FillHessianProducts(const EvaluationContext& ctx,
     momentErrors[m] = std::isfinite(variance) ? std::sqrt(variance) : nan;
   }
 
-  const auto h0It = ctx.modelIndexByName.find("H_0_0_0");
-  const auto h4It = ctx.modelIndexByName.find("H_4_0_0");
+  const auto h0It = ctx.modelIndexByName.find(
+      MakeMomentName(ctx.cfg, 0, 0, 0, 0, 0));
+  const auto h4It = ctx.modelIndexByName.find(
+      MakeMomentName(ctx.cfg, 4, 0, 0, 0, 0));
   if (h0It != ctx.modelIndexByName.end() && h4It != ctx.modelIndexByName.end()) {
     const double h0 = EvaluateMomentAndDerivative(ctx, ctx.modelsRec[h0It->second],
                                              fullVals, pairSin, pairCos, dFull);

@@ -17,9 +17,27 @@ double ClebschGordan(int l1, int l2, int l3, int m1, int m2, int m3) {
                                2 * m1, 2 * m2, -2 * m3);
 }
 
-static std::string MString(int m) { return (m < 0) ? "m"+std::to_string(-m) : std::to_string(m); }
-static std::string MagName(char refl, char orient, int l, int m) { return std::string(1, refl) + '_' + orient + '_' + std::to_string(l) + '_' + MString(m); }
-static std::string PhiName(char refl, char orient, int l, int m) { return std::string(1, refl) + "phi_" + orient + '_' + std::to_string(l) + '_' + MString(m); }
+static std::string IndexString(int value) {
+  return value < 0 ? "m" + std::to_string(-value) : std::to_string(value);
+}
+static std::string MagName(char refl, char orient, int k, int l, int m) {
+  std::string name = std::string(1, refl) + '_' + orient + '_' +
+                     std::to_string(l) + '_' + IndexString(m);
+  if (k != 0) name += '_' + IndexString(k);
+  return name;
+}
+static std::string PhiName(char refl, char orient, int k, int l, int m) {
+  std::string name = std::string(1, refl) + "phi_" + orient + '_' +
+                     std::to_string(l) + '_' + IndexString(m);
+  if (k != 0) name += '_' + IndexString(k);
+  return name;
+}
+
+static int ParseIndex(const std::string& value) {
+  return (!value.empty() && value[0] == 'm')
+             ? -std::stoi(value.substr(1))
+             : std::stoi(value);
+}
 
 } // namespace
 
@@ -29,25 +47,41 @@ ParameterLabel ParseParameterLabel(const std::string& name) {
   out.reflectivity = name[0];
   out.phase = (name.find("phi_") != std::string::npos);
   out.orientation = (name.find("_L_") != std::string::npos || name.find("phi_L_") != std::string::npos) ? 'L' : 'T';
-  const size_t last = name.find_last_of('_');
-  if (last == std::string::npos || last + 1 >= name.size()) return out;
-  const size_t prev = name.find_last_of('_', last - 1);
-  if (prev == std::string::npos || prev + 1 >= last) return out;
-  out.l = std::stoi(name.substr(prev + 1, last - prev - 1));
-  const std::string mstr = name.substr(last + 1);
-  out.m = (!mstr.empty() && mstr[0] == 'm')
-          ? -std::stoi(mstr.substr(1))
-          : std::stoi(mstr);
+  const std::string marker = std::string(1, out.orientation) + '_';
+  const size_t markerPosition = name.find(marker);
+  if (markerPosition == std::string::npos) return out;
+
+  std::vector<std::string> indices;
+  size_t begin = markerPosition + marker.size();
+  while (begin < name.size()) {
+    const size_t end = name.find('_', begin);
+    indices.push_back(name.substr(begin, end - begin));
+    if (end == std::string::npos) break;
+    begin = end + 1;
+  }
+  if (indices.size() != 2 && indices.size() != 3) return out;
+  try {
+    out.l = std::stoi(indices[0]);
+    out.m = ParseIndex(indices[1]);
+    out.k = indices.size() == 3 ? ParseIndex(indices[2]) : 0;
+  } catch (const std::exception&) {
+    return out;
+  }
   out.valid = true;
   return out;
 }
 
-long long MakeParameterKey(char refl, char orient, int l, int m, bool isPhase) {
+long long MakeParameterKey(char refl, char orient, int k,
+                           int l, int m, bool isPhase) {
   const long long reflBit = (refl == 'b');
   const long long orientBit = (orient == 'L');
   const long long phaseBit = isPhase;
+  const long long kEnc = static_cast<long long>(k + 1);
   const long long mEnc = static_cast<long long>(m + 32);
-  return ( ((((phaseBit << 1) | reflBit) << 1) | orientBit) << 12) | (static_cast<long long>(l) << 6) | mEnc;
+  long long header = (phaseBit << 1) | reflBit;
+  header = (header << 1) | orientBit;
+  header = (header << 2) | kEnc;
+  return (header << 12) | (static_cast<long long>(l) << 6) | mEnc;
 }
 
 static int LongitudinalParitySign(int refl, int absM) {
@@ -62,24 +96,20 @@ std::vector<Parameter> BuildParameters(const InternalConfig& cfg) {
   }
 
   std::vector<Parameter> pars;
-  pars.reserve(cfg.waves.size() * 8);
+  const bool explicitK = cfg.nucleonPolarization != NucleonPolarization::None;
+  pars.reserve(cfg.waves.size() * (explicitK ? 16 : 8));
   std::unordered_set<std::string> names;
 
-  auto add = [&](char refl, char orient, int l, int m, bool isPhase) {
+  auto add = [&](char refl, char orient, int k, int l, int m, bool isPhase) {
     if (orient == 'L' && cfg.enforceLongitudinalParity) m = std::abs(m);
 
     Parameter p;
-    p.name = isPhase ? PhiName(refl, orient, l, m) : MagName(refl, orient, l, m);
+    p.name = isPhase ? PhiName(refl, orient, k, l, m)
+                     : MagName(refl, orient, k, l, m);
     if (!names.insert(p.name).second) return;
     p.init = 0.0;
     p.step = isPhase ? 0.6 : 0.2;
-    if (cfg.photoproduction)
-    {
-      p.low = 0.0; // set to 0 for photoproduction due to ambiguity i.e. one appears in both sides
-    } else
-    {
-      p.low = isPhase ? -kPi : 0.0;
-    }
+    p.low = isPhase ? -kPi : 0.0;
     p.high = isPhase ? kPi : cfg.magnitudeMax;
     p.phase = isPhase;
 
@@ -105,21 +135,27 @@ std::vector<Parameter> BuildParameters(const InternalConfig& cfg) {
     for (char reflectivity : {'a', 'b'}) {
       if (reflectivity == 'a' && !cfg.usePositiveReflectivity) continue;
       if (reflectivity == 'b' && !cfg.useNegativeReflectivity) continue;
-      add(reflectivity, 'T', wave.l, wave.m, false);
-      add(reflectivity, 'L', wave.l, wave.m, false);
-      add(reflectivity, 'T', wave.l, wave.m, true);
-      add(reflectivity, 'L', wave.l, wave.m, true);
+      for (int k = explicitK ? -1 : 0; k <= (explicitK ? 1 : 0);
+           k += explicitK ? 2 : 1) {
+        add(reflectivity, 'T', k, wave.l, wave.m, false);
+        add(reflectivity, 'T', k, wave.l, wave.m, true);
+        if (!cfg.photoproduction) {
+          add(reflectivity, 'L', k, wave.l, wave.m, false);
+          add(reflectivity, 'L', k, wave.l, wave.m, true);
+        }
+      }
     }
   }
 
-  auto fixReferencePhase = [&](char reflectivity) {
+  auto fixReferencePhase = [&](char reflectivity, bool matchReflectivity) {
     Parameter* best = nullptr;
     int bestL = -1;
     int bestM = -999;
     for (auto& parameter : pars) {
       const auto label = ParseParameterLabel(parameter.name);
       if (!parameter.phase || parameter.fixed || !label.valid ||
-          label.reflectivity != reflectivity || label.orientation != 'T') continue;
+          (matchReflectivity && label.reflectivity != reflectivity) ||
+          label.orientation != 'T') continue;
       if (label.l > bestL || (label.l == bestL && label.m > bestM)) {
         best = &parameter;
         bestL = label.l;
@@ -134,19 +170,9 @@ std::vector<Parameter> BuildParameters(const InternalConfig& cfg) {
     best->step = 0.0;
   };
 
-  if (cfg.usePositiveReflectivity) fixReferencePhase('a');
-  if (cfg.useNegativeReflectivity) fixReferencePhase('b');
-
-  if (cfg.photoproduction) {
-    for (auto& p : pars) {
-      const auto label = ParseParameterLabel(p.name);
-      if (!label.valid || label.orientation != 'L') continue;
-      p.init = 0.0;
-      p.fixed = true;
-      p.low = 0.0;
-      p.high = 0.0;
-      p.step = 0.0;
-    }
+  if (cfg.nucleonPolarization == NucleonPolarization::None) {
+    if (cfg.usePositiveReflectivity) fixReferencePhase('a', true);
+    if (cfg.useNegativeReflectivity) fixReferencePhase('b', true);
   }
 
   return pars;
@@ -164,6 +190,15 @@ struct BruSelection {
   int m2 = 0;
   TrigKind trig = TrigKind::kCos;
 };
+
+std::string MakeMomentName(const InternalConfig& cfg, int alpha, int beta,
+                           int delta, int L, int M) {
+  std::string name = "H_" + std::to_string(alpha) + '_';
+  if (cfg.nucleonPolarization != NucleonPolarization::None) {
+    name += std::to_string(beta) + '_' + std::to_string(delta) + '_';
+  }
+  return name + std::to_string(L) + '_' + std::to_string(M);
+}
 
 static bool ResolveBruSelection(int reflsign, double factor,
                                 int l, int m, int lpr, int mpr,
@@ -231,11 +266,16 @@ std::vector<MomentModel> BuildMomentModels(const InternalConfig& cfg,
                                                   const std::unordered_map<long long, int>& paramIndex,
                                                   const std::unordered_set<std::string>& neededMoments,
                                                   std::vector<PhasePair>& phasePairs) {
+  if (cfg.nucleonPolarization != NucleonPolarization::None) {
+    return BuildPolarizedMomentModels(cfg, paramIndex, neededMoments, phasePairs);
+  }
+
   std::vector<MomentModel> models;
   const int alphaMax = cfg.photoproduction ? 3 : 8;
   int maximumL = 0;
   for (const auto& wave : cfg.waves) maximumL = std::max(maximumL, wave.l);
-  models.reserve((alphaMax + 1) * (2 * maximumL + 1) * (2 * maximumL + 2) / 2);
+  models.reserve((alphaMax + 1) * (2 * maximumL + 1) *
+                 (2 * maximumL + 2) / 2);
 
   std::unordered_map<long long, int> phasePairLookup;
   const auto& waves = cfg.waves;
@@ -274,8 +314,9 @@ std::vector<MomentModel> BuildMomentModels(const InternalConfig& cfg,
     return idx;
   };
 
-  auto paramIdx = [&](char refl, char orient, int l, int m, bool isPhase) -> int {
-    const auto it = paramIndex.find(MakeParameterKey(refl, orient, l, m, isPhase));
+  auto paramIdx = [&](char refl, char orient, int k, int l, int m,
+                      bool isPhase) -> int {
+    const auto it = paramIndex.find(MakeParameterKey(refl, orient, k, l, m, isPhase));
     return it == paramIndex.end() ? -1 : it->second;
   };
 
@@ -287,38 +328,36 @@ std::vector<MomentModel> BuildMomentModels(const InternalConfig& cfg,
     if (!ResolveBruSelection(reflsign, factor, l, m, lpr, mpr, alpha,
                              orientSwap, sel)) return;
 
+    constexpr int k = 0;
     Term t;
     t.coeff = sel.coeff;
-    t.idxMag1 = paramIdx(sel.reflectivity1, sel.orientation1, sel.l1, sel.m1, false);
-    t.idxMag2 = paramIdx(sel.reflectivity2, sel.orientation2, sel.l2, sel.m2, false);
-    const int idxPhi1 = paramIdx(sel.reflectivity1, sel.orientation1, sel.l1, sel.m1, true);
-    const int idxPhi2 = paramIdx(sel.reflectivity2, sel.orientation2, sel.l2, sel.m2, true);
+    t.trig = sel.trig;
+    t.idxMag1 = paramIdx(sel.reflectivity1, sel.orientation1, k,
+                         sel.l1, sel.m1, false);
+    t.idxMag2 = paramIdx(sel.reflectivity2, sel.orientation2, k,
+                         sel.l2, sel.m2, false);
+    const int idxPhi1 = paramIdx(sel.reflectivity1, sel.orientation1, k,
+                                 sel.l1, sel.m1, true);
+    const int idxPhi2 = paramIdx(sel.reflectivity2, sel.orientation2, k,
+                                 sel.l2, sel.m2, true);
     if (t.idxMag1 < 0 || t.idxMag2 < 0 || idxPhi1 < 0 || idxPhi2 < 0) return;
     t.phasePairIdx = getPhasePairIdx(idxPhi1, idxPhi2);
-    t.trig = sel.trig;
-    t.ignorePhase = (sel.orientation1 == sel.orientation2 && sel.l1 == sel.l2 && sel.m1 == sel.m2);
+    t.ignorePhase = t.idxMag1 == t.idxMag2;
     mm.terms.push_back(t);
   };
 
   for (int alpha = 0; alpha <= alphaMax; ++alpha) {
     for (int L = 0; L <= 2 * maximumL; ++L) {
-      for (int M = 0; M <= L; ++M)
-      {
+      for (int M = 0; M <= L; ++M) {
         MomentModel mm;
         mm.alpha = alpha;
         mm.L = L;
         mm.M = M;
-        mm.name =
-            std::string("H_")
-            + std::to_string(alpha) + "_"
-            + std::to_string(L) + "_"
-            + std::to_string(M);
+        mm.name = MakeMomentName(cfg, alpha, 0, 0, L, M);
 
         if (!neededMoments.empty() && neededMoments.find(mm.name) == neededMoments.end()) continue;
 
-        if ((alpha == 2 || alpha == 3 ||
-             alpha == 6 || alpha == 7) &&
-            M == 0) {
+        if ((alpha == 2 || alpha == 3 || alpha == 6 || alpha == 7) && M == 0) {
           continue;
         }
 

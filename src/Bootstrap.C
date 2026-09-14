@@ -18,6 +18,7 @@
 namespace emi {
 namespace {
 
+// Best fit of each bootstrap
 struct BestFit {
   bool valid = false;
   int status = -999;
@@ -35,17 +36,20 @@ void RebuildObservedMap(detail::EvaluationContext& context) {
     const auto& observed = context.observed[i];
     if (observed.isMixed04) {
       const auto h0 = context.modelIndexByName.find(
-          "H_0_" + std::to_string(observed.L) + '_' + std::to_string(observed.M));
+          detail::MakeMomentName(context.cfg, 0, observed.beta, observed.delta,
+                                 observed.L, observed.M));
       const auto h4 = context.modelIndexByName.find(
-          "H_4_" + std::to_string(observed.L) + '_' + std::to_string(observed.M));
+          detail::MakeMomentName(context.cfg, 4, observed.beta, observed.delta,
+                                 observed.L, observed.M));
       if (h0 == context.modelIndexByName.end() || h4 == context.modelIndexByName.end()) {
         throw std::runtime_error("Could not map bootstrap moment " + observed.name);
       }
       context.observedModelIdx0[i] = static_cast<int>(h0->second);
       context.observedModelIdx4[i] = static_cast<int>(h4->second);
     } else {
-      std::string name = observed.name;
-      if (name.rfind("RH_", 0) == 0) name = "H_" + name.substr(3);
+      const std::string name = detail::MakeMomentName(
+          context.cfg, observed.alpha, observed.beta, observed.delta,
+          observed.L, observed.M);
       const auto model = context.modelIndexByName.find(name);
       if (model == context.modelIndexByName.end()) {
         throw std::runtime_error("Could not map bootstrap moment " + observed.name);

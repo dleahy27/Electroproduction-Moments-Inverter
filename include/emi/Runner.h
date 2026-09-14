@@ -17,10 +17,15 @@ void MakePhotoproductionMoments(const std::string& dataset,
                                const std::filesystem::path& output = {},
                                const std::string& tree = "expMoments");
 
+void GenerateFixedMoments(const FixedMomentsConfig& config);
+
+// Generate the deterministic example point used by the closure-test scripts.
 void GenerateFixedMoments(const std::filesystem::path& output,
                           double epsilon = 0.8,
-                          bool printValues = true,
-                          const ModelConfig& model = {});
+                          bool printAmplitudes = true,
+                          const ModelConfig& model = {},
+                          bool photoproduction = false);
+
 void GenerateRandomMoments(const std::filesystem::path& output,
                            unsigned events,
                            double epsilon = 1.0,

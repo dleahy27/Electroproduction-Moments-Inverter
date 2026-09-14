@@ -30,10 +30,9 @@ From the repository root:
 ./scripts/build.sh
 ```
 
-This configures CMake and compiles a native executable at `build/emi`. The
-`emi` executable is built from `app/main.C` and linked against the project's
-`emi_core` library and ROOT; it is not a ROOT macro and does not need to be
-launched through the `root` command.
+This configures CMake and compiles `build/emi`. It is a normal executable
+linked against the project's `emi_core` library and ROOT; it does not need to
+be launched through the `root` command.
 
 Run it directly:
 
@@ -48,7 +47,7 @@ helper script, use:
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
-alias emi = ./build/emi
+alias emi='./build/emi'
 ```
 
 ### Optional installation
@@ -60,7 +59,7 @@ path explicitly:
 cmake --install build --prefix "$HOME/.local"
 ```
 
-This places the executable at `$HOME/.local/bin/emi`. If that directory is not
+This places `emi` in `$HOME/.local/bin`. If that directory is not
 already on `PATH`, add the following to your shell configuration. For Bash,
 Zsh, and other Bourne-style shells:
 
@@ -80,9 +79,10 @@ In both cases, ROOT must still be active in the shell as described above.
 
 ## Choose the physics model
 
-The routine choices are kept in `app/UserSettings.h`, next to the executable
-source. Edit this file and rebuild. This avoids a long command line for settings
-that normally stay fixed throughout a study.
+The routine choices are kept in `app/UserSettings.h`. EMI loads this C++ file
+at run time through ROOT, so edits take effect on the next invocation without
+rebuilding the executable. Pass `--settings FILE` to use a different settings
+file for a particular study.
 
 The fit model is an explicit list of `(l,m)` waves:
 
@@ -106,17 +106,113 @@ inline ModelConfig Model() {
 negative only `(false, true)`, or both `(true, true)`. At least one must be
 enabled. Each selected wave must satisfy `l >= 0` and `|m| <= l`.
 
-An explicit wave list is used instead of `lmax` and `mmax` as the max parameters resulted in null moments being created.
-In particular, say you want to fit a purely D-wave process you do not want to limit time constructing S-wave and P-wave moments.
-Moment models are also derived from the selected waves. Clebsch-Gordan-forbidden
-moments have no terms and are not constructed. An input moment is used only when
-the selected model can construct it and its quoted uncertainty is finite and
-strictly positive. This is important for vector-meson-only tables containing
-placeholder zero values with zero errors.
+Nucleon polarization is disabled by default. It can be selected in the model
+configuration with
 
-`GenerationModel()` in the same file controls the fixed and random generators.
-`ConfigureFit()` and `ConfigureBootstrap()` contain the default run counts,
-worker count, random seed, Hessian choice, and gradient choice:
+```cpp
+model.UseNucleonPolarization(emi::NucleonPolarization::Initial);
+```
+
+The other polarized choices are `Recoil` and `Both`; `None` restores the
+unpolarized model. The same choice can be made at run time for fits,
+bootstraps, and synthetic generation:
+
+```bash
+emi fit ... --polarization initial
+emi fit ... --polarization recoil
+emi fit ... --polarization both
+```
+
+Polarized models retain separate nucleon non-flip (\(k=+1\)) and flip
+(\(k=-1\)) amplitudes. Their branch suffix is ordered as `l_m_k`, for example
+`a_T_1_0_1` and `a_T_1_0_m1`; any negative index is written with an `m`
+prefix. With only one nucleon polarization measured, the unobserved
+nucleon spin basis has an arbitrary common SO(2) mixing angle. Writing
+\(c=\cos\theta\), \(s=\sin\theta\), and suppressing the wave labels, the
+amplitudes transform as
+
+\[
+\begin{pmatrix}A'_+\\A'_-\end{pmatrix}_{\text{initial}}
+=
+\begin{pmatrix}c&-s\\s&c\end{pmatrix}
+\begin{pmatrix}A_+\\A_-\end{pmatrix},
+\qquad
+\begin{pmatrix}A'_+\\A'_-\end{pmatrix}_{\text{recoil}}
+=
+\begin{pmatrix}c&\varepsilon s\\-\varepsilon s&c\end{pmatrix}
+\begin{pmatrix}A_+\\A_-\end{pmatrix},
+\]
+
+where \(\varepsilon=+1\) for `a` reflectivity and \(-1\) for `b`. The same
+angle acts on every wave because it is a change of the one unobserved nucleon
+spin basis, not a wave-by-wave freedom. All single-polarized moments are
+unchanged by this transformation, so the angle cannot be determined from the
+fit. It must be fixed as a gauge convention.
+
+The convention fixes the highest `(l,m)` natural transverse spin-non-flip wave
+to be real and nonnegative,
+
+\[
+T^{(0)}_{l_{\max}m_{\max}}\in\mathbb{R}_{\geq0}.
+\]
+
+This removes the overall phase. For initial-only and recoil-only data, the
+remaining SO(2) freedom is fixed with the highest `(l,m)` unnatural transverse
+spin-non-flip wave,
+
+\[
+\operatorname{Im}U^{(0)}_{l_{\max}m_{\max}}=0.
+\]
+
+The second condition allows either sign of the real part. Internally that one
+branch is therefore a signed real coordinate with its phase fixed to zero;
+although its branch retains the amplitude-magnitude name, a negative stored
+value means a phase of \(\pi\), not a negative physical magnitude. This avoids
+introducing an extra discrete convention beyond `Im U = 0`. Both reference
+waves use \(k=+1\), the spin non-flip component. A different SO(2) reference
+wave can be selected at run time:
+
+```bash
+emi fit ... --polarization initial --k-gauge b:T:1:0
+emi fit ... --polarization recoil --k-gauge b:L:1:1
+```
+
+The four fields are `reflectivity:orientation:l:m`. The requested wave must be
+in the model; its spin non-flip component is used. The equivalent C++
+configuration is
+
+```cpp
+model.UseNucleonPolarization(emi::NucleonPolarization::Initial)
+     .SetKMixingGauge('b', 'T', 1, 0);
+```
+
+This selects the real reference amplitude that defines the SO(2) gauge; it does
+not assign a measurable numerical value to \(\theta\). A numerical angle only has meaning
+relative to another chosen spin basis. The polarized closure analysis below
+therefore finds and reports the SO(2) rotation that best aligns a fitted result
+with its generated reference. With both target and recoil polarization
+measured, the SO(2) ambiguity is absent and only one overall reference phase is
+fixed.
+
+Polarized input moments use the tensor branch convention
+`RH_<alpha>_<beta>_<delta>_<L>_<M>`, where `beta` is the initial-nucleon
+Pauli index and `delta` is the recoil index. The inseparable transverse and
+longitudinal response uses `RH04_<beta>_<delta>_<L>_<M>`. Initial-only data
+have `delta=0`, recoil-only data have `beta=0`, and double-polarization data
+may contain all values from zero to three. Every value branch has the usual
+matching `_err` branch.
+
+An unpolarized fit accepts either `RH_<alpha>_<L>_<M>` or the
+`beta=delta=0` projection `RH_<alpha>_0_0_<L>_<M>`. The same fallback applies
+to electroproduction `RH04` branches. A polarized generated file can therefore
+be fitted directly with `--polarization none`, without duplicate alias branches
+or a conversion step.
+
+An explicit wave list is used instead of `lmax` and `mmax` (like in brufit) to avoid having to construct moments with placeholder zero values with zero errors.
+
+`FixedMoments()` controls the user-defined fixed-moment generator described
+below. `Fit()` and `Bootstrap()` contain the default run counts, worker count,
+random seed, Hessian choice, and gradient choice:
 
 ```cpp
 fit
@@ -149,6 +245,7 @@ For another input file:
 
 ```bash
 emi fit \
+  --electro \
   --input InputFiles/Experiment/e_rho_moments.root \
   --tree expMoments \
   --bin 0 \
@@ -164,7 +261,7 @@ Analytical gradients are used by default. Set
 `--numerical-gradients` to use. An example script implementing a controlled comparison is provided:
 
 ```bash
-./scripts/compare-gradients.sh 0 100
+python3 scripts/compare-gradients.py 0
 ```
 
 ## Run a bootstrap
@@ -187,6 +284,7 @@ The direct command is:
 
 ```bash
 emi bootstrap \
+  --electro \
   --input InputFiles/Experiment/e_rho_moments.root \
   --tree expMoments \
   --bin 0 \
@@ -212,13 +310,10 @@ emi make-photo --dataset gluex
 The default destination is `InputFiles/Experiment/<dataset>_moments.root`.
 Use `--output FILE` to choose a different path.
 
-Synthetic inputs use the waves in `GenerationModel()` and do not contain a
-hard-coded list of amplitude names or moments:
+The editable fixed-moment generator and the multi-event random generator are:
 
 ```bash
-emi generate-fixed \
-  --epsilon 0.8 \
-  --output InputFiles/Generated/fixed_test.root
+emi generate-fixed
 
 emi generate-random \
   --events 100000 \
@@ -227,8 +322,184 @@ emi generate-random \
   --output InputFiles/Generated/random_input_moments.root
 ```
 
+`emi --generate-fixed` is accepted as an equivalent spelling.
+For batch scripts, `generate-fixed` also accepts `--settings FILE`,
+`--output FILE`, `--epsilon VALUE`, `--seed N`, `--mass VALUE`,
+`--k-minus-scale VALUE`, `--no-background`, `--quiet`, and `--verbose`.
+`--suppression VALUE` overrides the configured value only when
+`FixedMoments()` selects `KPositiveDominant` or `KReflectivitySplit`.
+The mass-model options apply only when `FixedMoments()` selects `PhotoTest`.
+The wave set, polarization mode, generation mode, and amplitude lists remain
+in the settings file.
+
 Generated moment files use the same `RH04_*`/`RH_*` value and `_err` branch
 convention as experimental input, so they can be passed straight back to `fit`.
+
+### Editable fixed-moment generation
+
+Edit `FixedMoments()` in `app/UserSettings.h` and run `emi generate-fixed`.
+No rebuild is needed. All choices for one synthetic point are together there:
+
+- output, photo/electroproduction, epsilon, and random seed;
+- waves, reflectivities, and `None`, `Initial`, `Recoil`, or `Both` nucleon
+  polarization;
+- the generation mode;
+- exact and individually random amplitudes in `Custom` mode.
+
+The available modes are:
+
+- `Custom`: combine exact and individually random amplitudes; everything else
+  is zero;
+- `AllRandom`: randomly populate every amplitude in the selected model;
+- `KPositiveDominant`: suppress every `k=-1` amplitude;
+- `KReflectivitySplit`: favour `k=+1` for `a` and `k=-1` for `b`;
+- `PhotoTest`: evaluate the deterministic photoproduction S/P/D mass model
+  described below.
+
+The two dominant-K modes require `NucleonPolarization::Both`. For any
+non-custom mode, leave both amplitude lists empty and use `randomMinimum`,
+`randomMaximum`, and `suppression` to configure it. `AllRandom` with `Both`
+polarization is the independent-random K baseline.
+
+#### PhotoTest mass model
+
+`PhotoTest` is an internal generation model under `src/MassModels`. It returns
+a fresh complete complex-amplitude set from `Evaluate(double massGeV)` on every
+call. Four constant-width Breit-Wigners provide the fixed S-, P-, and D-wave
+contributions, and the two D-wave resonances are summed coherently before the
+result is converted to magnitude and phase. Fixed complex backgrounds can be
+enabled for the four S-wave sectors. `kMinusScale` multiplies each complete
+`k=-1` amplitude, including its background.
+
+Configure it in `FixedMoments()` or override its scan controls at runtime:
+
+```bash
+./build/emi generate-fixed --mass 1.306 --k-minus-scale 0.5
+./build/emi generate-fixed --mass 1.306 --no-background
+```
+
+Generation keeps both reflectivities and both independent K sectors in the
+truth model. Before writing amplitudes, it rotates the complete amplitude set
+by the phase of `a_T_2_2_1`, which is the phase reference used by the polarized
+generation context. The rotation leaves all moments unchanged and writes
+`aphi_T_2_2_1` as exactly zero. It then applies the existing common amplitude
+normalisation so that `RH_0_0_0_0_0` equals the configured normalisation
+moment. The ROOT file stores `mass_model`, `invariant_mass_GeV`,
+`k_minus_scale`, `background_enabled`, the phase removed by the rotation, the
+raw zeroth moment, and the common normalisation scale alongside the generated
+truth amplitudes and moments.
+
+In `Custom` mode an exact row is:
+
+```cpp
+// reflectivity, orientation, l, m, k, magnitude, phase [radians]
+{'a', 'T', 1, 0, +1, 0.35, -0.40},
+```
+
+An individually random row is:
+
+```cpp
+// reflectivity, orientation, l, m, k, final minimum, final maximum
+{'a', 'T', 1, 1, +1, 0.02, 0.10},
+```
+
+Its magnitude is sampled uniformly between the final `minimum` and `maximum`,
+and its phase is sampled uniformly from \([-\pi,\pi]\). EMI rejects any
+amplitude placed in both the fixed and random lists, including equivalent
+longitudinal entries after parity is applied.
+
+Use `k=0` for `NucleonPolarization::None` and `k=+1` or `k=-1` for a polarized
+model. Photoproduction accepts transverse (`T`) amplitudes only. In `Custom`
+mode, amplitudes not listed are exactly zero. Photoproduction models do not
+construct or write longitudinal amplitude branches.
+
+Do not list the normalization amplitude. EMI derives the
+positive-reflectivity transverse amplitude at the highest selected `(l,m)`,
+using `k=+1` for a polarized model and `k=0` otherwise. Both photo- and
+electroproduction use
+
+\[
+w_{\mathrm{ref}}|A_{\mathrm{ref}}|^2 = \frac{N}{2}
+ - \sum_{i\ne\mathrm{ref}} w_i |A_i|^2,
+\]
+
+where `N` is `model.normalisationMoment` (normally 2), and the weights are read
+from the constructed \(H_0+\epsilon H_4\) model. For the usual complete wave
+list this is the familiar sum of transverse intensities plus the
+epsilon-weighted longitudinal intensities; the longitudinal part is absent in
+photoproduction. Reading the weights from the model also keeps arbitrary
+explicit wave lists normalized exactly. A fully random mode first samples all
+amplitudes and then rescales them together, preserving their relative sizes.
+The generator reports an error if custom amplitudes exceed the normalization,
+or if an entry names a wave outside the model, uses an invalid `k`, or violates
+a fixed reference phase.
+
+### Polarized fixed-amplitude closure test
+
+The polarized closure runner generates and fits matched copies of `Model()` for
+initial, recoil, and double nucleon polarization:
+
+```bash
+STARTS=100 WORKERS=1 SEED=12345 \
+  ./scripts/run-polarized-fixed-test.sh
+```
+
+Set `K_GAUGE=b:T:1:0` to use a particular single-polarized gauge reference.
+`HESSE=1` enables the Hessian.
+The runner uses the internal deterministic `generate-example` command so the
+generated and fitted wave sets are the same. It does not depend on the current
+contents of the user-editable `FixedMoments()` configuration.
+
+Open `AnalysisScripts/polarized_fixed_amp_analysis.ipynb` and set its generated
+and fitted ROOT filenames to inspect one of these cases. The notebook reads the
+common polarized amplitude branches and plots the generated and fitted complex
+amplitudes directly in the gauge imposed by generation and minimization. It
+does not apply a phase rotation or a recoil-angle transformation.
+
+### Generic polarized-to-unpolarized fixed-amplitude analysis
+
+After generating a custom polarized point and fitting its unpolarized moments:
+
+```bash
+./build/emi generate-fixed
+./build/emi fit
+```
+
+open `AnalysisScripts/unpolarized_k_dominance_R.ipynb`. The only user inputs
+are the generated and fitted ROOT filenames near the top of the notebook. It
+discovers the selected waves and common moments automatically, selects the
+lowest-chi-square accepted fit, and uses no pandas. It produces:
+
+- an Argand plot showing the two generated K amplitudes and the fitted
+  unpolarized amplitude separately as phase context;
+- fitted magnitude versus the quadrature of the generated K magnitudes;
+- direct closure of the fitted moments against the generated
+  `beta=delta=0` moments;
+- a generated-versus-fitted `R` comparison when longitudinal waves are present.
+
+The figures are written under
+`AnalysisScripts/outputs/polarized_to_unpolarized_fixed/`. The notebook uses
+PyROOT, NumPy, and Matplotlib, like the historic analysis notebooks.
+
+### Configured polarized truth fitted as unpolarized
+
+The historical K-dominance runner now uses the same `FixedMoments()` path as
+ordinary fixed generation. It generates the configured point and fits only its
+unpolarized `beta=delta=0` projection:
+
+```bash
+STARTS=10000 WORKERS=1 SEED=12345 \
+  ./scripts/run-unpolarized-k-dominance-test.sh
+```
+
+In `Custom` mode, the exact and random amplitude rows in `FixedMoments()` are
+used directly. `REPEATS=N` generates independent repetitions by incrementing
+the seed. For either dominant-K mode, an optional list such as
+`SUPPRESSIONS="0.2 0.1 0.05"` performs a suppression sweep; this option is
+rejected for `Custom` and `AllRandom` because suppression has no meaning there.
+`HESSE=1` enables Hessian calculation. Use `SETTINGS=path/to/settings.h` for a
+separate study file. Ensure `Fit().photoproduction` describes the same process
+as `FixedMoments().photoproduction`.
 
 ## ROOT output
 
@@ -252,7 +523,8 @@ generated moment file.
 
 ```text
 app/main.C                 command dispatch
-app/UserSettings.h         editable model and run defaults
+app/RuntimeSettings.C      runtime C++ settings loader
+app/UserSettings.h         runtime fit and generation settings
 include/emi/Config.h       public configuration types and setters
 include/emi/Runner.h       public library entry points
 src/Input.C                ROOT input discovery and validation
@@ -262,10 +534,22 @@ src/Context.C              fit context, normalisation, and Hessian products
 src/Minimizer.C            Minuit2 setup
 src/FitRunner.C            ordinary-fit orchestration
 src/Bootstrap.C            bootstrap orchestration
+src/PolarizedModel.C       polarized tensor-moment construction
 src/LeptoMoments.C         electroproduction experimental tables
 src/PhotoMoments.C         photoproduction experimental tables
 src/FixedMoments.C         fixed synthetic input
 src/RandomMoments.C        random synthetic inputs
+src/MassModels/MassModel.* internal shared mass-model value types and BW helper
+src/MassModels/PhotoTest.* deterministic photoproduction S/P/D model
+tests/MassModelsTest.C     PhotoTest formula and generation integration checks
+scripts/run-polarized-fixed-test.sh
+                           three polarized closure runs
+AnalysisScripts/polarized_fixed_amp_analysis.ipynb
+                           polarized fixed-point Argand closure
+AnalysisScripts/unpolarized_k_dominance_R.ipynb
+                           one polarized-truth/unpolarized-fit comparison
+scripts/run-unpolarized-k-dominance-test.sh
+                           configured fixed generation and unpolarized fit
 ```
 
 `include/emi` is a normal public-header directory, not a second copy of the

@@ -57,28 +57,72 @@ bool TryReadArrayBranchElement(TTree* t,
 
 struct MomentBranch {
   int alpha = 0;
+  int beta = 0;
+  int delta = 0;
   int L = 0;
   int M = 0;
   bool mixed04 = false;
+  bool tensor = false;
   std::string valueName;
 };
 
-bool ParseMomentBranch(const std::string& name, bool photoproduction,
+bool ParseMomentBranch(const std::string& name, const InternalConfig& cfg,
                        MomentBranch& moment) {
   static const std::regex mixedPattern(R"(^(R?H04)_([0-9]+)_([0-9]+)$)");
+  static const std::regex mixedTensorPattern(
+      R"(^(R?H04)_([0-3])_([0-3])_([0-9]+)_([0-9]+)$)");
   static const std::regex rawPattern(R"(^(R?H)_([0-9]+)_([0-9]+)_([0-9]+)$)");
+  static const std::regex rawTensorPattern(
+      R"(^(R?H)_([0-9]+)_([0-3])_([0-3])_([0-9]+)_([0-9]+)$)");
   std::smatch match;
-  if (!photoproduction && std::regex_match(name, match, mixedPattern)) {
-    moment = {0, std::stoi(match[2]), std::stoi(match[3]), true, name};
+  const bool explicitPolarization = cfg.nucleonPolarization != NucleonPolarization::None;
+  const bool initial = cfg.nucleonPolarization == NucleonPolarization::Initial ||
+                       cfg.nucleonPolarization == NucleonPolarization::Both;
+  const bool recoil = cfg.nucleonPolarization == NucleonPolarization::Recoil ||
+                      cfg.nucleonPolarization == NucleonPolarization::Both;
+  auto allowed = [&](int beta, int delta) {
+    return (initial || beta == 0) && (recoil || delta == 0);
+  };
+
+  if (!cfg.photoproduction &&
+      std::regex_match(name, match, mixedTensorPattern)) {
+    const int beta = std::stoi(match[2]);
+    const int delta = std::stoi(match[3]);
+    if (explicitPolarization ? !allowed(beta, delta)
+                             : (beta != 0 || delta != 0)) {
+      return false;
+    }
+    moment = {0, beta, delta, std::stoi(match[4]), std::stoi(match[5]),
+              true, true, name};
+    return true;
+  }
+  if (!cfg.photoproduction && std::regex_match(name, match, mixedPattern)) {
+    moment = {0, 0, 0, std::stoi(match[2]), std::stoi(match[3]),
+              true, false, name};
+    return true;
+  }
+
+  if (std::regex_match(name, match, rawTensorPattern)) {
+    const int alpha = std::stoi(match[2]);
+    const int beta = std::stoi(match[3]);
+    const int delta = std::stoi(match[4]);
+    if ((explicitPolarization ? !allowed(beta, delta)
+                              : (beta != 0 || delta != 0)) ||
+        (cfg.photoproduction ? alpha > 3 : (alpha == 0 || alpha == 4 || alpha > 8))) {
+      return false;
+    }
+    moment = {alpha, beta, delta, std::stoi(match[5]), std::stoi(match[6]),
+              false, true, name};
     return true;
   }
   if (!std::regex_match(name, match, rawPattern)) return false;
 
   const int alpha = std::stoi(match[2]);
-  if (photoproduction ? alpha > 3 : (alpha == 0 || alpha == 4 || alpha > 8)) {
+  if (cfg.photoproduction ? alpha > 3 : (alpha == 0 || alpha == 4 || alpha > 8)) {
     return false;
   }
-  moment = {alpha, std::stoi(match[3]), std::stoi(match[4]), false, name};
+  moment = {alpha, 0, 0, std::stoi(match[3]), std::stoi(match[4]),
+            false, false, name};
   return true;
 }
 
@@ -94,17 +138,25 @@ std::vector<ObservedMoment> ReadObservedMoments(const InternalConfig& cfg) {
   }
   if (cfg.bin < 0 || cfg.bin >= kMaximumInputBins) throw std::runtime_error("Bin out of range");
 
-  std::map<std::tuple<int, int, int, bool>, MomentBranch> branches;
+  std::map<std::tuple<int, int, int, int, int, bool>, MomentBranch> branches;
   TObjArray* branchList = t->GetListOfBranches();
   for (int index = 0; branchList && index < branchList->GetEntries(); ++index) {
     const std::string name = branchList->At(index)->GetName();
     MomentBranch candidate;
-    if (!ParseMomentBranch(name, cfg.photoproduction, candidate)) continue;
-    const auto key = std::make_tuple(candidate.alpha, candidate.L,
-                                     candidate.M, candidate.mixed04);
+    if (!ParseMomentBranch(name, cfg, candidate)) continue;
+    const auto key = std::make_tuple(candidate.alpha, candidate.beta, candidate.delta,
+                                     candidate.L, candidate.M, candidate.mixed04);
     auto found = branches.find(key);
-    const bool isExperimentalName = name.rfind("RH", 0) == 0;
-    if (found == branches.end() || isExperimentalName) branches[key] = std::move(candidate);
+    auto priority = [](const MomentBranch& branch) {
+      // Prefer experimental RH names over internal H names. For an
+      // unpolarized fit, prefer alpha,L,M branches when both spellings exist,
+      // but accept alpha,0,0,L,M from a polarized file as a fallback.
+      return (branch.valueName.rfind("RH", 0) == 0 ? 2 : 0) +
+             (branch.tensor ? 0 : 1);
+    };
+    if (found == branches.end() || priority(candidate) > priority(found->second)) {
+      branches[key] = std::move(candidate);
+    }
   }
 
   std::vector<ObservedMoment> obs;
@@ -133,6 +185,8 @@ std::vector<ObservedMoment> ReadObservedMoments(const InternalConfig& cfg) {
 
     ObservedMoment m;
     m.alpha = branch.alpha;
+    m.beta = branch.beta;
+    m.delta = branch.delta;
     m.L = branch.L;
     m.M = branch.M;
     m.value = val;

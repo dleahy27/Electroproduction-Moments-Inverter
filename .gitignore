@@ -1,4 +1,5 @@
 /build/
+/build-*/
 /OutputFiles/*
 !/OutputFiles/.gitkeep
 /InputFiles/Generated/*
@@ -13,3 +14,12 @@ cmake-build-*/
 *.jpg
 *.jpeg
 *.gif
+
+# Flamegraph stuff
+/perf*
+/*-flamegraph.svg
+
+#data types
+*.csv
+*.data
+*.root

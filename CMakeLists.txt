@@ -17,7 +17,10 @@ add_library(emi_core
   src/LeptoMoments.C
   src/Minimizer.C
   src/Model.C
+  src/MassModels/MassModel.C
+  src/MassModels/PhotoTest.C
   src/PhotoMoments.C
+  src/PolarizedModel.C
   src/RandomMoments.C
 )
 target_include_directories(emi_core
@@ -35,7 +38,9 @@ target_link_libraries(emi_core
 )
 target_compile_options(emi_core PRIVATE -Wall -Wextra -Wpedantic)
 
-add_executable(emi app/main.C)
+add_executable(emi app/main.C app/RuntimeSettings.C)
+target_include_directories(emi PRIVATE app)
+target_compile_definitions(emi PRIVATE EMI_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(emi PRIVATE emi_core)
 
 include(GNUInstallDirs)
@@ -48,3 +53,13 @@ install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
 enable_testing()
 add_test(NAME cli_help COMMAND emi --help)
+
+add_executable(emi_mass_models_test tests/MassModelsTest.C)
+target_include_directories(emi_mass_models_test PRIVATE src)
+target_link_libraries(emi_mass_models_test PRIVATE emi_core)
+target_compile_options(emi_mass_models_test PRIVATE -Wall -Wextra -Wpedantic)
+add_test(
+  NAME mass_models
+  COMMAND emi_mass_models_test
+          "${CMAKE_CURRENT_BINARY_DIR}/photo_test_generation.root"
+)
