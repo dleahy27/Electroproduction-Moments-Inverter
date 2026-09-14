@@ -378,6 +378,26 @@ Configure it in `FixedMoments()` or override its scan controls at runtime:
 ./build/emi generate-fixed --mass 1.306 --no-background
 ```
 
+Run the standard two-K truth/single-K fit scan over 20 logarithmic mass points
+from 0.5 to 12 GeV and five K-minus scales from 0 to 0.3 with:
+
+```bash
+python3 scripts/run-photo-test-mass-scan.py
+python3 AnalysisScripts/analyse-photo-test-mass-scan.py
+```
+
+The runner writes a CSV manifest beside the fit outputs and resumes from
+existing ROOT files unless `--overwrite` is supplied. Use `--starts` and
+`--workers` to control the fit cost. The analysis uses PyROOT, NumPy, and
+Matplotlib without pandas. For every fitted amplitude it writes absolute and
+relative magnitude-error curves and shared-axis Argand panels under
+`OutputFiles/photo_test_mass_scan/figures`.
+The error reference is the incoherent two-K magnitude
+`sqrt(|T+|^2 + |T-|^2)`, consistent with the bilinears used to generate the
+moments. The Argand panels show both complex truth sectors separately and
+rotate each truth reflectivity into the phase convention fixed by its
+single-K fit.
+
 Generation keeps both reflectivities and both independent K sectors in the
 truth model. Before writing amplitudes, it rotates the complete amplitude set
 by the phase of `a_T_2_2_1`, which is the phase reference used by the polarized
@@ -550,6 +570,10 @@ AnalysisScripts/unpolarized_k_dominance_R.ipynb
                            one polarized-truth/unpolarized-fit comparison
 scripts/run-unpolarized-k-dominance-test.sh
                            configured fixed generation and unpolarized fit
+scripts/run-photo-test-mass-scan.py
+                           PhotoTest mass/scale generation and fitting scan
+AnalysisScripts/analyse-photo-test-mass-scan.py
+                           amplitude-error and Argand scan figures
 ```
 
 `include/emi` is a normal public-header directory, not a second copy of the
