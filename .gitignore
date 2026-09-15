@@ -23,3 +23,7 @@ cmake-build-*/
 *.csv
 *.data
 *.root
+
+# Python analysis products
+__pycache__/
+AnalysisScripts/outputs/

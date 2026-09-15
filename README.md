@@ -27,7 +27,7 @@ root-config --version
 From the repository root:
 
 ```bash
-./scripts/build.sh
+python3 scripts/build.py
 ```
 
 This configures CMake and compiles `build/emi`. It is a normal executable
@@ -41,8 +41,9 @@ Run it directly:
 ```
 
 The supplied run scripts also use this repository-local executable, so no
-installation or `PATH` changes are needed. To configure and build without the
-helper script, use:
+installation or `PATH` changes are needed. Edit the settings at the top of a
+script before running it. To configure and build without the helper script,
+use:
 
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -231,14 +232,16 @@ are implementation defaults. If one wants to change them, this will require goin
 The supplied script fits electron-rho bin zero:
 
 ```bash
-./scripts/run-fit.sh 0
+python3 scripts/run-fit.py
 ```
 
-It uses the model and run defaults in `app/UserSettings.h`. Environment
-variables are available for quick, temporary overrides:
+It uses the model and run defaults in `app/UserSettings.h`. Input paths, the
+bin number, epsilon, and optional run overrides are variables at the top of
+the script:
 
 ```bash
-STARTS=100 WORKERS=2 ./scripts/run-fit.sh 0
+STARTS = 100
+WORKERS = 2
 ```
 
 For another input file:
@@ -253,8 +256,8 @@ emi fit \
   --output OutputFiles/e_rho_fit_0.root
 ```
 
-Paths, tree name, bin, and epsilon remain command-line values because they vary
-between datasets. Run `emi --help` for optional runtime overrides.
+The underlying `emi` executable still accepts command-line values. Run
+`emi --help` to see them.
 
 Analytical gradients are used by default. Set
 `.UseNumericalGradients(true)` in `UserSettings.h`, or pass
@@ -267,13 +270,15 @@ python3 scripts/compare-gradients.py 0
 ## Run a bootstrap
 
 ```bash
-./scripts/run-bootstrap.sh 0
+python3 scripts/run-bootstrap.py
 ```
 
-For a short installation check:
+For a short installation check, set these variables at the top of the script:
 
 ```bash
-TOYS=2 STARTS_PER_TOY=2 WORKERS=1 ./scripts/run-bootstrap.sh 0
+TOYS = 2
+STARTS_PER_TOY = 2
+WORKERS = 1
 ```
 
 Each bootstrap independently samples from a Gaussian that is constructed from the published SDME values, with the width given by the quadrature of the published errors.
@@ -379,19 +384,23 @@ Configure it in `FixedMoments()` or override its scan controls at runtime:
 ```
 
 Run the standard two-K truth/single-K fit scan over 20 logarithmic mass points
-from 0.5 to 12 GeV and five K-minus scales from 0 to 0.3 with:
+from 0.5 to 4 GeV and five K-minus mixing factors `s` from 0 to 0.3 with:
 
 ```bash
 python3 scripts/run-photo-test-mass-scan.py
-python3 AnalysisScripts/analyse-photo-test-mass-scan.py
+conda run -n phdconda python AnalysisScripts/analyse-photo-test-mass-scan.py
 ```
 
 The runner writes a CSV manifest beside the fit outputs and resumes from
-existing ROOT files unless `--overwrite` is supplied. Use `--starts` and
-`--workers` to control the fit cost. The analysis uses PyROOT, NumPy, and
+existing ROOT files unless `OVERWRITE` is set to `True`. Edit `STARTS` and
+`WORKERS` at the top of the script to control the fit cost. The analysis uses PyROOT, NumPy, and
 Matplotlib without pandas. For every fitted amplitude it writes absolute and
-relative magnitude-error curves and shared-axis Argand panels under
-`OutputFiles/photo_test_mass_scan/figures`.
+log-scale relative magnitude-error curves. It also writes one fixed-amplitude
+style Argand figure for each mass. The five mixing factors `s` are arranged as
+columns, with natural and unnatural reflectivities in separate vertical panels,
+under `OutputFiles/photo_test_mass_scan/figures`.
+Run the analysis in a Python environment that provides PyROOT, such as the
+local `phdconda` Conda environment shown above.
 The error reference is the incoherent two-K magnitude
 `sqrt(|T+|^2 + |T-|^2)`, consistent with the bilinears used to generate the
 moments. The Argand panels show both complex truth sectors separately and
@@ -460,18 +469,24 @@ The polarized closure runner generates and fits matched copies of `Model()` for
 initial, recoil, and double nucleon polarization:
 
 ```bash
-STARTS=100 WORKERS=1 SEED=12345 \
-  ./scripts/run-polarized-fixed-test.sh
+python3 scripts/run-polarized-fixed-test.py
 ```
 
-Set `K_GAUGE=b:T:1:0` to use a particular single-polarized gauge reference.
-`HESSE=1` enables the Hessian.
+Set `K_GAUGE = "b:T:1:0"` at the top of the script to use a particular
+single-polarized gauge reference. Set `USE_HESSE = True` to enable the Hessian.
 The runner uses the internal deterministic `generate-example` command so the
 generated and fitted wave sets are the same. It does not depend on the current
 contents of the user-editable `FixedMoments()` configuration.
 
-Open `AnalysisScripts/polarized_fixed_amp_analysis.ipynb` and set its generated
-and fitted ROOT filenames to inspect one of these cases. The notebook reads the
+Edit the generated and fitted ROOT filenames at the top of
+`AnalysisScripts/polarized_fixed_amp_analysis.py`, then run:
+
+```bash
+conda activate phdconda
+python AnalysisScripts/polarized_fixed_amp_analysis.py
+```
+
+The script reads the
 common polarized amplitude branches and plots the generated and fitted complex
 amplitudes directly in the gauge imposed by generation and minimization. It
 does not apply a phase rotation or a recoil-angle transformation.
@@ -485,8 +500,8 @@ After generating a custom polarized point and fitting its unpolarized moments:
 ./build/emi fit
 ```
 
-open `AnalysisScripts/unpolarized_k_dominance_R.ipynb`. The only user inputs
-are the generated and fitted ROOT filenames near the top of the notebook. It
+run `python AnalysisScripts/unpolarized_k_dominance_R.py`. The user inputs
+are grouped near the top of the script. It
 discovers the selected waves and common moments automatically, selects the
 lowest-chi-square accepted fit, and uses no pandas. It produces:
 
@@ -498,8 +513,8 @@ lowest-chi-square accepted fit, and uses no pandas. It produces:
 - a generated-versus-fitted `R` comparison when longitudinal waves are present.
 
 The figures are written under
-`AnalysisScripts/outputs/polarized_to_unpolarized_fixed/`. The notebook uses
-PyROOT, NumPy, and Matplotlib, like the historic analysis notebooks.
+`AnalysisScripts/outputs/unpolarized_k_dominance_R/`. The script uses ROOT
+RDataFrame, NumPy, and Matplotlib.
 
 ### Configured polarized truth fitted as unpolarized
 
@@ -508,16 +523,15 @@ ordinary fixed generation. It generates the configured point and fits only its
 unpolarized `beta=delta=0` projection:
 
 ```bash
-STARTS=10000 WORKERS=1 SEED=12345 \
-  ./scripts/run-unpolarized-k-dominance-test.sh
+python3 scripts/run-unpolarized-k-dominance-test.py
 ```
 
 In `Custom` mode, the exact and random amplitude rows in `FixedMoments()` are
-used directly. `REPEATS=N` generates independent repetitions by incrementing
-the seed. For either dominant-K mode, an optional list such as
-`SUPPRESSIONS="0.2 0.1 0.05"` performs a suppression sweep; this option is
+used directly. `REPEATS` generates independent repetitions by incrementing
+the seed. For either dominant-K mode, a list such as
+`SUPPRESSIONS = [0.2, 0.1, 0.05]` performs a suppression sweep; this option is
 rejected for `Custom` and `AllRandom` because suppression has no meaning there.
-`HESSE=1` enables Hessian calculation. Use `SETTINGS=path/to/settings.h` for a
+`USE_HESSE = True` enables Hessian calculation. Edit `SETTINGS_FILE` to use a
 separate study file. Ensure `Fit().photoproduction` describes the same process
 as `FixedMoments().photoproduction`.
 
@@ -562,13 +576,13 @@ src/RandomMoments.C        random synthetic inputs
 src/MassModels/MassModel.* internal shared mass-model value types and BW helper
 src/MassModels/PhotoTest.* deterministic photoproduction S/P/D model
 tests/MassModelsTest.C     PhotoTest formula and generation integration checks
-scripts/run-polarized-fixed-test.sh
+scripts/run-polarized-fixed-test.py
                            three polarized closure runs
-AnalysisScripts/polarized_fixed_amp_analysis.ipynb
+AnalysisScripts/polarized_fixed_amp_analysis.py
                            polarized fixed-point Argand closure
-AnalysisScripts/unpolarized_k_dominance_R.ipynb
+AnalysisScripts/unpolarized_k_dominance_R.py
                            one polarized-truth/unpolarized-fit comparison
-scripts/run-unpolarized-k-dominance-test.sh
+scripts/run-unpolarized-k-dominance-test.py
                            configured fixed generation and unpolarized fit
 scripts/run-photo-test-mass-scan.py
                            PhotoTest mass/scale generation and fitting scan
@@ -606,11 +620,13 @@ emi::RunFit(fit, model);
 - Worker files are merged automatically and removed after a successful merge.
 - Build products and generated ROOT output are ignored by Git.
 
-## Analysis notebooks
+## Analysis scripts
 
-`AnalysisScripts/` contains the existing PyROOT notebooks, these were used for my thesis work and for the plots within the paper ..... They are not required
-to compile or run the inverter. Typical notebook dependencies are PyROOT, NumPy,
-SciPy, and Matplotlib.
+`AnalysisScripts/` contains standalone PyROOT analysis scripts used for thesis
+and paper plots. Each script keeps its editable settings near the top and saves
+figures beneath its own `AnalysisScripts/outputs/` directory. They are not
+required to compile or run the inverter. Their main dependencies are PyROOT,
+NumPy, SciPy, and Matplotlib.
 
 ## License
 

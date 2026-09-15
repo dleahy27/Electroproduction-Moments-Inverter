@@ -2,221 +2,196 @@
 
 """Plot amplitude errors and Argand diagrams for the PhotoTest mass scan."""
 
-import argparse
 import csv
 import re
 from pathlib import Path
 
-try:
-    import ROOT
-except (ImportError, RuntimeError) as error:
-    raise SystemExit(
-        "PyROOT is required. Load the same ROOT environment used to build EMI "
-        "and run this script with the Python version for which ROOT was built.\n"
-        f"Original import error: {error}"
-    ) from error
-
-ROOT.PyConfig.IgnoreCommandLineOptions = True
-
 import matplotlib.pyplot as plt
-from matplotlib.colors import LogNorm
 from matplotlib.lines import Line2D
 import numpy as np
+import ROOT
 
 
-parser = argparse.ArgumentParser(
-    description="Analyse the PhotoTest two-k truth versus single-k fits."
-)
-parser.add_argument("--manifest", type=Path, default=None)
-parser.add_argument("--show", action="store_true")
-args = parser.parse_args()
-ROOT.gROOT.SetBatch(not args.show)
+# Settings: edit these values before running the analysis.
+MANIFEST_FILE = "OutputFiles/photo_test_mass_scan/scan_points.csv"
+SHOW_PLOTS = False
+ARGAND_LIMIT = 1.0
+ERROR_FIGURE_DPI = 180
+ARGAND_FIGURE_DPI = 600
 
-project_dir = Path(__file__).resolve().parents[1]
-manifest = args.manifest.resolve() if args.manifest else (
-    project_dir / "OutputFiles" / "photo_test_mass_scan" / "scan_points.csv"
-)
-if not manifest.is_file():
-    raise SystemExit(
-        f"Missing {manifest}; run scripts/run-photo-test-mass-scan.py first"
-    )
 
-with manifest.open(newline="") as stream:
+ROOT.gROOT.SetBatch(not SHOW_PLOTS)
+PROJECT_DIR = Path(__file__).resolve().parents[1]
+manifest_path = PROJECT_DIR / MANIFEST_FILE
+
+
+def wave_sort_key(name):
+    """Sort amplitudes by reflectivity, orbital angular momentum, and m."""
+    reflectivity, _, ell, projection = name.split("_")
+    return reflectivity, int(ell), int(projection.replace("m", "-"))
+
+
+def complex_amplitude(magnitude, phase):
+    """Construct a complex amplitude from a magnitude and phase."""
+    magnitude = float(magnitude)
+    phase = float(phase)
+    if magnitude < 0.0:
+        magnitude = -magnitude
+        phase += np.pi
+    return magnitude * np.exp(1j * phase)
+
+
+def read_scan_point(point, waves):
+    """Read the truth amplitudes and best finite fit for one scan point."""
+    truth_path = PROJECT_DIR / point["truth_file"]
+    fit_path = PROJECT_DIR / point["fit_file"]
+    if not truth_path.is_file() or not fit_path.is_file():
+        return None
+
+    truth_frame = ROOT.RDataFrame("genMoments", str(truth_path))
+    fit_frame = ROOT.RDataFrame("fitResults", str(fit_path))
+    truth_branches = {str(name) for name in truth_frame.GetColumnNames()}
+    fit_branches = {str(name) for name in fit_frame.GetColumnNames()}
+
+    plus = np.full(len(waves), np.nan + 1j * np.nan, dtype=complex)
+    minus = np.full(len(waves), np.nan + 1j * np.nan, dtype=complex)
+    fitted = np.full(len(waves), np.nan + 1j * np.nan, dtype=complex)
+
+    # List only the branches required for amplitudes shared by the two trees.
+    fit_columns = ["chi2"]
+    truth_columns = ["aphi_T_2_2_1", "bphi_T_2_2_1"]
+    for index, wave in enumerate(waves):
+        phase_wave = wave[0] + "phi" + wave[1:]
+        needed_fit = {wave, phase_wave}
+        needed_truth = {
+            wave + "_1", phase_wave + "_1",
+            wave + "_m1", phase_wave + "_m1",
+        }
+        if not needed_fit <= fit_branches or not needed_truth <= truth_branches:
+            continue
+        fit_columns.extend([wave, phase_wave])
+        truth_columns.extend(sorted(needed_truth))
+
+    # RDataFrame reads the selected columns; NumPy chooses the lowest finite chi2.
+    truth = truth_frame.AsNumpy(columns=list(dict.fromkeys(truth_columns)))
+    fit = fit_frame.AsNumpy(columns=list(dict.fromkeys(fit_columns)))
+    finite = np.flatnonzero(np.isfinite(fit["chi2"]))
+    if len(finite) == 0:
+        return None
+    best_entry = finite[np.argmin(fit["chi2"][finite])]
+    chi2 = fit["chi2"][best_entry]
+    rotations = {
+        reflectivity: np.exp(
+            -1j * truth[reflectivity + "phi_T_2_2_1"][0]
+        )
+        for reflectivity in ("a", "b")
+    }
+
+    for index, wave in enumerate(waves):
+        phase_wave = wave[0] + "phi" + wave[1:]
+        if wave not in fit:
+            continue
+        fitted[index] = complex_amplitude(
+            fit[wave][best_entry], fit[phase_wave][best_entry]
+        )
+        rotation = rotations[wave[0]]
+        plus[index] = complex_amplitude(
+            truth[wave + "_1"][0], truth[phase_wave + "_1"][0]
+        ) * rotation
+        minus[index] = complex_amplitude(
+            truth[wave + "_m1"][0], truth[phase_wave + "_m1"][0]
+        ) * rotation
+    return plus, minus, fitted, chi2
+
+
+def wave_label(name):
+    """Convert a_T_1_0 to a compact P-wave plot label."""
+    reflectivity, polarization, ell, projection = name.split("_")
+    orbital = ("S", "P", "D")[int(ell)]
+    sign = "+" if reflectivity == "a" else "-"
+    projection = projection.replace("m", "-")
+    return orbital + "$^" + sign + r"_{\mathrm{" + polarization + "}" + projection + "}$"
+
+
+def style_argand_axis(axis):
+    """Apply the large-format style used by the fixed-amplitude figures."""
+    axis.tick_params(which="major", labelsize=22, width=2.0, length=8, pad=6)
+    axis.tick_params(which="minor", width=1.6, length=5)
+    for spine in axis.spines.values():
+        spine.set_linewidth(2.0)
+
+
+# Read the scan layout from the runner's CSV manifest.
+with manifest_path.open(newline="") as stream:
     points = list(csv.DictReader(stream))
-if not points:
-    raise SystemExit(f"The manifest is empty: {manifest}")
 
 masses = np.array(sorted({float(point["mass_GeV"]) for point in points}))
 scales = np.array(sorted({float(point["k_minus_scale"]) for point in points}))
-mass_lookup = {value: index for index, value in enumerate(masses)}
-scale_lookup = {value: index for index, value in enumerate(scales)}
+mass_index = {mass: index for index, mass in enumerate(masses)}
+scale_index = {scale: index for index, scale in enumerate(scales)}
 
-available_fit_files = [
-    project_dir / point["fit_file"]
+# Discover the transverse waves from the first available fit file.
+first_fit_path = next(
+    PROJECT_DIR / point["fit_file"]
     for point in points
-    if (project_dir / point["fit_file"]).is_file()
-]
-if not available_fit_files:
-    raise SystemExit("None of the fit files listed in the manifest exists")
-first_fit_file = available_fit_files[0]
-first_fit_root = ROOT.TFile.Open(str(first_fit_file))
-if not first_fit_root or first_fit_root.IsZombie():
-    raise SystemExit(f"Could not open {first_fit_file}")
-first_fit_tree = first_fit_root.Get("fitResults")
-if not first_fit_tree:
-    raise SystemExit(f"Missing fitResults in {first_fit_file}")
-fit_branch_names = {
-    branch.GetName() for branch in first_fit_tree.GetListOfBranches()
-}
+    if (PROJECT_DIR / point["fit_file"]).is_file()
+)
+first_fit = ROOT.RDataFrame("fitResults", str(first_fit_path))
 amplitude_pattern = re.compile(r"^[ab]_T_[0-9]+_(?:m[0-9]+|[0-9]+)$")
 waves = sorted(
-    (name for name in fit_branch_names if amplitude_pattern.match(name)),
-    key=lambda name: (
-        name.split("_")[0],
-        int(name.split("_")[2]),
-        int(name.split("_")[3].replace("m", "-")),
+    (
+        str(name) for name in first_fit.GetColumnNames()
+        if amplitude_pattern.match(str(name))
     ),
+    key=wave_sort_key,
 )
-first_fit_root.Close()
-if not waves:
-    raise SystemExit("No fitted transverse amplitudes were found")
 
+# Store every scan point in arrays indexed by scale, mass, and wave.
 shape = (len(scales), len(masses), len(waves))
 truth_plus = np.full(shape, np.nan + 1j * np.nan, dtype=complex)
 truth_minus = np.full(shape, np.nan + 1j * np.nan, dtype=complex)
 fitted = np.full(shape, np.nan + 1j * np.nan, dtype=complex)
 best_chi2 = np.full((len(scales), len(masses)), np.nan)
 
-missing = []
 for point in points:
-    mass = float(point["mass_GeV"])
-    scale = float(point["k_minus_scale"])
-    mass_index = mass_lookup[mass]
-    scale_index = scale_lookup[scale]
-    truth_file = project_dir / point["truth_file"]
-    fit_file = project_dir / point["fit_file"]
-    if not truth_file.is_file() or not fit_file.is_file():
-        missing.append((truth_file, fit_file))
+    result = read_scan_point(point, waves)
+    if result is None:
         continue
+    row = scale_index[float(point["k_minus_scale"])]
+    column = mass_index[float(point["mass_GeV"])]
+    (
+        truth_plus[row, column],
+        truth_minus[row, column],
+        fitted[row, column],
+        best_chi2[row, column],
+    ) = result
 
-    truth_root = ROOT.TFile.Open(str(truth_file))
-    fit_root = ROOT.TFile.Open(str(fit_file))
-    if (not truth_root or truth_root.IsZombie()
-            or not fit_root or fit_root.IsZombie()):
-        missing.append((truth_file, fit_file))
-        if truth_root:
-            truth_root.Close()
-        if fit_root:
-            fit_root.Close()
-        continue
 
-    truth_tree = truth_root.Get("genMoments")
-    fit_tree = fit_root.Get("fitResults")
-    if not truth_tree or not fit_tree or truth_tree.GetEntries() < 1:
-        missing.append((truth_file, fit_file))
-        truth_root.Close()
-        fit_root.Close()
-        continue
-
-    truth_tree.GetEntry(0)
-    fit_names = {branch.GetName() for branch in fit_tree.GetListOfBranches()}
-    truth_names = {
-        branch.GetName() for branch in truth_tree.GetListOfBranches()
-    }
-    finite_entries = []
-    for entry in range(fit_tree.GetEntries()):
-        fit_tree.GetEntry(entry)
-        chi2 = float(getattr(fit_tree, "chi2"))
-        if np.isfinite(chi2):
-            finite_entries.append((chi2, entry))
-    if not finite_entries:
-        missing.append((truth_file, fit_file))
-        truth_root.Close()
-        fit_root.Close()
-        continue
-
-    chi2, entry = min(finite_entries)
-    fit_tree.GetEntry(entry)
-    best_chi2[scale_index, mass_index] = chi2
-
-    # The single-k fit fixes the highest a and b phases independently. Rotate
-    # each generated reflectivity into the same plotting convention. This does
-    # not change the quadrature truth magnitude used for the error plots.
-    truth_rotations = {}
-    for reflectivity in ("a", "b"):
-        reference_phase = float(
-            getattr(truth_tree, reflectivity + "phi_T_2_2_1")
-        )
-        truth_rotations[reflectivity] = np.exp(-1j * reference_phase)
-
-    for wave_index, wave in enumerate(waves):
-        phase_wave = wave[0] + "phi" + wave[1:]
-        required_fit = {wave, phase_wave}
-        required_truth = {
-            wave + "_1", phase_wave + "_1",
-            wave + "_m1", phase_wave + "_m1",
-        }
-        if not required_fit <= fit_names or not required_truth <= truth_names:
-            continue
-
-        fit_magnitude = float(getattr(fit_tree, wave))
-        fit_phase = float(getattr(fit_tree, phase_wave))
-        if fit_magnitude < 0.0:
-            fit_magnitude = -fit_magnitude
-            fit_phase += np.pi
-        fitted[scale_index, mass_index, wave_index] = (
-            fit_magnitude * np.exp(1j * fit_phase)
-        )
-
-        rotation = truth_rotations[wave[0]]
-        plus_magnitude = float(getattr(truth_tree, wave + "_1"))
-        plus_phase = float(getattr(truth_tree, phase_wave + "_1"))
-        minus_magnitude = float(getattr(truth_tree, wave + "_m1"))
-        minus_phase = float(getattr(truth_tree, phase_wave + "_m1"))
-        truth_plus[scale_index, mass_index, wave_index] = (
-            plus_magnitude * np.exp(1j * plus_phase) * rotation
-        )
-        truth_minus[scale_index, mass_index, wave_index] = (
-            minus_magnitude * np.exp(1j * minus_phase) * rotation
-        )
-
-    truth_root.Close()
-    fit_root.Close()
-
-if missing:
-    print(f"Warning: {len(missing)} scan points could not be read")
-if not np.isfinite(fitted.real).any():
-    raise SystemExit("No finite fitted amplitudes were read")
-
-figure_dir = manifest.parent / "figures"
+# Shared plotting settings and output directory.
+figure_dir = manifest_path.parent / "figures"
 figure_dir.mkdir(parents=True, exist_ok=True)
 scale_colours = plt.cm.plasma(np.linspace(0.08, 0.92, len(scales)))
-mass_colours = plt.cm.viridis(LogNorm(masses.min(), masses.max())(masses))
-
 plt.rcParams.update({
     "font.family": "serif",
     "mathtext.fontset": "stix",
     "font.size": 11,
     "axes.grid": True,
     "grid.alpha": 0.25,
-    "savefig.dpi": 180,
+    "savefig.dpi": ERROR_FIGURE_DPI,
 })
 
-for wave_index, wave in enumerate(waves):
-    reflectivity, _, ell_text, projection_text = wave.split("_")
-    orbital = ("S", "P", "D")[int(ell_text)]
-    projection = int(projection_text.replace("m", "-"))
-    reflectivity_sign = "+" if reflectivity == "a" else "-"
-    wave_title = (
-        rf"${orbital}_{{{projection}}}^{{{reflectivity_sign}}}$ transverse"
-    )
+# Plot absolute and relative magnitude errors for each fitted wave.
+for index, wave in enumerate(waves):
+    reflectivity, _, ell, projection = wave.split("_")
+    orbital = ("S", "P", "D")[int(ell)]
+    sign = "+" if reflectivity == "a" else "-"
+    title = rf"${orbital}_{{{projection.replace('m', '-')}}}^{{{sign}}}$ transverse"
 
     generated_magnitude = np.sqrt(
-        np.abs(truth_plus[:, :, wave_index]) ** 2
-        + np.abs(truth_minus[:, :, wave_index]) ** 2
+        np.abs(truth_plus[:, :, index]) ** 2
+        + np.abs(truth_minus[:, :, index]) ** 2
     )
-    fitted_magnitude = np.abs(fitted[:, :, wave_index])
-    absolute_error = np.abs(fitted_magnitude - generated_magnitude)
+    absolute_error = np.abs(np.abs(fitted[:, :, index]) - generated_magnitude)
     relative_error = np.divide(
         absolute_error,
         generated_magnitude,
@@ -227,101 +202,110 @@ for wave_index, wave in enumerate(waves):
     figure, axes = plt.subplots(
         2, 1, figsize=(7.2, 7.2), sharex=True, constrained_layout=True
     )
-    for scale_index, (scale, colour) in enumerate(zip(scales, scale_colours)):
+    for row, (scale, colour) in enumerate(zip(scales, scale_colours)):
         axes[0].plot(
-            masses, absolute_error[scale_index], marker="o", markersize=3.5,
-            color=colour, label=fr"$f={scale:.3f}$",
+            masses, absolute_error[row], marker="o", markersize=3.5,
+            color=colour, label=fr"$s={scale:.3f}$",
         )
         axes[1].plot(
-            masses, relative_error[scale_index], marker="o", markersize=3.5,
+            masses, relative_error[row], marker="o", markersize=3.5,
             color=colour,
         )
-    axes[0].set_ylabel(
-        r"$\left||A_{\rm fit}|-\sqrt{|T_+|^2+|T_-|^2}\right|$"
-    )
+    axes[0].set_ylabel(r"$\left||A_{\rm fit}|-\sqrt{|T_+|^2+|T_-|^2}\right|$")
     axes[1].set_ylabel("Relative absolute error")
-    axes[1].set_xlabel(r"Invariant mass $w$ (GeV)")
-    axes[1].set_xscale("log")
-    axes[0].set_title(wave_title)
+    axes[1].set_xlabel(r"Invariant mass $M$ (GeV)")
+    axes[1].set_yscale("log")
+    axes[0].set_title(title)
     axes[0].legend(frameon=False, ncol=3)
-    figure.savefig(figure_dir / f"errors_{wave}.pdf")
-    if args.show:
+    figure.savefig(figure_dir / f"photo_test_{wave}_errors.pdf")
+    if SHOW_PLOTS:
         plt.show()
     plt.close(figure)
 
-    figure, axes = plt.subplots(
-        1, len(scales), figsize=(3.4 * len(scales), 3.7),
-        sharex=True, sharey=True, constrained_layout=True,
-    )
-    if len(scales) == 1:
-        axes = np.array([axes])
 
-    all_values = np.concatenate([
-        truth_plus[:, :, wave_index].ravel(),
-        truth_minus[:, :, wave_index].ravel(),
-        fitted[:, :, wave_index].ravel(),
-    ])
-    finite_values = all_values[
-        np.isfinite(all_values.real) & np.isfinite(all_values.imag)
-    ]
-    if finite_values.size == 0:
-        print(f"Warning: no finite points for {wave}; skipping its figures")
-        continue
-    limit = 1.08 * max(
-        np.max(np.abs(finite_values.real)),
-        np.max(np.abs(finite_values.imag)),
-        1.0e-3,
-    )
+# Plot all waves at each mass, with one column per k-minus scale.
+poster_style = {
+    "font.family": "serif",
+    "mathtext.fontset": "stix",
+    "font.size": 36,
+    "axes.titlesize": 42,
+    "axes.labelsize": 40,
+    "lines.linewidth": 4.0,
+    "axes.linewidth": 2.8,
+}
+wave_colours = plt.colormaps["tab20"](np.linspace(0.0, 1.0, len(waves)))
+reflectivity_groups = [("a", "Natural Transverse"), ("b", "Unnatural Transverse")]
 
-    for scale_index, (axis, scale) in enumerate(zip(axes, scales)):
-        plus = truth_plus[scale_index, :, wave_index]
-        minus = truth_minus[scale_index, :, wave_index]
-        fit = fitted[scale_index, :, wave_index]
-        axis.plot(plus.real, plus.imag, color="0.72", linewidth=0.8, zorder=1)
-        axis.plot(minus.real, minus.imag, color="0.82", linewidth=0.8, zorder=1)
-        axis.plot(fit.real, fit.imag, color="0.55", linewidth=0.8, zorder=1)
-        axis.scatter(
-            plus.real, plus.imag, c=mass_colours, marker="*", s=62,
-            edgecolors="black", linewidths=0.35, zorder=3,
+for column, mass in enumerate(masses):
+    with plt.rc_context(poster_style):
+        figure, axes = plt.subplots(
+            2, len(scales), figsize=(6 * len(scales), 12),
+            sharex=True, sharey=True, constrained_layout=True, squeeze=False,
         )
-        axis.scatter(
-            minus.real, minus.imag, c=mass_colours, marker="*", s=34,
-            edgecolors="white", linewidths=0.45, zorder=3,
-        )
-        axis.scatter(
-            fit.real, fit.imag, c=mass_colours, marker="o", s=22,
-            edgecolors="black", linewidths=0.35, zorder=4,
-        )
-        axis.axhline(0.0, color="0.45", linewidth=0.7)
-        axis.axvline(0.0, color="0.45", linewidth=0.7)
-        axis.set_xlim(-limit, limit)
-        axis.set_ylim(-limit, limit)
-        axis.set_aspect("equal", adjustable="box")
-        axis.set_title(fr"$f={scale:.3f}$")
-        axis.set_xlabel(r"Re $A$")
-    axes[0].set_ylabel(r"Im $A$")
-    figure.suptitle(wave_title)
+        for row, (reflectivity, group_title) in enumerate(reflectivity_groups):
+            selected = [
+                index for index, wave in enumerate(waves)
+                if wave.startswith(reflectivity + "_T_")
+            ]
+            for scale_row, scale in enumerate(scales):
+                axis = axes[row, scale_row]
+                for index in selected:
+                    colour = wave_colours[index]
+                    axis.plot(
+                        fitted[scale_row, column, index].real,
+                        fitted[scale_row, column, index].imag,
+                        color=colour, marker="o", linestyle="none",
+                        markersize=12, label=wave_label(waves[index]), zorder=3,
+                    )
+                    for truth in (truth_plus, truth_minus):
+                        value = truth[scale_row, column, index]
+                        axis.plot(
+                            value.real, value.imag, color=colour, marker="*",
+                            linestyle="none", markersize=10,
+                            markeredgecolor="black", markeredgewidth=0.6,
+                            zorder=4,
+                        )
 
-    legend = [
-        Line2D([], [], marker="*", linestyle="", markersize=10,
-               markerfacecolor="0.55", markeredgecolor="black", label=r"truth $k=+$"),
-        Line2D([], [], marker="*", linestyle="", markersize=7,
-               markerfacecolor="0.55", markeredgecolor="white", label=r"truth $k=-$"),
-        Line2D([], [], marker="o", linestyle="", markersize=6,
-               markerfacecolor="0.55", markeredgecolor="black", label="single-k fit"),
-    ]
-    axes[-1].legend(handles=legend, frameon=False, loc="best", fontsize=9)
-    scalar_map = plt.cm.ScalarMappable(
-        norm=LogNorm(masses.min(), masses.max()), cmap="viridis"
-    )
-    figure.colorbar(
-        scalar_map, ax=axes, location="bottom", shrink=0.5, pad=0.08,
-        label=r"Invariant mass $w$ (GeV)",
-    )
-    figure.savefig(figure_dir / f"argand_{wave}.pdf")
-    if args.show:
-        plt.show()
-    plt.close(figure)
+                axis.set(xlim=(-ARGAND_LIMIT, ARGAND_LIMIT), ylim=(-ARGAND_LIMIT, ARGAND_LIMIT))
+                axis.set_aspect("equal", adjustable="box")
+                if scale_row == 0:
+                    axis.set_ylabel(group_title + "\nIm", fontsize=20)
+                if row == 1:
+                    axis.set_xlabel("Re")
+                if row == 0:
+                    axis.set_title(fr"$s={scale:.3f}$")
+                style_argand_axis(axis)
+
+        # Use one legend entry per wave plus entries explaining the markers.
+        handles = [
+            Line2D(
+                [], [], color=wave_colours[index], marker="o",
+                linestyle="none", label=wave_label(wave),
+            )
+            for index, wave in enumerate(waves)
+        ]
+        handles.extend([
+            Line2D([], [], color="black", marker="o", linestyle="none", label="Minimizer"),
+            Line2D(
+                [], [], color="black", marker="*", markerfacecolor="white",
+                linestyle="none", label=r"Set Amp ($k=\pm1$)",
+            ),
+        ])
+        figure.legend(
+            handles=handles, loc="outside lower center", frameon=False,
+            fontsize=14, ncol=10, reverse=True,
+        )
+        figure.suptitle(fr"Invariant Mass $M={mass:.3f}$ GeV")
+        output_name = f"photo_test_mass_bin_{column:02d}_{mass:.3f}_GeV_argand.pdf"
+        figure.savefig(
+            figure_dir / output_name,
+            dpi=ARGAND_FIGURE_DPI,
+            bbox_inches="tight",
+            transparent=True,
+        )
+        if SHOW_PLOTS:
+            plt.show()
+        plt.close(figure)
 
 print(f"Read {np.isfinite(best_chi2).sum()} of {best_chi2.size} scan points")
-print(f"Wrote {2 * len(waves)} figures to {figure_dir}")
+print(f"Wrote {len(waves) + len(masses)} figures to {figure_dir}")
