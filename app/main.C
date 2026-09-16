@@ -1,3 +1,6 @@
+// Command-line front end for the library operations declared in Runner.h.
+// The parser deliberately remains dependency-free so the executable needs
+// only ROOT and the standard library on analysis machines and clusters.
 #include "emi/Runner.h"
 #include "RuntimeSettings.h"
 
@@ -17,6 +20,10 @@ namespace {
 class Arguments {
 public:
   Arguments(int argc, char** argv, int first) {
+    // Options are intentionally parsed into two collections. A token followed
+    // by a non-option is a key/value pair; a bare token is a Boolean flag.
+    // Command-specific validation later catches flags accidentally supplied
+    // where a value is required.
     for (int i = first; i < argc; ++i) {
       std::string key = argv[i];
       if (key.rfind("--", 0) != 0) {
@@ -52,6 +59,8 @@ public:
 
   void RequireOnly(std::initializer_list<std::string_view> valueOptions,
                    std::initializer_list<std::string_view> flagOptions) const {
+    // Keeping the accepted options beside each command makes typographical
+    // errors fail immediately instead of being silently ignored.
     auto contains = [](std::string_view key, const auto& options) {
       for (std::string_view option : options) {
         if (key == option) return true;
@@ -90,6 +99,7 @@ Usage:
   emi make-lepto [--dataset e_rho] [--output FILE]
   emi make-photo [--dataset gluex] [--output FILE]
   emi generate-fixed [options]    (also accepts: emi --generate-fixed)
+  emi generate-example --output FILE [options]
   emi generate-random [--output FILE] [--events N] [--seed N]
 
 Fit options:
@@ -115,6 +125,7 @@ Bootstrap-only options:
 
 Synthetic-generation options:
   generate-fixed          use FixedMoments() from app/UserSettings.h
+  generate-example        use EMI's deterministic closure-test amplitudes
   --output FILE           override FixedMoments().output
   --epsilon VALUE         override FixedMoments().epsilon
   --seed N                override FixedMoments().seed
@@ -164,6 +175,9 @@ emi::NucleonPolarization ReadPolarization(const Arguments& args,
 }
 
 emi::ModelConfig ReadGauge(const Arguments& args, emi::ModelConfig model) {
+  // A single-polarization fit has a continuous change-of-spin-basis freedom.
+  // The four-part label chooses which k=+1 amplitude is made real to remove
+  // that freedom; it does not add a measured constraint to the data.
   model.UseNucleonPolarization(
       ReadPolarization(args, model.nucleonPolarization));
   if (args.Has("k-gauge")) {
@@ -253,6 +267,8 @@ int main(int argc, char** argv) {
                                     : argv[1];
     const Arguments args(argc, argv, 2);
     auto loadSettings = [&] {
+      // Delay Cling startup until a command actually needs editable settings.
+      // Dataset-generation and help commands therefore stay lightweight.
       return emi::runtime::LoadUserSettings(args.Get("settings"));
     };
 

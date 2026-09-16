@@ -1,3 +1,6 @@
+// Parametric bootstrap driver.  Each worker fluctuates the measured moments,
+// refits them independently, and writes a temporary ROOT file; TFileMerger
+// combines those files into one sample without sharing mutable ROOT objects.
 #include "emi/Runner.h"
 
 #include "Detail.h"
@@ -18,7 +21,7 @@
 namespace emi {
 namespace {
 
-// Best fit of each bootstrap
+// Summary retained from all random starts for one fluctuated dataset.
 struct BestFit {
   bool valid = false;
   int status = -999;
@@ -29,6 +32,9 @@ struct BestFit {
 };
 
 void RebuildObservedMap(detail::EvaluationContext& context) {
+  // Copying an EvaluationContext preserves its models but invalidates no
+  // indices. Rebuilding explicitly keeps this invariant visible and protects
+  // future changes that reorder sampled observations.
   context.observedModelIdx.assign(context.observed.size(), -1);
   context.observedModelIdx0.assign(context.observed.size(), -1);
   context.observedModelIdx4.assign(context.observed.size(), -1);
@@ -61,6 +67,8 @@ void RebuildObservedMap(detail::EvaluationContext& context) {
 
 std::shared_ptr<detail::EvaluationContext> SampleContext(
     const detail::EvaluationContext& nominal, TRandom3& random) {
+  // This is a parametric bootstrap: each measurement is sampled independently
+  // from the Gaussian defined by its published central value and uncertainty.
   auto sampled = std::make_shared<detail::EvaluationContext>(nominal);
   for (auto& moment : sampled->observed) {
     if (std::isfinite(moment.value) && std::isfinite(moment.sigma) && moment.sigma > 0.0) {
@@ -82,6 +90,8 @@ BestFit FitToy(const detail::InternalConfig& config,
                             std::numeric_limits<double>::quiet_NaN());
 
   for (unsigned startIndex = 0; startIndex < config.starts; ++startIndex) {
+    // One toy can still contain ambiguous local minima. Keep the lowest finite
+    // result across its independent starts and record how many were usable.
     std::vector<double> start;
     detail::BuildRandomStart(*context, random, start);
     auto result = detail::Minimize(context, start, config.runHesse);
@@ -119,6 +129,8 @@ void RunBootstrapWorker(const detail::InternalConfig& config, unsigned toys,
   }
 
   TTree tree("PartialWaves", "Best amplitude fit for each bootstrap sample");
+  // fitResults stores every start, while PartialWaves stores one selected row
+  // per toy. The distinction is important when interpreting sample widths.
   int toy = 0;
   int valid = 0;
   int status = -999;
@@ -203,6 +215,8 @@ void RunBootstrap(const BootstrapConfig& config, const ModelConfig& model) {
   std::vector<unsigned> ids(workers);
   for (unsigned i = 0; i < workers; ++i) ids[i] = i;
   ROOT::TProcessExecutor pool(workers);
+  // Divide toys exactly: the first `toys % workers` processes receive one
+  // additional sample. Each process owns its ROOT state and output file.
   const auto parts = pool.Map([=](unsigned worker) {
     FitConfig workerFit = fit;
     workerFit.seed = fit.seed == 0 ? 0x9e3779b9u + 100003u * worker

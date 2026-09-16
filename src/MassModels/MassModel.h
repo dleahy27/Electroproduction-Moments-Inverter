@@ -1,5 +1,9 @@
 #pragma once
 
+// Private value types and line-shape declarations for generated truth models.
+// They live below src/ because downstream applications do not need to depend
+// on a particular resonance parameterization.
+
 #include <complex>
 #include <string_view>
 #include <vector>

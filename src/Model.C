@@ -1,3 +1,6 @@
+// Construct the unpolarized moment basis and its Clebsch-Gordan coefficients.
+// ROOT's wigner_3j routine uses doubled integer angular-momentum arguments,
+// which avoids half-integer round-off in the coupling algebra.
 #include "Detail.h"
 
 #include "Math/SpecFuncMathMore.h"
@@ -42,6 +45,9 @@ static int ParseIndex(const std::string& value) {
 } // namespace
 
 ParameterLabel ParseParameterLabel(const std::string& name) {
+  // ROOT branch names encode signs with an `m` prefix because '-' is awkward
+  // in expressions (for example a_T_2_m1_1). This parser is the single bridge
+  // between that storage convention and integer quantum numbers.
   ParameterLabel out;
   if (name.size() < 5) return out;
   out.reflectivity = name[0];
@@ -73,6 +79,8 @@ ParameterLabel ParseParameterLabel(const std::string& name) {
 
 long long MakeParameterKey(char refl, char orient, int k,
                            int l, int m, bool isPhase) {
+  // Pack the small discrete labels into one integer for constant-time lookup
+  // while millions of bilinear terms are assembled and evaluated.
   const long long reflBit = (refl == 'b');
   const long long orientBit = (orient == 'L');
   const long long phaseBit = isPhase;
@@ -148,6 +156,9 @@ std::vector<Parameter> BuildParameters(const InternalConfig& cfg) {
   }
 
   auto fixReferencePhase = [&](char reflectivity, bool matchReflectivity) {
+    // Unpolarized natural and unnatural reflectivities do not interfere, so
+    // each sector has its own arbitrary overall phase. Fixing one phase per
+    // enabled sector removes these flat directions from Minuit.
     Parameter* best = nullptr;
     int bestL = -1;
     int bestM = -999;
@@ -206,6 +217,8 @@ static bool ResolveBruSelection(int reflsign, double factor,
                                 bool orientSwap,
                                 BruSelection& out)
 {
+  // Translate alpha into the photon orientations and sine/cosine phase
+  // dependence used by the BruFit moment convention.
   out.reflectivity1 = (reflsign == -1) ? 'b' : 'a';
   out.reflectivity2 = (reflsign == -1) ? 'b' : 'a';
 
@@ -227,15 +240,16 @@ static bool ResolveBruSelection(int reflsign, double factor,
     out.orientation2 = 'L';
   }
 
-  // There are no independent negative-m longitudinal amplitudes.
-    if(out.orientation1=='L'&&m<0){
-      factor*=LongitudinalParitySign(reflsign,m);
-      m=-m;
-    }
-    if(out.orientation2=='L'&&mpr<0){
-      factor*=LongitudinalParitySign(reflsign,mpr);
-      mpr=-mpr;
-    }
+  // There are no independent negative-m longitudinal amplitudes. Recover
+  // them from parity and redirect the term to the stored positive-m branch.
+  if (out.orientation1 == 'L' && m < 0) {
+    factor *= LongitudinalParitySign(reflsign, m);
+    m = -m;
+  }
+  if (out.orientation2 == 'L' && mpr < 0) {
+    factor *= LongitudinalParitySign(reflsign, mpr);
+    mpr = -mpr;
+  }
 
   // rho^1 and rho^2 carry an overall reflectivity factor.
 
@@ -293,6 +307,8 @@ std::vector<MomentModel> BuildMomentModels(const InternalConfig& cfg,
     }
   };
   std::unordered_map<CGKey, double, CGKeyHash> cgCache;
+  // The same Clebsch-Gordan coefficient appears in many response functions.
+  // Caching it turns an expensive special-function call into a hash lookup.
   cgCache.reserve(2048);
 
   auto getCG = [&](int lpr, int L, int l, int mpr, int M, int m) {
@@ -305,6 +321,8 @@ std::vector<MomentModel> BuildMomentModels(const InternalConfig& cfg,
   };
 
   auto getPhasePairIdx = [&](int idxPhi1, int idxPhi2) {
+    // Terms share sin(phi1-phi2) and cos(phi1-phi2). A unique phase-pair table
+    // lets Evaluation.C compute each trigonometric pair once per objective call.
     const long long key = (static_cast<long long>(idxPhi1) << 32) | static_cast<unsigned int>(idxPhi2);
     auto it = phasePairLookup.find(key);
     if (it != phasePairLookup.end()) return it->second;
@@ -358,6 +376,8 @@ std::vector<MomentModel> BuildMomentModels(const InternalConfig& cfg,
         if (!neededMoments.empty() && neededMoments.find(mm.name) == neededMoments.end()) continue;
 
         if ((alpha == 2 || alpha == 3 || alpha == 6 || alpha == 7) && M == 0) {
+          // These response moments are odd in azimuth and therefore vanish at
+          // M=0; omitting them avoids fitting identically zero observables.
           continue;
         }
 

@@ -24,6 +24,8 @@ using emi::MassModels::ComplexAmplitude;
 using emi::MassModels::PhotoTest;
 
 bool Near(double actual, double expected, double tolerance = 1e-12) {
+  // Physics expressions use floating-point arithmetic, so tests compare within
+  // a tight numerical tolerance rather than requiring identical bit patterns.
   return std::abs(actual - expected) <= tolerance;
 }
 
@@ -68,6 +70,8 @@ double LeafValue(TTree& tree, const std::string& name) {
 }
 
 void CheckMassModel() {
+  // First test the analytic line shape and amplitude table directly, before
+  // involving normalization, moment construction, or ROOT I/O.
   const auto& resonances = PhotoTest::Resonances();
   for (const auto& resonance : resonances) {
     const auto value = emi::MassModels::ConstantWidthBreitWigner(
@@ -112,11 +116,13 @@ void CheckMassModel() {
     int k;
     std::complex<double> value;
   };
+  // The current model defines k=+1 and obtains k=-1 by multiplying the
+  // complete partner amplitude, including its S-wave background.
   const std::array<ExpectedBackground, 4> expectedBackgrounds{{
       {'a', +1, {+0.020, +0.020}},
-      {'a', -1, {-0.012, +0.016}},
+      {'a', -1, {+0.020, +0.020}},
       {'b', +1, {+0.008, -0.006}},
-      {'b', -1, {-0.005, -0.008}},
+      {'b', -1, {+0.008, -0.006}},
   }};
   for (const auto& background : expectedBackgrounds) {
     Require(Near(Find(withBackground, background.reflectivity, 0, 0,
@@ -135,6 +141,15 @@ void CheckMassModel() {
     }
   }
 
+  const auto halfKMinus = PhotoTest({true, 0.5}).Evaluate(mass);
+  for (const auto& amplitude : halfKMinus) {
+    if (amplitude.key.k != -1) continue;
+    const auto& plus = Find(halfKMinus, amplitude.key.reflectivity,
+                            amplitude.key.l, amplitude.key.m, +1);
+    Require(Near(amplitude.value, 0.5 * plus.value),
+            "k-minus amplitude is not the requested scaled partner");
+  }
+
   const auto first = withoutBackground.Evaluate(1.200);
   const auto atDifferentMass = withoutBackground.Evaluate(1.700);
   Require(!Near(Find(first, 'a', 0, 0, +1).value,
@@ -150,6 +165,8 @@ void CheckMassModel() {
 }
 
 emi::ModelConfig FullPhotoModel() {
+  // PhotoTest supplies every S, P, and D projection in both reflectivities and
+  // k sectors; generation must select that complete basis.
   emi::ModelConfig model;
   model.SetWaves({
       {0, 0},
@@ -163,6 +180,9 @@ emi::ModelConfig FullPhotoModel() {
 }
 
 void CheckGeneration(const std::filesystem::path& output) {
+  // This integration check passes PhotoTest through the public generator and
+  // verifies the resulting tree schema, gauge convention, normalization, and
+  // provenance metadata.
   emi::FixedMomentsConfig generation;
   generation.output = output;
   generation.photoproduction = true;

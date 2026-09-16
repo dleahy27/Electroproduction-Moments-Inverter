@@ -1,3 +1,6 @@
+// Validate and read a moment bin from a ROOT TTree.  Branch discovery accepts
+// the project's indexed moment convention, then maps the observed covariance
+// into the exact ordering used by the selected physics model.
 #include "Detail.h"
 
 #include "TBranch.h"
@@ -41,7 +44,14 @@ bool TryReadArrayBranchElement(TTree* t,
 
   t->GetEntry(0);
   const int nData = leaf->GetNdata();
+  // Published inputs store all kinematic bins in one array branch, whereas
+  // generated closure files use scalar branches. Supporting both shapes lets
+  // the same fit path consume experimental and synthetic data.
   if (nData <= 1) {
+    if (bin != 0) {
+      value = 0.0;
+      return false;
+    }
     value = leaf->GetValue(0);
     return true;
   }
@@ -68,6 +78,9 @@ struct MomentBranch {
 
 bool ParseMomentBranch(const std::string& name, const InternalConfig& cfg,
                        MomentBranch& moment) {
+  // Four spellings are accepted: raw/mixed photon responses, each with or
+  // without explicit target and recoil Pauli indices. The selected
+  // polarization determines which tensor components are observable.
   static const std::regex mixedPattern(R"(^(R?H04)_([0-9]+)_([0-9]+)$)");
   static const std::regex mixedTensorPattern(
       R"(^(R?H04)_([0-3])_([0-3])_([0-9]+)_([0-9]+)$)");
@@ -136,9 +149,11 @@ std::vector<ObservedMoment> ReadObservedMoments(const InternalConfig& cfg) {
   if (t->GetEntries() < 1) {
     throw std::runtime_error("Tree '" + cfg.momentsTree + "' is empty");
   }
-  if (cfg.bin < 0 || cfg.bin >= kMaximumInputBins) throw std::runtime_error("Bin out of range");
+  if (cfg.bin < 0) throw std::runtime_error("Bin index must be nonnegative");
 
   std::map<std::tuple<int, int, int, int, int, bool>, MomentBranch> branches;
+  // The map key is physical rather than textual. It collapses equivalent H/RH
+  // and unpolarized/tensor spellings before any data are read.
   TObjArray* branchList = t->GetListOfBranches();
   for (int index = 0; branchList && index < branchList->GetEntries(); ++index) {
     const std::string name = branchList->At(index)->GetName();
@@ -162,6 +177,8 @@ std::vector<ObservedMoment> ReadObservedMoments(const InternalConfig& cfg) {
   std::vector<ObservedMoment> obs;
   obs.reserve(branches.size());
   for (const auto& entry : branches) {
+    // Missing or non-positive uncertainties cannot contribute a finite
+    // standardized residual, so they are reported and excluded.
     const MomentBranch& branch = entry.second;
     const std::string errName = branch.valueName + "_err";
     double val = 0.0;

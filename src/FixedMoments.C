@@ -1,3 +1,6 @@
+// Generate exact or pseudo-data moments from a fixed amplitude model.  The
+// PhotoTest path also records truth amplitudes and model metadata so tutorial
+// plots can compare fitted and generated complex amplitudes wave by wave.
 #include "emi/Runner.h"
 
 #include "Detail.h"
@@ -87,6 +90,9 @@ static void FillCustomAmplitudes(const EvaluationContext& ctx,
                                  std::vector<double>& fullVals) {
   fullVals.resize(ctx.fullPars.size());
   std::unordered_map<std::string, int> parameterIndices;
+  // User rows are validated against the selected model before values are
+  // applied. Misspelled, absent, or duplicate amplitudes therefore fail at
+  // generation time instead of silently becoming zeros.
   for (int i = 0; i < static_cast<int>(ctx.fullPars.size()); ++i) {
     fullVals[static_cast<size_t>(i)] = ctx.fullPars[static_cast<size_t>(i)].init;
     parameterIndices.emplace(ctx.fullPars[static_cast<size_t>(i)].name, i);
@@ -253,6 +259,8 @@ static void FillRandomModeAmplitudes(const EvaluationContext& ctx,
         generation.suppression);
   }
 
+  // Generated amplitudes are rescaled together so the selected zeroth moment
+  // is exact. Relative magnitudes and every phase remain unchanged.
   std::vector<double> rawMoments;
   EvaluateAllMoments(ctx, fullVals, rawMoments);
   double rawNorm = rawMoments[static_cast<size_t>(ctx.idxH0_00)];
@@ -273,6 +281,7 @@ static void FillRandomModeAmplitudes(const EvaluationContext& ctx,
 static PhotoTestFillInfo FillPhotoTestAmplitudes(
     const EvaluationContext& ctx,
     const FixedMomentsConfig& generation,
+    TRandom3& random,
     std::vector<double>& fullVals) {
   if (!generation.photoproduction || !ctx.cfg.photoproduction) {
     throw std::invalid_argument(
@@ -336,14 +345,38 @@ static PhotoTestFillInfo FillPhotoTestAmplitudes(
   }
 
   PhotoTestFillInfo info;
+  // Rotate the full amplitude set by one common phase so the reference wave
+  // matches the fit convention. Bilinear observables are invariant under it.
   info.referencePhaseBeforeRotation = std::arg(reference->value);
   const std::complex<double> phaseRotation =
       std::polar(1.0, -info.referencePhaseBeforeRotation);
+
   for (auto& amplitude : amplitudes) {
-    amplitude.value *= phaseRotation;
+      amplitude.value *= phaseRotation;
+  }
+  // Give every non-reference amplitude an independent, mass-independent
+  // production phase. The a_T_2_2_1 amplitude remains the phase reference.
+  for (auto& amplitude : amplitudes) {
+      const auto& key = amplitude.key;
+
+      const bool isReference =
+          key.reflectivity == 'a' &&
+          key.orientation == 'T' &&
+          key.l == 2 &&
+          key.m == 2 &&
+          key.k == 1;
+
+      if (isReference || std::abs(amplitude.value) <= 1e-14) {
+          continue;
+      }
+
+      const double randomPhase = random.Uniform(-kPi, kPi);
+      amplitude.value *= std::polar(1.0, randomPhase);
   }
 
   std::unordered_map<long long, int> parameterIndices;
+  // Match semantic mass-model keys to the parameter ordering constructed for
+  // the selected wave, reflectivity, and polarization configuration.
   for (int i = 0; i < static_cast<int>(ctx.fullPars.size()); ++i) {
     const auto& parameter = ctx.fullPars[static_cast<size_t>(i)];
     const auto label = ParseParameterLabel(parameter.name);
@@ -423,7 +456,7 @@ static std::optional<PhotoTestFillInfo> FillConfiguredAmplitudes(
     return std::nullopt;
   }
   if (generation.mode == FixedGenerationMode::PhotoTest) {
-    return FillPhotoTestAmplitudes(ctx, generation, fullVals);
+    return FillPhotoTestAmplitudes(ctx, generation, random, fullVals);
   }
   FillRandomModeAmplitudes(ctx, generation, random, fullVals);
   return std::nullopt;
@@ -463,6 +496,9 @@ static void PrintAmplitudes(const EvaluationContext& ctx,
 }
 
 static std::vector<std::string> RequestedMomentSeedBranches(const InternalConfig& cfg) {
+  // BuildContext normally discovers observables from an input tree. Synthetic
+  // generation first creates a one-entry seed tree containing the requested
+  // schema, then replaces its placeholders with calculated moments.
   std::vector<std::string> names;
   int maximumL = 0;
   for (const auto& wave : cfg.waves) maximumL = std::max(maximumL, wave.l);
@@ -552,7 +588,7 @@ std::shared_ptr<EvaluationContext> BuildSyntheticContext(
 static void GenerateFixedPoint(const FixedMomentsConfig& generation,
                                bool useExampleAmplitudes) {
   const std::filesystem::path outPath = generation.output.empty()
-      ? std::filesystem::path("InputFiles/Generated/fixed_test.root")
+      ? std::filesystem::path("fixed_test.root")
       : generation.output;
   if (!outPath.parent_path().empty()) {
     std::filesystem::create_directories(outPath.parent_path());
@@ -616,6 +652,8 @@ static void GenerateFixedPoint(const FixedMomentsConfig& generation,
   t->SetDirectory(fout.get());
 
   if (photoTestInfo) {
+    // Store generation controls and the pre-normalisation quantities as ROOT
+    // metadata so an isolated scan point remains scientifically interpretable.
     TObjString("PhotoTest").Write("mass_model");
     TParameter<double>("invariant_mass_GeV",
                        *generation.massModel.massGeV).Write();

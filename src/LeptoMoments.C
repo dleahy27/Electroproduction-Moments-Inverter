@@ -1,3 +1,6 @@
+// Convert published electroproduction tables into the ROOT moment schema used
+// by the fitter.  Statistical and systematic uncertainties are combined in
+// quadrature because the source tables provide independent contributions.
 #include "emi/Runner.h"
 
 #include "TFile.h"
@@ -28,6 +31,8 @@ struct ValErr2 {
 };
 
 inline ValErr2 VE(double v, double stat, double syst) {
+  // Keep published statistical and systematic components separate until
+  // Comb() forms their independent-error quadrature.
   return ValErr2{v, stat, syst};
 }
 
@@ -72,6 +77,8 @@ static void ResizeOutputs(OutputArrays& out, std::size_t n) {
 }
 
 static void FillBin(OutputArrays& out, int i, double q2, const SDMEsTable& p) {
+  // Convert published spin-density matrix elements into EMI response moments.
+  // Explicit formulas keep all sign and sqrt(2) conventions auditable.
   out.Q2[i] = q2;
 
   const double s_r00_04    = Comb(p.r00_04);
@@ -149,6 +156,8 @@ static std::string DefaultOutFile(const std::string& datasetKey) {
 }
 
 static DatasetSpec GetDatasetSpec(const std::string& requestedKey) {
+  // These small immutable tables are embedded source data. The selector joins
+  // each table to its Q2 grid and canonical tutorial-local filename.
   const std::string key = NormalizeKey(requestedKey);
 
   if (key == "e_rho") {
@@ -323,6 +332,8 @@ static DatasetSpec GetDatasetSpec(const std::string& requestedKey) {
 }
 
 static void BuildOutputs(const DatasetSpec& ds, OutputArrays& out) {
+  // Fixed-size C arrays preserve compatibility with the original ROOT files;
+  // only the leading `n` entries are meaningful for a given dataset.
   if (ds.q2.size() != ds.bins.size()) {
     throw std::runtime_error("Dataset '" + ds.key + "' has mismatched q2/bin sizes");
   }
@@ -341,7 +352,8 @@ void MakeLeptoproductionMoments(const std::string& dataset,
 
   const DatasetSpec ds = GetDatasetSpec(dataset.empty() ? "e_rho" : dataset);
   const std::filesystem::path outPath = output.empty()
-      ? std::filesystem::path("InputFiles/Experiment") / DefaultOutFile(ds.key)
+      ? std::filesystem::path("tutorials/electroproduction_paper/input") /
+            DefaultOutFile(ds.key)
       : output;
   if (!outPath.parent_path().empty()) {
     std::filesystem::create_directories(outPath.parent_path());

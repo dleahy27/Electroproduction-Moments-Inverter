@@ -1,5 +1,8 @@
 #pragma once
 
+// Editable example configuration consumed by `emi --settings`.  Functions are
+// inline because ROOT's interpreter includes this header as a small C++ unit.
+
 #include "emi/Config.h"
 
 namespace emi::user {
@@ -29,7 +32,7 @@ inline ModelConfig Model() {
 // Editable configuration used by `emi generate-fixed`.
 inline FixedMomentsConfig FixedMoments() {
   FixedMomentsConfig generation;
-  generation.output = "InputFiles/Generated/fixed_photomoments.root";
+  generation.output = "fixed_photomoments.root";
   generation.photoproduction = true; // false selects electroproduction.
   generation.epsilon = 0.8;          // Ignored for photoproduction.
   generation.seed = 12345;
@@ -62,9 +65,9 @@ inline FixedMomentsConfig FixedMoments() {
 // arguments may still override these values for individual runs.
 inline FitConfig Fit() {
   FitConfig fit;
-  fit.input = "InputFiles/Generated/fixed_photomoments.root";
+  fit.input = "fixed_photomoments.root";
   fit.tree = "genMoments";
-  fit.output = "OutputFiles/fixed_photomoments_unpolarized_fit.root";
+  fit.output = "fixed_photomoments_unpolarized_fit.root";
   fit.photoproduction = true;
   fit.epsilon = 0.8; // Ignored for photoproduction.
   fit
@@ -77,6 +80,9 @@ inline FitConfig Fit() {
 }
 
 inline BootstrapConfig Bootstrap() {
+  // A bootstrap refits each fluctuated sample from several random starts. Its
+  // uncertainty comes from the ensemble, so a per-toy Hessian is normally
+  // unnecessary and comparatively expensive.
   BootstrapConfig bootstrap;
   bootstrap.fit = Fit();
   bootstrap.toys = 1000;

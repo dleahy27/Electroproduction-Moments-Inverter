@@ -1,3 +1,6 @@
+// Concrete gamma p -> eta pi0 p toy model used by the mass-scan tutorial.
+// Resonance couplings define k=+1; k=-1 is a controlled scaled copy, making
+// the effect of omitting a helicity sector directly measurable in closure fits.
 #include "MassModels/PhotoTest.h"
 
 #include <array>
@@ -31,11 +34,13 @@ struct Wave {
 struct Coupling {
   ResonanceId resonance;
   int m;
-  // epsilon=+,k=+; epsilon=+,k=-; epsilon=-,k=+; epsilon=-,k=-
-  std::array<double, 4> coefficient;
+  // k=+1 couplings for positive and negative reflectivity.
+  std::array<double, 2> coefficient;
 };
 
 constexpr std::array<Sector, 4> kSectors{{
+    // Couplings below are indexed only by reflectivity; k=-1 is derived from
+    // the matching k=+1 complex amplitude after all contributions are summed.
     {'a', +1},
     {'a', -1},
     {'b', +1},
@@ -57,43 +62,41 @@ constexpr std::array<Resonance, 4> kResonances{{
 
 constexpr std::array<Coupling, 14> kCouplings{{
     {ResonanceId::A0_980, 0,
-     {+0.32270, +0.12000, +0.08000, -0.04500}},
+     {+0.32270, +0.08000}},
 
     {ResonanceId::Pi1_1600, -1,
-     {+0.00600, -0.00400, +0.00300, +0.00200}},
+     {+0.00600, +0.00300}},
     {ResonanceId::Pi1_1600, 0,
-     {+0.03033, -0.01800, +0.01200, +0.00700}},
+     {+0.03033, +0.01200}},
     {ResonanceId::Pi1_1600, +1,
-     {-0.03000, -0.01200, -0.00900, +0.00600}},
+     {-0.03000, -0.00900}},
 
     {ResonanceId::A2_1320, -2,
-     {+0.00300, -0.00200, +0.00150, +0.00100}},
+     {+0.00300, +0.00150}},
     {ResonanceId::A2_1320, -1,
-     {-0.01000, +0.00700, +0.00400, -0.00300}},
+     {-0.01000, +0.00400}},
     {ResonanceId::A2_1320, 0,
-     {+0.05279, +0.02500, -0.01800, +0.01200}},
+     {+0.05279, -0.01800}},
     {ResonanceId::A2_1320, +1,
-     {-0.10900, +0.04500, -0.03000, -0.02000}},
+     {-0.10900, -0.03000}},
     {ResonanceId::A2_1320, +2,
-     {+0.05279, -0.02000, +0.01500, +0.00900}},
+     {+0.05279, +0.01500}},
 
     {ResonanceId::A2_1700, -2,
-     {-0.00150, +0.00100, +0.00080, -0.00050}},
+     {-0.00150, +0.00080}},
     {ResonanceId::A2_1700, -1,
-     {+0.00400, +0.00250, -0.00200, +0.00150}},
+     {+0.00400, -0.00200}},
     {ResonanceId::A2_1700, 0,
-     {+0.01322, -0.00900, +0.00600, +0.00400}},
+     {+0.01322, +0.00600}},
     {ResonanceId::A2_1700, +1,
-     {-0.03600, -0.01800, +0.01200, -0.00800}},
+     {-0.03600, +0.01200}},
     {ResonanceId::A2_1700, +2,
-     {+0.01322, +0.00700, -0.00500, +0.00300}},
+     {+0.01322, -0.00500}},
 }};
 
-const std::array<Complex, 4> kBackground{{
+const std::array<Complex, 2> kBackground{{
     {+0.020, +0.020},
-    {-0.012, +0.016},
     {+0.008, -0.006},
-    {-0.005, -0.008},
 }};
 
 constexpr std::size_t ToIndex(ResonanceId resonance) {
@@ -113,6 +116,8 @@ PhotoTest::PhotoTest(Options options) : options_(options) {
 }
 
 const std::array<Resonance, 4>& PhotoTest::Resonances() {
+  // Expose the immutable table for validation and metadata without duplicating
+  // pole masses or widths outside this model.
   return kResonances;
 }
 
@@ -123,6 +128,8 @@ AmplitudeSet PhotoTest::Evaluate(double massGeV) const {
   }
 
   std::array<Complex, kResonances.size()> lineShapes;
+  // Evaluate each resonance once per mass. Its several m projections reuse
+  // the same line shape with different real production couplings.
   for (std::size_t i = 0; i < kResonances.size(); ++i) {
     lineShapes[i] = ConstantWidthBreitWigner(kResonances[i], massGeV);
   }
@@ -132,20 +139,24 @@ AmplitudeSet PhotoTest::Evaluate(double massGeV) const {
   for (const auto& wave : kWaves) {
     for (std::size_t sectorIndex = 0;
          sectorIndex < kSectors.size(); ++sectorIndex) {
+      const std::size_t reflectivityIndex =
+          kSectors[sectorIndex].reflectivity == 'a' ? 0 : 1;
       Complex value{0.0, 0.0};
       for (const auto& coupling : kCouplings) {
         const auto resonanceIndex = ToIndex(coupling.resonance);
         if (kResonances[resonanceIndex].spin == wave.l &&
             coupling.m == wave.m) {
-          value += coupling.coefficient[sectorIndex] *
+          value += coupling.coefficient[reflectivityIndex] *
                    lineShapes[resonanceIndex];
         }
       }
 
       if (options_.backgroundEnabled && wave.l == 0 && wave.m == 0) {
-        value += kBackground[sectorIndex];
+        value += kBackground[reflectivityIndex];
       }
       if (kSectors[sectorIndex].k == -1) {
+        // Scale after resonances and background are combined, making the whole
+        // negative-k complex amplitude an exact partner of positive k.
         value *= options_.kMinusScale;
       }
 

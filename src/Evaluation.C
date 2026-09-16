@@ -1,3 +1,6 @@
+// Evaluate chi-square and its analytic gradient for a proposed amplitude
+// vector.  This is the minimizer's hot path, so trigonometric pairs and sparse
+// moment derivatives are evaluated together where the platform permits it.
 #include "Detail.h"
 
 #include "TRandom3.h"
@@ -13,6 +16,8 @@ namespace {
 
 void FastSinCos(double angle, double& sine, double& cosine) {
 #if defined(__GLIBC__) || defined(__APPLE__)
+  // GNU libc and Apple libc expose sincos, which performs the shared argument
+  // reduction once.  The portable branch is mathematically identical.
   ::sincos(angle, &sine, &cosine);
 #else
   sine = std::sin(angle);
@@ -21,6 +26,9 @@ void FastSinCos(double angle, double& sine, double& cosine) {
 }
 
 int SelectNormalisationIndex(const EvaluationContext& ctx) {
+  // Eliminate one real transverse magnitude using the known zeroth moment.
+  // Choosing the highest (l,m) in the preferred reflectivity makes the
+  // convention deterministic for any explicit wave list.
   const auto& pars = ctx.fullPars;
   const bool hasPositive = std::any_of(pars.begin(), pars.end(), [](const Parameter& p) {
     const auto label = ParseParameterLabel(p.name);
@@ -55,6 +63,9 @@ int SelectNormalisationIndex(const EvaluationContext& ctx) {
 } // namespace
 
 void ApplyPolarizationGauge(EvaluationContext& ctx) {
+  // Amplitudes contain conventions that moments cannot determine. Both modes
+  // need one overall phase; a single-polarization mode also needs one signed
+  // real coordinate to fix the unobserved SO(2) spin-basis rotation.
   if (ctx.cfg.nucleonPolarization == NucleonPolarization::None) return;
 
   auto select = [&](char reflectivity, char orientation, int l, int m,
@@ -190,6 +201,8 @@ double EvalNormalisationSum(const EvaluationContext& ctx, const std::vector<doub
 }
 
 bool ApplyAmplitudeNormalisation(const EvaluationContext& ctx, std::vector<double>& fullVals) {
+  // Solve the quadratic normalization equation for the eliminated magnitude.
+  // A negative radicand marks a point outside the physical parameter region.
   if (ctx.normalisedMagFullIdx < 0) return true;
 
   const double base = 0.5 * ctx.cfg.normalisationMomentTarget;
@@ -218,6 +231,8 @@ double NormalisedMagnitudeDerivative(const EvaluationContext& ctx,
 
   const double normWeight = RawNormalisationWeight(ctx, ctx.normalisedMagFullIdx);
   if (!(normWeight > 0.0) || !std::isfinite(normWeight)) return 0.0;
+  // Differentiate sqrt((base-rest)/weight) for Hessian propagation and the
+  // analytic objective gradient.
   return -w * fullVals[static_cast<size_t>(wrtFullIdx)] /
          (normWeight * normMag);
 }
@@ -294,6 +309,7 @@ void BuildPhasePairTrigCache(const EvaluationContext& ctx,
   EnsureSize(pairSin, ctx.phasePairs.size());
   EnsureSize(pairCos, ctx.phasePairs.size());
   for (size_t i = 0; i < ctx.phasePairs.size(); ++i) {
+    // Every term depends on a phase difference, never an absolute phase.
     const auto& pp = ctx.phasePairs[i];
     FastSinCos(fullVals[pp.idxPhi1] - fullVals[pp.idxPhi2], pairSin[i], pairCos[i]);
   }
@@ -328,8 +344,6 @@ double EvaluateMomentAndDerivative(const EvaluationContext& ctx,
     const auto& pp = ctx.phasePairs[t.phasePairIdx];
     const double m1 = fullVals[t.idxMag1]; // Magnitudes
     const double m2 = fullVals[t.idxMag2];
-
-    // const double dtrig = (t.trig == TrigKind::kCos) ? -pairSin[t.phasePairIdx] : pairCos[t.phasePairIdx];
 
     double trig;
     double dtrig;
@@ -372,6 +386,8 @@ public:
   ROOT::Math::IBaseFunctionMultiDim* Clone() const override { return new Chi2Function(ctx_); }
 
   double DoEval(const double* x) const override {
+    // Returning a huge finite value, rather than NaN, lets Migrad step back
+    // from proposals that violate the normalization constraint.
     if (!FillFullParameters(*ctx_, x, fullVals_)) return 1e300;
     BuildPhasePairTrigCache(*ctx_, fullVals_, pairSin_, pairCos_);
     ++ctx_->callCount;
@@ -381,6 +397,9 @@ public:
     std::fill(buf_momSeen_.begin(), buf_momSeen_.end(), static_cast<unsigned char>(0));
 
     auto getMomentRaw = [&](int idx) -> double {
+      // Only moments present in the data contribute to chi-square. Cache them
+      // lazily because constructing every allowed (alpha,L,M) would waste most
+      // of the objective time for sparse experimental inputs.
       if (idx < 0) throw std::runtime_error("Observed moment is not mapped to a model moment");
       const size_t uidx = static_cast<size_t>(idx);
       if (!buf_momSeen_[uidx]) {
@@ -411,6 +430,9 @@ public:
   }
 
   void Gradient(const double* x, double* grad) const override {
+    // For each pull r=(data-model)/sigma, d(chi2)/dp is
+    // -2 r/sigma times the model derivative. The normalization chain rule is
+    // applied after differentiating the raw amplitude bilinears.
     std::fill(grad, grad + NDim(), 0.0);
     if (!FillFullParameters(*ctx_, x, fullVals_)) return;
     BuildPhasePairTrigCache(*ctx_, fullVals_, pairSin_, pairCos_);

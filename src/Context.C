@@ -1,3 +1,6 @@
+// Build the immutable context used by every objective-function evaluation.
+// Expensive index maps and covariance factors are prepared once here rather
+// than recomputed at each Minuit step.
 #include "Detail.h"
 
 #include "Math/Minimizer.h"
@@ -13,6 +16,8 @@
 namespace emi::detail {
 
 InternalConfig MakeInternalConfig(const FitConfig& fit, const ModelConfig& model) {
+  // Public configuration is copied into a compact internal form so worker
+  // processes do not depend on the CLI or on Cling-owned objects.
   InternalConfig config;
   config.waves = model.waves;
   config.usePositiveReflectivity = model.usePositiveReflectivity;
@@ -46,6 +51,8 @@ std::shared_ptr<EvaluationContext> BuildContext(const InternalConfig& cfg) {
   MarkAmplitudeNormalisationParameter(*ctx);
 
   std::unordered_map<long long, int> paramIndex;
+  // Moment terms refer to parameters by integer index. Encoding the quantum
+  // labels once here avoids repeated string searches in the objective.
   paramIndex.reserve(ctx->fullPars.size() * 2);
   for (int i = 0; i < static_cast<int>(ctx->fullPars.size()); ++i) {
     const auto& p = ctx->fullPars[static_cast<size_t>(i)];
@@ -85,6 +92,8 @@ std::shared_ptr<EvaluationContext> BuildContext(const InternalConfig& cfg) {
   }
 
   ctx->fullToFree.assign(ctx->fullPars.size(), -1);
+  // `fullPars` describes the physical output convention. Minuit sees only the
+  // unfixed coordinates, so these two maps translate in both directions.
   for (int i = 0; i < static_cast<int>(ctx->fullPars.size()); ++i) {
     if (ctx->fullPars[static_cast<size_t>(i)].fixed) continue;
     ctx->fullToFree[static_cast<size_t>(i)] = static_cast<int>(ctx->freeToFull.size());
@@ -109,6 +118,9 @@ std::shared_ptr<EvaluationContext> BuildContext(const InternalConfig& cfg) {
   SetAmplitudeNormalisationWeights(*ctx);
 
   for (const auto& ob : inputMoments) {
+    // H04 is the experimentally inseparable H0 + epsilon H4 response. Store
+    // both component indices so it can be evaluated without inventing a model
+    // parameter for the combined quantity.
     int modelIndex = -1;
     int modelIndex0 = -1;
     int modelIndex4 = -1;
@@ -143,6 +155,9 @@ std::shared_ptr<EvaluationContext> BuildContext(const InternalConfig& cfg) {
   }
 
   for (const auto& moment : ctx->modelsRec) {
+    // Output branches are a reader-friendly view of the complete internal
+    // model. Electroproduction writes H0, H4, and H04; photoproduction has no
+    // longitudinal H4 term and therefore writes only H04.
     if (moment.alpha == 0) {
       std::string suffix;
       if (cfg.nucleonPolarization != NucleonPolarization::None) {
@@ -214,6 +229,7 @@ void EvaluateOutputMoments(const EvaluationContext& ctx,
 
 static double VarianceFromGradient(const std::vector<double>& gradient,
                                    const std::vector<double>& covariance) {
+  // First-order error propagation: Var(f) = grad(f)^T Cov grad(f).
   const size_t n = gradient.size();
   if (covariance.size() != n * n) return std::numeric_limits<double>::quiet_NaN();
   double variance = 0.0;
@@ -266,6 +282,9 @@ void FillHessianProducts(const EvaluationContext& ctx,
   }
 
   std::vector<double> fullCov(ctx.fullPars.size() * ctx.fullPars.size(), 0.0);
+  // Transform the covariance with J C J^T. This restores uncertainties for
+  // derived coordinates, especially the magnitude eliminated by H00
+  // normalisation, before the result is written to the ROOT tree.
   for (size_t p = 0; p < ctx.fullPars.size(); ++p) {
     for (size_t q = 0; q < ctx.fullPars.size(); ++q) {
       double value = 0.0;
@@ -289,6 +308,9 @@ void FillHessianProducts(const EvaluationContext& ctx,
   std::vector<double> dFull, dFull2, gradient(nFree, 0.0), gradient2(nFree, 0.0);
 
   auto momentGradient = [&](int modelIndex, std::vector<double>& out) {
+    // Moment derivatives are initially with respect to the full amplitudes;
+    // the chain rule folds the derived normalisation magnitude back onto the
+    // independent Minuit coordinates.
     EvaluateMomentAndDerivative(ctx, ctx.modelsRec[static_cast<size_t>(modelIndex)],
                           fullVals, pairSin, pairCos, dFull);
     out.assign(nFree, 0.0);
@@ -315,6 +337,7 @@ void FillHessianProducts(const EvaluationContext& ctx,
   const auto h4It = ctx.modelIndexByName.find(
       MakeMomentName(ctx.cfg, 4, 0, 0, 0, 0));
   if (h0It != ctx.modelIndexByName.end() && h4It != ctx.modelIndexByName.end()) {
+    // R = H4/H0, so its gradient uses the ordinary quotient rule.
     const double h0 = EvaluateMomentAndDerivative(ctx, ctx.modelsRec[h0It->second],
                                              fullVals, pairSin, pairCos, dFull);
     const double h4 = EvaluateMomentAndDerivative(ctx, ctx.modelsRec[h4It->second],
@@ -342,6 +365,8 @@ void BuildRandomStart(const EvaluationContext& ctx,
     const int fullIdx = ctx.freeToFull[i];
     const auto& p = ctx.fullPars[static_cast<size_t>(fullIdx)];
     if (p.phase) {
+      // Phases have no preferred direction, hence a uniform draw across their
+      // full allowed interval. Magnitudes use the configured truncated normal.
       xStart[i] = rng.Uniform(p.low, p.high);
     } else {
       double value = rng.Gaus(ctx.cfg.magnitudeStartMean, ctx.cfg.magnitudeStartSigma);

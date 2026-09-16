@@ -1,3 +1,6 @@
+// Build polarized moment tensors from complex partial-wave amplitudes.  The
+// explicit reflectivity, photon-helicity k, and target-orientation labels make
+// the interference terms auditable against the angular-momentum formulae.
 #include "Detail.h"
 
 #include "Math/SpecFuncMathMore.h"
@@ -30,6 +33,8 @@ double ClebschGordan(int l1, int l2, int l3, int m1, int m2, int m3) {
 double PhotonResponse(int alpha, int row, int column, bool& carriesI) {
   // Non-zero entries of Appendix D in photon-helicity order (+1, 0, -1).
   // carriesI means that the returned real coefficient multiplies i.
+  // Separating that factor lets the final real moment choose sine or cosine
+  // without complex arithmetic in the minimizer hot path.
   carriesI = false;
   switch (alpha) {
     case 0:
@@ -76,6 +81,8 @@ double PhotonResponse(int alpha, int row, int column, bool& carriesI) {
 }
 
 int PolarizationParity(int alpha, int beta, int delta) {
+  // Combining the photon, target, and recoil transformations determines
+  // whether this tensor component is even or odd under azimuthal reflection.
   const int photon = (alpha == 2 || alpha == 3 || alpha == 6 || alpha == 7)
                          ? -1 : 1;
   const int target = beta >= 2 ? -1 : 1;
@@ -85,6 +92,8 @@ int PolarizationParity(int alpha, int beta, int delta) {
 
 double PauliWeight(int component, int row, int column, bool& carriesI) {
   // Appendix H, Eq. H11, in the paper's helicity-spinor phase convention.
+  // Components 0..3 are the identity and Pauli matrices; beta and delta select
+  // the measured target and recoil spin components respectively.
   carriesI = false;
   if (component == 0) return row == column ? 1.0 : 0.0;
   if (component == 1) return row != column ? -1.0 : 0.0;
@@ -148,6 +157,8 @@ std::vector<MomentModel> BuildPolarizedMomentModels(
                  (2 * maximumL + 1) * (maximumL + 1));
 
   std::unordered_map<long long, int> phasePairLookup;
+  // Polarized tensors contain many repeated phase differences. Share each
+  // pair so its sine and cosine are evaluated only once per objective call.
   auto parameterIndex = [&](const AmplitudeComponent& component, bool phase) {
     const auto found = paramIndex.find(MakeParameterKey(
         component.reflectivity, component.orientation, component.k,
@@ -227,6 +238,9 @@ std::vector<MomentModel> BuildPolarizedMomentModels(
 
             for (const auto& firstWave : cfg.waves) {
               for (const auto& secondWave : cfg.waves) {
+                // Each observable is a weighted sum of bilinears A_i A_j*.
+                // The angular factor couples the two partial waves to (L,M);
+                // the inner loops then trace over photon and nucleon spins.
                 const double angularFactor =
                     ClebschGordan(secondWave.l, L, firstWave.l, 0, 0, 0) *
                     ClebschGordan(secondWave.l, L, firstWave.l,
@@ -299,6 +313,8 @@ std::vector<MomentModel> BuildPolarizedMomentModels(
                                         rhs.trig);
                       });
             size_t write = 0;
+            // Several spin paths can produce the same algebraic bilinear.
+            // Sorting and coalescing them reduces work in every chi-square call.
             for (const auto& term : model.terms) {
               if (write > 0) {
                 auto& previous = model.terms[write - 1];

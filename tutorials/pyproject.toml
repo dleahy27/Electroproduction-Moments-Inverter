@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "emi-tutorials"
+version = "2.0.0"
+description = "Runnable Python studies for the Electroproduction Moments Inverter"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "matplotlib>=3.7",
+  "numpy>=1.24",
+]
+
+[tool.setuptools]
+packages = [
+  "tutorials",
+  "tutorials.electroproduction_paper",
+  "tutorials.electroproduction_paper.bootstrap_vs_hessian",
+  "tutorials.electroproduction_paper.gluex",
+  "tutorials.electroproduction_paper.main",
+  "tutorials.electroproduction_paper.performance",
+  "tutorials.polarized_moments",
+  "tutorials.polarized_moments.fixed_double",
+  "tutorials.polarized_moments.fixed_single",
+  "tutorials.polarized_moments.photo_test_mass_scan",
+  "tutorials.polarized_moments.unpolarized_k",
+]
+
+[tool.setuptools.package-dir]
+tutorials = "."

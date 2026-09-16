@@ -1,9 +1,5 @@
 /build/
 /build-*/
-/OutputFiles/*
-!/OutputFiles/.gitkeep
-/InputFiles/Generated/*
-!/InputFiles/Generated/.gitkeep
 *.part_*.root
 .idea/
 cmake-build-*/
@@ -23,7 +19,8 @@ cmake-build-*/
 *.csv
 *.data
 *.root
+!tutorials/electroproduction_paper/input/*.root
 
 # Python analysis products
 __pycache__/
-AnalysisScripts/outputs/
+tutorials/**/output/

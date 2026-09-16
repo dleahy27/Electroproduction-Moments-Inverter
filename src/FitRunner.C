@@ -1,3 +1,6 @@
+// Coordinate multi-start amplitude fits.  Starts can run in separate ROOT
+// processes, after which the best finite minimum and its diagnostics are
+// copied to the final ROOT tree in a deterministic order.
 #include "emi/Runner.h"
 
 #include "Detail.h"
@@ -24,6 +27,9 @@ namespace {
 template <typename Definition>
 void MakeErrorBranches(TTree* tree, const std::vector<Definition>& definitions,
                        std::vector<double>& storage) {
+  // ROOT branches keep pointers to these vector elements until each Fill().
+  // Resize once before creating branches so later reallocation cannot
+  // invalidate those addresses.
   storage.assign(definitions.size(), std::numeric_limits<double>::quiet_NaN());
   for (std::size_t i = 0; i < definitions.size(); ++i) {
     tree->Branch(("err__" + definitions[i].name).c_str(), &storage[i]);
@@ -31,6 +37,8 @@ void MakeErrorBranches(TTree* tree, const std::vector<Definition>& definitions,
 }
 
 std::filesystem::path PartFile(const std::filesystem::path& output, unsigned worker) {
+  // Each fork writes a complete ROOT file. ROOT's merger combines trees more
+  // safely than several processes attempting to append to one file.
   const auto stem = output.stem().string() + ".part_" + std::to_string(worker);
   return output.parent_path() / (stem + output.extension().string());
 }
@@ -47,6 +55,9 @@ void RunWorker(const detail::InternalConfig& config,
   }
 
   TTree tree("fitResults", "Amplitude fits from independent random starts");
+  // One row represents one independent start, including failed starts. This
+  // makes convergence diagnostics possible and lets analyses choose the best
+  // accepted minimum rather than trusting the final attempted start.
   bool fitOk = false;
   bool hesseOk = false;
   int status = -999;
@@ -116,6 +127,8 @@ void RunWorker(const detail::InternalConfig& config,
       }
     }
     if (config.runHesse) {
+      // HESSE is meaningful only at the returned minimum. Failed covariance
+      // estimates remain NaN rather than being mistaken for zero uncertainty.
       detail::FillHessianProducts(
           *context, *result.minimizer, parameters,
           hesseOk && covarianceStatus >= 1, parameterErrors,
@@ -152,6 +165,9 @@ void RunFit(const FitConfig& config, const ModelConfig& model) {
   std::vector<unsigned> ids(workers);
   for (unsigned i = 0; i < workers; ++i) ids[i] = i;
   ROOT::TProcessExecutor pool(workers);
+  // Large, separated seed offsets prevent workers from replaying the same
+  // random starts. Seed zero still remains nondeterministic from the user's
+  // perspective, while each worker receives a distinct concrete seed.
   const auto parts = pool.Map([=](unsigned worker) {
     FitConfig workerConfig = config;
     workerConfig.starts = config.starts / workers + (worker < config.starts % workers);
@@ -164,6 +180,8 @@ void RunFit(const FitConfig& config, const ModelConfig& model) {
   }, ids);
 
   TFileMerger merger(true, false);
+  // Merge only after every worker succeeds; part files are retained if an
+  // exception occurs, which helps diagnose interrupted batch jobs.
   merger.OutputFile(config.output.c_str(), "RECREATE");
   for (const auto& part : parts) merger.AddFile(part.c_str());
   if (!merger.Merge()) throw std::runtime_error("Could not merge worker output files");

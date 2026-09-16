@@ -1,0 +1,6 @@
+"""Repository paths shared by lightweight tutorial runners."""
+
+from pathlib import Path
+
+
+PROJECT_DIR = Path(__file__).resolve().parents[1]

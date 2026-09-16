@@ -1,3 +1,6 @@
+// Convert photoproduction input tables into the common ROOT moment layout.
+// The resulting tree is intentionally the same shape as electroproduction
+// data, allowing fitting and plotting code to remain reaction-independent.
 #include "emi/Runner.h"
 
 #include "TFile.h"
@@ -76,6 +79,8 @@ static void SetZeroMoment(double* val, double* err, std::size_t i) {
 }
 
 static void FillBin(OutputArrays& out, std::size_t i, double mean_t, const SDMEsTable& p) {
+  // Photoproduction has transverse responses only. These expressions map the
+  // GlueX SDMEs and uncertainties onto the alpha=0..3 moment convention.
   out.Q2[i] = mean_t;
   out.mtbar[i] = mean_t;
   out.t[i] = mean_t;
@@ -226,6 +231,8 @@ static std::string DefaultOutFile(const std::string& key) {
 }
 
 static DatasetSpec GetDatasetSpec(const std::string& requestedKeyRaw) {
+  // Accept common GlueX spellings at the CLI while retaining one canonical key
+  // and one canonical tutorial-local output filename.
   const std::string requestedKey = requestedKeyRaw.empty() ? "gluex" : requestedKeyRaw;
   const std::vector<std::string> gluexAliases = {"gluex", "photo", "photoproduction", "rho_photo", "gluex_rho"};
   if (std::find(gluexAliases.begin(), gluexAliases.end(), requestedKey) != gluexAliases.end()) {
@@ -241,6 +248,8 @@ static DatasetSpec GetDatasetSpec(const std::string& requestedKeyRaw) {
 }
 
 static void BuildOutputs(const DatasetSpec& ds, OutputArrays& out) {
+  // Preserve published momentum-transfer order; the plotting tutorial attaches
+  // physical t values using this same bin order.
   if (ds.mean_t.size() != ds.bins.size()) {
     throw std::runtime_error("Dataset '" + ds.key + "' has mismatched mean_t/bin sizes");
   }
@@ -255,7 +264,8 @@ void MakePhotoproductionMoments(const std::string& dataset,
                                 const std::string& treeName) {
   const DatasetSpec ds = GetDatasetSpec(dataset.empty() ? "gluex" : dataset);
   const std::filesystem::path outPath = output.empty()
-      ? std::filesystem::path("InputFiles/Experiment") / DefaultOutFile(ds.key)
+      ? std::filesystem::path("tutorials/electroproduction_paper/input") /
+            DefaultOutFile(ds.key)
       : output;
   if (!outPath.parent_path().empty()) {
     std::filesystem::create_directories(outPath.parent_path());

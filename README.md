@@ -14,6 +14,7 @@ it.
 - A C++17 compiler (GCC 9, Clang 10, or newer)
 - CMake 3.18 or newer
 - ROOT 6.26 or newer with Tree, MathMore, Minuit2, and multiprocessing support
+- Python 3.10 or newer with NumPy and Matplotlib for the tutorials
 
 Activate ROOT before configuring the project. For a binary ROOT installation:
 
@@ -27,7 +28,7 @@ root-config --version
 From the repository root:
 
 ```bash
-python3 scripts/build.py
+python build.py --test
 ```
 
 This configures CMake and compiles `build/emi`. It is a normal executable
@@ -48,13 +49,19 @@ use:
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
+ctest --test-dir build --output-on-failure
 alias emi='./build/emi'
 ```
 
-### Optional installation
+If ROOT is not active in the shell, pass the directory containing
+`ROOTConfig.cmake` explicitly with `--root-dir`. Use `BUILD_TESTING=OFF` in a
+manual CMake configuration when only the production library and executable are
+needed.
 
-Install only if you want to run `emi` from any directory without writing its
-path explicitly:
+### Optional checkout-associated installation
+
+Install only if you want a convenient `emi` command while retaining this
+configured source checkout:
 
 ```bash
 cmake --install build --prefix "$HOME/.local"
@@ -76,7 +83,10 @@ setenv PATH "${HOME}/.local/bin:${PATH}"
 emi --help
 ```
 
-In both cases, ROOT must still be active in the shell as described above.
+In both cases, ROOT must still be active in the shell as described above. The
+executable records this checkout so Cling can find `include/emi` and the default
+`app/UserSettings.h`; this is a convenience installation, not a relocatable
+binary distribution. Reconfigure and rebuild after moving the checkout.
 
 ## Choose the physics model
 
@@ -232,7 +242,7 @@ are implementation defaults. If one wants to change them, this will require goin
 The supplied script fits electron-rho bin zero:
 
 ```bash
-python3 scripts/run-fit.py
+python -m tutorials.electroproduction_paper.main.run_fit
 ```
 
 It uses the model and run defaults in `app/UserSettings.h`. Input paths, the
@@ -249,11 +259,11 @@ For another input file:
 ```bash
 emi fit \
   --electro \
-  --input InputFiles/Experiment/e_rho_moments.root \
+  --input tutorials/electroproduction_paper/input/e_rho_moments.root \
   --tree expMoments \
   --bin 0 \
   --epsilon 0.8 \
-  --output OutputFiles/e_rho_fit_0.root
+  --output tutorials/electroproduction_paper/main/output/root/e_rho_fit_0.root
 ```
 
 The underlying `emi` executable still accepts command-line values. Run
@@ -264,13 +274,13 @@ Analytical gradients are used by default. Set
 `--numerical-gradients` to use. An example script implementing a controlled comparison is provided:
 
 ```bash
-python3 scripts/compare-gradients.py 0
+python -m tutorials.electroproduction_paper.performance.analyse
 ```
 
 ## Run a bootstrap
 
 ```bash
-python3 scripts/run-bootstrap.py
+python -m tutorials.electroproduction_paper.main.run_bootstrap
 ```
 
 For a short installation check, set these variables at the top of the script:
@@ -290,11 +300,11 @@ The direct command is:
 ```bash
 emi bootstrap \
   --electro \
-  --input InputFiles/Experiment/e_rho_moments.root \
+  --input tutorials/electroproduction_paper/input/e_rho_moments.root \
   --tree expMoments \
   --bin 0 \
   --epsilon 0.8 \
-  --output OutputFiles/e_rho_bootstrap_0.root
+  --output tutorials/electroproduction_paper/main/output/root/e_rho_bootstrap_0.root
 ```
 
 ## Experimental and synthetic inputs
@@ -312,8 +322,10 @@ emi make-lepto --dataset e_phi
 emi make-photo --dataset gluex
 ```
 
-The default destination is `InputFiles/Experiment/<dataset>_moments.root`.
-Use `--output FILE` to choose a different path.
+The default destination is
+`tutorials/electroproduction_paper/input/<dataset>_moments.root`. Use
+`--output FILE` to choose a different path. These published inputs are the only
+ROOT files intentionally tracked by Git.
 
 The editable fixed-moment generator and the multi-event random generator are:
 
@@ -324,8 +336,22 @@ emi generate-random \
   --events 100000 \
   --epsilon 0.8 \
   --seed 12345 \
-  --output InputFiles/Generated/random_input_moments.root
+  --output random_input_moments.root
 ```
+
+The deterministic closure-test point used by the polarized tutorials is also
+available directly:
+
+```bash
+emi generate-example \
+  --settings app/UserSettings.h \
+  --polarization both \
+  --output fixed_both_moments.root
+```
+
+Unlike `generate-fixed`, this command uses EMI's internal example amplitudes;
+it still reads the wave set and polarization-related model choices from the
+settings file.
 
 `emi --generate-fixed` is accepted as an equivalent spelling.
 For batch scripts, `generate-fixed` also accepts `--settings FILE`,
@@ -383,24 +409,26 @@ Configure it in `FixedMoments()` or override its scan controls at runtime:
 ./build/emi generate-fixed --mass 1.306 --no-background
 ```
 
-Run the standard two-K truth/single-K fit scan over 20 logarithmic mass points
-from 0.5 to 4 GeV and five K-minus mixing factors `s` from 0 to 0.3 with:
+Run the standard two-K truth/single-K fit scan with:
 
 ```bash
-python3 scripts/run-photo-test-mass-scan.py
-conda run -n phdconda python AnalysisScripts/analyse-photo-test-mass-scan.py
+python -m tutorials.polarized_moments.photo_test_mass_scan.run
+python -m tutorials.polarized_moments.photo_test_mass_scan.analyse
 ```
 
-The runner writes a CSV manifest beside the fit outputs and resumes from
-existing ROOT files unless `OVERWRITE` is set to `True`. Edit `STARTS` and
-`WORKERS` at the top of the script to control the fit cost. The analysis uses PyROOT, NumPy, and
-Matplotlib without pandas. For every fitted amplitude it writes absolute and
-log-scale relative magnitude-error curves. It also writes one fixed-amplitude
-style Argand figure for each mass. The five mixing factors `s` are arranged as
-columns, with natural and unnatural reflectivities in separate vertical panels,
-under `OutputFiles/photo_test_mass_scan/figures`.
-Run the analysis in a Python environment that provides PyROOT, such as the
-local `phdconda` Conda environment shown above.
+The runner uses 20 linearly spaced masses from 0.5 to 2 GeV by default; edit
+`MASS_MIN`, `MASS_MAX`, `MASS_BINS`, and `SCALES` at the top of `run.py`.
+It writes a CSV manifest beside the fit outputs and resumes existing ROOT files
+by default. Set `OVERWRITE=True` only when old files are incompatible. Edit
+`STARTS`, `WORKERS`, and the nonzero base `SEED` to control cost and
+reproducibility.
+
+For every wave, the analysis writes magnitude and phase curves. For every mass
+it writes a 2-by-4 signed-error summary: the first two columns contain
+`|A_fit|-A_quad`, the last two contain `|A_fit|^2-A_quad^2`, the top row shows
+individual natural/unnatural waves, and the bottom row sums over the waves.
+The summed panels autoscale independently. All products stay below the
+tutorial's `output/` directory.
 The error reference is the incoherent two-K magnitude
 `sqrt(|T+|^2 + |T-|^2)`, consistent with the bilinears used to generate the
 moments. The Argand panels show both complex truth sectors separately and
@@ -465,29 +493,28 @@ a fixed reference phase.
 
 ### Polarized fixed-amplitude closure test
 
-The polarized closure runner generates and fits matched copies of `Model()` for
-initial, recoil, and double nucleon polarization:
+The single- and double-polarization tutorials generate and fit matched model
+copies:
 
 ```bash
-python3 scripts/run-polarized-fixed-test.py
+python -m tutorials.polarized_moments.fixed_single.run
+python -m tutorials.polarized_moments.fixed_double.run
 ```
 
 Set `K_GAUGE = "b:T:1:0"` at the top of the script to use a particular
 single-polarized gauge reference. Set `USE_HESSE = True` to enable the Hessian.
-The runner uses the internal deterministic `generate-example` command so the
-generated and fitted wave sets are the same. It does not depend on the current
+Each runner uses the internal deterministic `generate-example` command so the
+generated and fitted wave sets are the same. They do not depend on the current
 contents of the user-editable `FixedMoments()` configuration.
 
-Edit the generated and fitted ROOT filenames at the top of
-`AnalysisScripts/polarized_fixed_amp_analysis.py`, then run:
+Run the corresponding analyses with:
 
 ```bash
-conda activate phdconda
-python AnalysisScripts/polarized_fixed_amp_analysis.py
+python -m tutorials.polarized_moments.fixed_single.analyse
+python -m tutorials.polarized_moments.fixed_double.analyse
 ```
 
-The script reads the
-common polarized amplitude branches and plots the generated and fitted complex
+The analysis reads the common polarized amplitude branches and plots the generated and fitted complex
 amplitudes directly in the gauge imposed by generation and minimization. It
 does not apply a phase rotation or a recoil-angle transformation.
 
@@ -500,8 +527,8 @@ After generating a custom polarized point and fitting its unpolarized moments:
 ./build/emi fit
 ```
 
-run `python AnalysisScripts/unpolarized_k_dominance_R.py`. The user inputs
-are grouped near the top of the script. It
+run the unpolarized-k tutorial. The user inputs are grouped near the top of
+each module. The analysis
 discovers the selected waves and common moments automatically, selects the
 lowest-chi-square accepted fit, and uses no pandas. It produces:
 
@@ -513,17 +540,18 @@ lowest-chi-square accepted fit, and uses no pandas. It produces:
 - a generated-versus-fitted `R` comparison when longitudinal waves are present.
 
 The figures are written under
-`AnalysisScripts/outputs/unpolarized_k_dominance_R/`. The script uses ROOT
+`tutorials/polarized_moments/unpolarized_k/output/plots/`. The script uses ROOT
 RDataFrame, NumPy, and Matplotlib.
 
 ### Configured polarized truth fitted as unpolarized
 
-The historical K-dominance runner now uses the same `FixedMoments()` path as
-ordinary fixed generation. It generates the configured point and fits only its
-unpolarized `beta=delta=0` projection:
+The unpolarized-k runner uses the same `FixedMoments()` path as ordinary fixed
+generation. It generates the configured point and fits only its unpolarized
+`beta=delta=0` projection:
 
 ```bash
-python3 scripts/run-unpolarized-k-dominance-test.py
+python -m tutorials.polarized_moments.unpolarized_k.run
+python -m tutorials.polarized_moments.unpolarized_k.analyse
 ```
 
 In `Custom` mode, the exact and random amplitude rows in `FixedMoments()` are
@@ -576,18 +604,14 @@ src/RandomMoments.C        random synthetic inputs
 src/MassModels/MassModel.* internal shared mass-model value types and BW helper
 src/MassModels/PhotoTest.* deterministic photoproduction S/P/D model
 tests/MassModelsTest.C     PhotoTest formula and generation integration checks
-scripts/run-polarized-fixed-test.py
-                           three polarized closure runs
-AnalysisScripts/polarized_fixed_amp_analysis.py
-                           polarized fixed-point Argand closure
-AnalysisScripts/unpolarized_k_dominance_R.py
-                           one polarized-truth/unpolarized-fit comparison
-scripts/run-unpolarized-k-dominance-test.py
-                           configured fixed generation and unpolarized fit
-scripts/run-photo-test-mass-scan.py
-                           PhotoTest mass/scale generation and fitting scan
-AnalysisScripts/analyse-photo-test-mass-scan.py
-                           amplitude-error and Argand scan figures
+build.py                   CMake configure/build/test helper
+tutorials/analysis_utils.py
+                           shared PyROOT, NumPy, and plotting operations
+tutorials/electroproduction_paper/
+                           published inputs and paper analysis cases
+tutorials/polarized_moments/
+                           polarized closure and mass-scan cases
+tutorials/pyproject.toml   installable tutorial-package metadata
 ```
 
 `include/emi` is a normal public-header directory, not a second copy of the
@@ -603,8 +627,8 @@ model.SetWaves({{1, -1}, {1, 0}, {1, 1}})
      .UseReflectivities(true, false);
 
 emi::FitConfig fit;
-fit.input = "InputFiles/Experiment/e_rho_moments.root";
-fit.output = "OutputFiles/check.root";
+fit.input = "tutorials/electroproduction_paper/input/e_rho_moments.root";
+fit.output = "check.root";
 fit.bin = 0;
 fit.epsilon = 0.8;
 fit.SetStarts(100).SetWorkers(1).SetSeed(123);
@@ -620,13 +644,20 @@ emi::RunFit(fit, model);
 - Worker files are merged automatically and removed after a successful merge.
 - Build products and generated ROOT output are ignored by Git.
 
-## Analysis scripts
+## Python tutorials
 
-`AnalysisScripts/` contains standalone PyROOT analysis scripts used for thesis
-and paper plots. Each script keeps its editable settings near the top and saves
-figures beneath its own `AnalysisScripts/outputs/` directory. They are not
-required to compile or run the inverter. Their main dependencies are PyROOT,
-NumPy, SciPy, and Matplotlib.
+The modules below `tutorials/` contain the thesis and paper runners and plots.
+Install NumPy and Matplotlib plus the package metadata with:
+
+```bash
+python -m pip install -e ./tutorials
+```
+
+PyROOT is supplied by the ROOT installation used to build EMI and is not
+installed from PyPI. Every case has a README, keeps editable settings near the
+top of its runner, and saves generated ROOT files and figures beneath its own
+ignored `output/` directory. See [`tutorials/README.md`](tutorials/README.md)
+for the complete workflow.
 
 ## License
 

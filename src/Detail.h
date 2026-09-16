@@ -1,5 +1,9 @@
 #pragma once
 
+// Private data model shared by the core translation units.  These structures
+// describe model indices, observations, parameter mappings, and minimizer
+// results; users configure the library through include/emi instead.
+
 #include "emi/Config.h"
 
 #include "Math/IFunction.h"
@@ -18,16 +22,17 @@ class TRandom3;
 
 namespace emi::detail {
 
-// Define constants that come up a lot
+// Mathematical constants are kept here to avoid platform-dependent macros in
+// the angular-momentum and phase calculations.
 inline constexpr double kPi = 3.1415926535897932384626433832795;
 inline constexpr double kTwoPi = 2.0 * kPi;
 inline constexpr double kSqrt2 = 1.4142135623730950488016887242097;
 inline constexpr double kInvSqrt2 = 1.0 / kSqrt2;
 inline constexpr double kSqrt6Over5 = 0.48989794855663561963945681494118;
 inline constexpr double kSqrt12Over5 = 0.69282032302755092063339055356909;
-inline constexpr int kMaximumInputBins = 18; // Should be changed, maybe have bin readout dynamic
 
-// The moments (read in not internal construction) -- have isMixed04 as a flag to use H0+H4
+// One measured response selected from the input tree. `isMixed04` denotes the
+// experimentally inseparable H0 + epsilon H4 electroproduction combination.
 struct ObservedMoment {
   int alpha = 0;
   int beta = 0;
@@ -40,8 +45,7 @@ struct ObservedMoment {
   std::string name;
 };
 
-// Parameters minuit settings
-// Will be set later, flags for fixed settings and phase vs magnitude
+// Bounds and starting metadata for one magnitude or phase coordinate.
 struct Parameter {
   std::string name;
   double init = 0.0;
@@ -52,7 +56,7 @@ struct Parameter {
   bool phase = false;
 };
 
-// Parameter values themselves, reflectivity(_phi)_orientation_l_m_k, flags for phase vs mag and validity status of param
+// Quantum numbers decoded from reflectivity[_phi]_orientation_l_m[_k].
 struct ParameterLabel {
   char reflectivity = '\0';
   char orientation = '\0';
@@ -63,7 +67,7 @@ struct ParameterLabel {
   bool valid = false;
 };
 
-// Internal configuration settings for the minimizer, see config.h/UserSettings.h
+// Validated, worker-friendly copy of public fit and model configuration.
 struct InternalConfig {
   std::vector<Wave> waves;
   bool usePositiveReflectivity = true;
@@ -93,18 +97,19 @@ struct InternalConfig {
   int bin = 0;
 };
 
-// Whether we use sin or cos
+// A complex bilinear contributes through either its real (cosine) or imaginary
+// (sine) phase-difference component.
 enum class TrigKind : std::uint8_t { kCos, kSin };
 
-// Cache phi params to save on computations, sin and cosine have -+ parities
+// Indices of a shared phase difference evaluated once per objective call.
 struct PhasePair {
   int idxPhi1 = -1;
   int idxPhi2 = -1;
 };
 
-// Term is a billinear of waves coeff X wave1_mag X wave2_mag * trig(wave1_phi - wave2_phi)
-// coeff will come from Clebsch Gordans etc.
-// Ignore phase comes into place when we have diagonal entries i.e wave1==wave2
+// One bilinear contribution:
+// coefficient * magnitude_1 * magnitude_2 * trig(phase_1 - phase_2).
+// Diagonal terms have a zero phase difference and bypass the trig lookup.
 struct Term {
   double coeff = 0.0;
   int idxMag1 = -1;
@@ -114,9 +119,8 @@ struct Term {
   bool ignorePhase = false;
 };
 
-// Moments for the model, no longer have 04 as we construct 0 and 4
-// Also have terms, this is vector of above struct essentially represents a sum of each
-// term contributing to the moment
+// Sparse algebraic representation of one raw H_alpha response moment. H04 is
+// intentionally absent because it is formed from H0 + epsilon H4 at evaluation.
 struct MomentModel {
   int alpha = 0;
   int beta = 0;
@@ -127,7 +131,7 @@ struct MomentModel {
   std::vector<Term> terms;
 };
 
-//
+// Output projection of one raw model moment or a linear combination of two.
 struct OutputMoment {
   std::string name;
   int firstModel = -1;
@@ -135,10 +139,8 @@ struct OutputMoment {
   double secondScale = 0.0;
 };
 
-// Configuration for all the internal handling of parameters
-// Needs to handle parameters building, moment construction (obs and model),
-// outputted moments and parameters, same for hessian errors and correlations (if set)
-// bootstrap/fit number for output
+// Immutable model tables plus reusable scratch-independent index mappings.
+// Sharing this context avoids rebuilding angular coefficients at every start.
 struct EvaluationContext {
   InternalConfig cfg;
   std::vector<Parameter> fullPars;
@@ -161,7 +163,8 @@ struct EvaluationContext {
   mutable unsigned callCount = 0;
 };
 
-// Results from MINUIT
+// Numerical result and retained Minuit object. The latter remains alive long
+// enough for callers to read its covariance matrix after minimization.
 struct MinimizerResult {
   bool valid = false;
   bool fitOk = false;
@@ -174,7 +177,7 @@ struct MinimizerResult {
   std::unique_ptr<ROOT::Math::Minimizer> minimizer;
 };
 
-// Helper function definitions
+// Internal operations shared across the runner translation units.
 InternalConfig MakeInternalConfig(const FitConfig& fit, const ModelConfig& model);
 
 std::vector<ObservedMoment> ReadObservedMoments(const InternalConfig& config);

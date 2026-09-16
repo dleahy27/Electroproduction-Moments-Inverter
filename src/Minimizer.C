@@ -1,3 +1,6 @@
+// Adapt the project's objective to ROOT Minuit2 and return parameters,
+// covariance, and status in a ROOT-independent value type.  Free parameters
+// are expanded to the full amplitude convention by EvaluationContext.
 #include "Detail.h"
 
 #include "Math/Factory.h"
@@ -31,6 +34,8 @@ MinimizerResult Minimize(const std::shared_ptr<EvaluationContext>& context,
   minimizer->SetStrategy(context->cfg.strategy);
   minimizer->SetPrintLevel(context->cfg.printLevel);
   minimizer->SetErrorDef(1.0);
+  // For a chi-square objective, Delta(chi2)=1 is the one-standard-deviation
+  // convention used by Minuit when constructing the covariance matrix.
   if (numericalObjective) {
     minimizer->SetFunction(*numericalObjective);
   } else {
@@ -38,6 +43,8 @@ MinimizerResult Minimize(const std::shared_ptr<EvaluationContext>& context,
   }
 
   for (unsigned i = 0; i < start.size(); ++i) {
+    // Fixed and derived parameters are absent from this loop. They are rebuilt
+    // by FillFullParameters whenever the objective is evaluated.
     const auto& parameter = context->fullPars[context->freeToFull[i]];
     minimizer->SetLimitedVariable(i, parameter.name.c_str(), start[i],
                                   parameter.step, parameter.low, parameter.high);
@@ -45,6 +52,9 @@ MinimizerResult Minimize(const std::shared_ptr<EvaluationContext>& context,
 
   MinimizerResult result;
   result.fitOk = minimizer->Minimize();
+  // `fitOk` records Migrad's convergence decision, while `valid` only guards
+  // against unusable numeric output. Downstream selection checks both status
+  // and finiteness rather than conflating these notions.
   result.hesseOk = runHesse && result.fitOk ? minimizer->Hesse() : false;
   result.status = minimizer->Status();
   result.covarianceStatus = minimizer->CovMatrixStatus();
