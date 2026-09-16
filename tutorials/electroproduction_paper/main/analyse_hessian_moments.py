@@ -4,6 +4,9 @@
 
 Only moments present in both trees and carrying a propagated covariance error
 are shown. One global-minimum row is selected from all random starts.
+
+Moment agreement is the primary gauge-independent check that the reconstructed
+amplitudes reproduce the measured angular distribution.
 """
 
 import re

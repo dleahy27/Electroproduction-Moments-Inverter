@@ -4,6 +4,10 @@ Keeping these numbers in one module prevents the fit runners and the Hessian
 and bootstrap plotting scripts from silently using different binning.  Values
 of ``q2`` and ``invariant_mass`` are in GeV squared and GeV, respectively.
 The published ``R`` rows contain ``(central value, uncertainty)``.
+
+``epsilon`` is the virtual-photon polarization used to separate longitudinal
+and transverse response.  The invariant mass labels the fixed hadronic system,
+whereas successive ``q2`` values identify the entries of the input tree.
 """
 
 from dataclasses import dataclass

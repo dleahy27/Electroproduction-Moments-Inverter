@@ -1,6 +1,9 @@
 // Adapt the project's objective to ROOT Minuit2 and return parameters,
 // covariance, and status in a ROOT-independent value type.  Free parameters
 // are expanded to the full amplitude convention by EvaluationContext.
+// Minuit sees only independent coordinates; fixed phases, parity-related
+// amplitudes, and the magnitude eliminated by normalization are reconstructed
+// by the objective before any moment is evaluated.
 #include "Detail.h"
 
 #include "Math/Factory.h"
@@ -13,6 +16,8 @@ namespace emi::detail {
 MinimizerResult Minimize(const std::shared_ptr<EvaluationContext>& context,
                          const std::vector<double>& start,
                          bool runHesse) {
+  // Create a fresh Minuit instance for every start so convergence state and
+  // covariance information cannot leak between independent trials.
   if (!context) throw std::invalid_argument("Minimize received a null context");
   if (start.size() != context->freeToFull.size()) {
     throw std::invalid_argument("Start point has the wrong dimension");

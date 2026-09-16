@@ -1,6 +1,9 @@
 // Concrete gamma p -> eta pi0 p toy model used by the mass-scan tutorial.
 // Resonance couplings define k=+1; k=-1 is a controlled scaled copy, making
 // the effect of omitting a helicity sector directly measurable in closure fits.
+// This is a pedagogical toy model, not a data-driven resonance fit.  Its fixed
+// couplings create S-, P-, and D-wave interference with enough structure to
+// test mass-dependent inversion and polarization assumptions.
 #include "MassModels/PhotoTest.h"
 
 #include <array>
@@ -32,6 +35,8 @@ struct Wave {
 };
 
 struct Coupling {
+  // A real production coefficient multiplies a complex line shape.  Coherent
+  // addition of contributions creates mass-dependent phases and interference.
   ResonanceId resonance;
   int m;
   // k=+1 couplings for positive and negative reflectivity.
@@ -134,6 +139,9 @@ AmplitudeSet PhotoTest::Evaluate(double massGeV) const {
     lineShapes[i] = ConstantWidthBreitWigner(kResonances[i], massGeV);
   }
 
+  // Enumerate the complete rectangular basis so waves without a coupling are
+  // represented explicitly by zero. Stable ordering simplifies branch creation
+  // and point-by-point comparisons across a mass scan.
   AmplitudeSet amplitudes;
   amplitudes.reserve(kWaves.size() * kSectors.size());
   for (const auto& wave : kWaves) {

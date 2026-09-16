@@ -4,6 +4,9 @@
 
 The covariance errors on magnitude and phase are propagated to approximate
 Cartesian error bars for the Argand representation.
+
+This linearized transformation describes the local covariance ellipse near the
+selected minimum; it should not be read as a full non-Gaussian confidence region.
 """
 
 import matplotlib.pyplot as plt

@@ -1,6 +1,9 @@
 // Build polarized moment tensors from complex partial-wave amplitudes.  The
 // explicit reflectivity, photon-helicity k, and target-orientation labels make
 // the interference terms auditable against the angular-momentum formulae.
+// Initial-, recoil-, and double-polarization observables expose different
+// combinations of k=+1 and k=-1.  This changes which continuous basis rotations
+// are observable and which gauge convention makes amplitude coordinates unique.
 #include "Detail.h"
 
 #include "Math/SpecFuncMathMore.h"
@@ -15,6 +18,8 @@ namespace emi::detail {
 namespace {
 
 struct AmplitudeComponent {
+  // One physical helicity amplitude becomes a two-term reflectivity sum.  The
+  // coefficient stores signs introduced by the basis transformation and parity.
   char reflectivity = 'a';
   char orientation = 'T';
   int k = 1;
@@ -24,6 +29,8 @@ struct AmplitudeComponent {
 };
 
 double ClebschGordan(int l1, int l2, int l3, int m1, int m2, int m3) {
+  // ROOT takes doubled integer arguments in order to represent integer and
+  // half-integer angular momenta through one exact discrete interface.
   const double sign = ((l1 - l2 + m3) & 1) ? -1.0 : 1.0;
   return sign * std::sqrt(2.0 * l3 + 1.0) *
          ROOT::Math::wigner_3j(2 * l1, 2 * l2, 2 * l3,
@@ -145,6 +152,9 @@ std::vector<MomentModel> BuildPolarizedMomentModels(
     const std::unordered_map<long long, int>& paramIndex,
     const std::unordered_set<std::string>& neededMoments,
     std::vector<PhasePair>& phasePairs) {
+  // alpha labels photon response, beta target polarization, and delta recoil
+  // polarization.  Their allowed ranges are reduced to zero for an unmeasured
+  // spin, avoiding identically absent tensor components.
   std::vector<MomentModel> models;
   const int alphaMax = cfg.photoproduction ? 3 : 8;
   const int betaMax =

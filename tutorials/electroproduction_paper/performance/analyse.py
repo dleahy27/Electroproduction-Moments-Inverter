@@ -5,6 +5,10 @@
 Timing slopes assume cost proportional to the number of starts. Separate
 status counts check that a speed difference did not change convergence, and
 best-fit branches provide a numerical agreement check.
+
+The through-origin timing model represents a fixed cost per random start.  It
+is a transparent scaling diagnostic rather than a general performance model
+with separate startup, communication, and saturation terms.
 """
 
 import matplotlib.pyplot as plt

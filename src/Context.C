@@ -1,6 +1,11 @@
 // Build the immutable context used by every objective-function evaluation.
 // Expensive index maps and covariance factors are prepared once here rather
 // than recomputed at each Minuit step.
+//
+// The context connects three representations of the same problem: named ROOT
+// branches, the complete physical amplitude vector, and the reduced set of
+// free minimizer parameters after phase and normalization conventions have
+// removed redundant degrees of freedom.
 #include "Detail.h"
 
 #include "Math/Minimizer.h"
@@ -44,6 +49,9 @@ InternalConfig MakeInternalConfig(const FitConfig& fit, const ModelConfig& model
 }
 
 std::shared_ptr<EvaluationContext> BuildContext(const InternalConfig& cfg) {
+  // Construction follows the same order as data flow during a fit: enumerate
+  // amplitudes, remove gauge and normalization redundancies, build moment
+  // formulae, match measured branches, and finally prepare covariance weights.
   auto ctx = std::make_shared<EvaluationContext>();
   ctx->cfg = cfg;
   ctx->fullPars = BuildParameters(cfg);
@@ -105,6 +113,9 @@ std::shared_ptr<EvaluationContext> BuildContext(const InternalConfig& cfg) {
     throw std::runtime_error("No requested moment branches were found in the input ROOT file");
   }
 
+  // Build the complete constructible model before filtering observations.  The
+  // output tree can then contain useful predicted moments that were not part of
+  // chi-square, while the maps below select only measured constraints.
   ctx->modelsRec = BuildMomentModels(cfg, paramIndex, {}, ctx->phasePairs);
   ctx->modelIndexByName.reserve(ctx->modelsRec.size() * 2);
   for (size_t i = 0; i < ctx->modelsRec.size(); ++i) ctx->modelIndexByName.emplace(ctx->modelsRec[i].name, i);

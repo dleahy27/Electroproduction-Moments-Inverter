@@ -1,5 +1,9 @@
 #pragma once
 
+// Basic value types and line-shape functions for mass-dependent amplitudes.
+// A model returns complex partial waves before the global phase convention and
+// moment normalization are applied by the fixed-moment generator.
+
 // Private value types and line-shape declarations for generated truth models.
 // They live below src/ because downstream applications do not need to depend
 // on a particular resonance parameterization.

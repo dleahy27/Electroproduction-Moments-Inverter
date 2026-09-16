@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 
-"""Fit and bootstrap all GlueX photoproduction momentum-transfer bins."""
+"""Fit and bootstrap all GlueX photoproduction momentum-transfer bins.
+
+Each input-tree entry is one momentum-transfer bin.  The same transverse model
+is fitted independently in every bin, and deterministic output names allow the
+companion analysis to recover the physical bin ordering.
+"""
 
 import subprocess
 

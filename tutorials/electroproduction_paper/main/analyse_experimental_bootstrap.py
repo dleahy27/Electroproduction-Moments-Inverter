@@ -4,6 +4,9 @@
 
 Accepted toys are summarized in magnitude-phase and Cartesian coordinates.
 Circular phase statistics avoid artifacts where samples cross -pi/pi.
+
+The Argand representation keeps correlated radial and angular motion visible,
+which separate one-dimensional summaries can otherwise obscure.
 """
 
 import matplotlib.pyplot as plt

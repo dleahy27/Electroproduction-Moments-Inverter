@@ -6,6 +6,10 @@ The Hessian describes local curvature around one minimum, while the bootstrap
 refits fluctuated datasets and can expose skewness or alternative solutions.
 Phases therefore use circular statistics and every comparison retains the fit
 quality filters stored in the ROOT trees.
+
+Only branches shared by both methods are compared.  This prevents optional
+diagnostics from being confused with missing physics parameters and ensures
+each plotted pair represents the same fitted quantity.
 """
 
 import re

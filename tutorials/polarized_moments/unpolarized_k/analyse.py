@@ -5,6 +5,9 @@
 The observable reference is their incoherent quadrature magnitude. Repeated
 generated points reveal bias and spread when that two-sector truth is fitted
 with one unpolarized amplitude per wave.
+
+The two unobserved k sectors combine in quadrature rather than as a coherent
+complex sum.  Repeats separate systematic projection bias from fit variation.
 """
 
 import re
@@ -32,7 +35,11 @@ OUTPUT_DIR = CASE_DIR / "output/plots"
 
 
 def amplitude_ratio(magnitudes):
-    """Calculate R from the fitted or quadrature amplitude magnitudes."""
+    """Calculate the longitudinal/transverse intensity ratio.
+
+    Intensities are squared magnitudes.  Nonzero longitudinal projections carry
+    a factor of two because the parity-folded branch represents both +m and -m.
+    """
     transverse = sum(
         value**2 for wave, value in magnitudes.items()
         if wave.split("_")[1] == "T"
@@ -45,7 +52,9 @@ def amplitude_ratio(magnitudes):
     return longitudinal / transverse
 
 
-# Locate matching generated and fitted batch directories.
+# Locate matching generated and fitted batch directories.  Restricting the
+# choice to their intersection prevents a partial generation-only batch from
+# being mistaken for an analysable result.
 input_batches = {path.name: path for path in INPUT_BASE.iterdir() if path.is_dir()}
 fit_batches = {path.name: path for path in FIT_BASE.iterdir() if path.is_dir()}
 common_batches = sorted(input_batches.keys() & fit_batches.keys())
@@ -105,6 +114,9 @@ for truth_file in sorted(truth_dir.glob("fixed_N*_moments.root")):
     fit = read_tree(fit_file, "fitResults", fit_columns)
     entry = best_index(fit, require_fit_ok=False)
 
+    # The spin index is unobserved in this study, so its two sectors contribute
+    # incoherently.  Their observable reference is sqrt(|A+|^2 + |A-|^2), not
+    # the magnitude of a complex amplitude sum.
     generated_magnitudes = {
         wave: np.hypot(truth[f"{wave}_1"][0], truth[f"{wave}_m1"][0])
         for wave in waves
@@ -139,7 +151,11 @@ for truth_file in sorted(truth_dir.glob("fixed_N*_moments.root")):
 
 
 def mean_and_error(values):
-    """Return the sample mean and standard error over repeated fits."""
+    """Return the sample mean and standard error over repeated fits.
+
+    ``ddof=1`` uses the unbiased sample variance.  A singleton ensemble has no
+    measurable repeat-to-repeat spread and is displayed with zero error.
+    """
     values = np.asarray(values)
     error = np.std(values, ddof=1) / np.sqrt(len(values)) if len(values) > 1 else 0.0
     return np.mean(values), error

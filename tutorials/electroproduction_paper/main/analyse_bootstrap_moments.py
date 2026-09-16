@@ -4,6 +4,9 @@
 
 Accepted toys provide the mean reconstructed moment and its sample standard
 deviation; the published point retains its quoted measurement uncertainty.
+
+Comparing in moment space gives a gauge-independent closure test because the
+moments are observables even when several amplitude solutions are equivalent.
 """
 
 import re

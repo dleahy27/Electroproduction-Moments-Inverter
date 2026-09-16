@@ -4,6 +4,11 @@
 
 The helper is intentionally a thin wrapper: every command it runs is printed
 by CMake and can also be copied from the README and run manually.
+
+It resolves paths relative to this file rather than the caller's working
+directory, which makes relative and absolute invocations equivalent.
+``subprocess.run(..., check=True)`` stops at the first failed stage so a
+configuration error cannot be mistaken for a successful build.
 """
 
 import argparse

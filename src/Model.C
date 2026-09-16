@@ -1,4 +1,9 @@
-// Construct the unpolarized moment basis and its Clebsch-Gordan coefficients.
+// Construct the amplitude basis and the unpolarized angular-moment model.
+//
+// Each complex partial-wave amplitude is labelled by reflectivity, photon
+// orientation, orbital quantum numbers (l,m), and optionally a nucleon-spin
+// index k.  This file enumerates those labels and precomputes the bilinear
+// coefficients connecting amplitude products to real measured moments.
 // ROOT's wigner_3j routine uses doubled integer angular-momentum arguments,
 // which avoids half-integer round-off in the coupling algebra.
 #include "Detail.h"
@@ -14,6 +19,9 @@ namespace emi::detail {
 namespace {
 
 double ClebschGordan(int l1, int l2, int l3, int m1, int m2, int m3) {
+  // Convert ROOT's Wigner 3-j convention to a Clebsch-Gordan coefficient.  All
+  // angular momenta are integral here, but ROOT accepts doubled integers so the
+  // same API can represent half-integer quantum numbers without round-off.
   const double sign = ((l1 - l2 + m3) & 1) ? -1.0 : 1.0;
   return sign * std::sqrt(2.0 * l3 + 1.0) *
          ROOT::Math::wigner_3j(2 * l1, 2 * l2, 2 * l3,
@@ -21,6 +29,7 @@ double ClebschGordan(int l1, int l2, int l3, int m1, int m2, int m3) {
 }
 
 static std::string IndexString(int value) {
+  // ROOT branch identifiers avoid a literal minus sign: m1 means -1.
   return value < 0 ? "m" + std::to_string(-value) : std::to_string(value);
 }
 static std::string MagName(char refl, char orient, int k, int l, int m) {
@@ -98,6 +107,9 @@ static int LongitudinalParitySign(int refl, int absM) {
 }
 
 std::vector<Parameter> BuildParameters(const InternalConfig& cfg) {
+  // Every physical complex amplitude contributes a radial magnitude and phase.
+  // Later context construction fixes unobservable phases and one normalization
+  // magnitude, leaving only independent coordinates for the minimizer.
   if (cfg.waves.empty()) throw std::runtime_error("At least one (l,m) wave must be selected");
   if (!cfg.usePositiveReflectivity && !cfg.useNegativeReflectivity) {
     throw std::runtime_error("At least one reflectivity must be selected");
@@ -134,6 +146,8 @@ std::vector<Parameter> BuildParameters(const InternalConfig& cfg) {
     pars.push_back(std::move(p));
   };
 
+  // Expand the user's (l,m) list over enabled reflectivities, photon
+  // orientations, and—when polarization is measured—both nucleon-spin sectors.
   for (const auto& wave : cfg.waves) {
     if (wave.l < 0 || std::abs(wave.m) > wave.l) {
       throw std::runtime_error("Invalid selected wave (l,m) = (" +

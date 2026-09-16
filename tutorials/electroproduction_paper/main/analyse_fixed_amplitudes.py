@@ -5,6 +5,9 @@
 The generated tree resolves k=+1 and k=-1, while the unpolarized fit contains
 one effective amplitude. Moment closure is therefore the direct observable
 comparison; the Argand plot also exposes how the two truth sectors combine.
+
+Because generation uses known amplitudes, this is a closure test: discrepancies
+diagnose projection, convention, or inversion effects rather than unknown data.
 """
 
 import re

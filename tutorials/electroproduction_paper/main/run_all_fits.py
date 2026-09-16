@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 
-"""Fit every configured experimental data bin."""
+"""Fit every configured experimental data bin.
+
+One independent multi-start inversion is launched per channel and Q-squared
+bin.  Output names follow the discovery convention used by the plot scripts.
+"""
 
 import subprocess
 from tutorials.electroproduction_paper.datasets import CHANNELS, MAIN_CHANNEL_KEYS

@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 
-"""Generate and fit the fixed photoproduction closure example."""
+"""Generate and fit the fixed photoproduction closure example.
+
+The first command writes moments from known amplitudes; the second recovers an
+equivalent unpolarized solution.  Running both steps together prevents a stale
+truth file from being paired with changed generation settings.
+"""
 
 import subprocess
 

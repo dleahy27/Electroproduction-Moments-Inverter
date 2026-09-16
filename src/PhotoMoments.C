@@ -1,6 +1,9 @@
 // Convert photoproduction input tables into the common ROOT moment layout.
 // The resulting tree is intentionally the same shape as electroproduction
 // data, allowing fitting and plotting code to remain reaction-independent.
+// Photoproduction contains transverse photon amplitudes only.  Retaining the
+// common branch convention lets the general fitter consume these data without
+// a separate objective function or input reader.
 #include "emi/Runner.h"
 
 #include "TFile.h"
@@ -24,6 +27,8 @@ constexpr double kSqrt12Over5 = 0.69282032302755092063339055356909;
 constexpr double kMissingMomentError = 0.001;
 
 struct ValErr2 {
+  // Carry independent statistical and systematic errors alongside each central
+  // value until the final output uncertainty is calculated in quadrature.
   double v{0.0};
   double stat{0.0};
   double syst{0.0};
@@ -74,11 +79,15 @@ static void ResizeOutputs(OutputArrays& out, std::size_t n) {
 }
 
 static void SetZeroMoment(double* val, double* err, std::size_t i) {
+  // The normalized zeroth moment fixes the distribution's overall scale.  Its
+  // zero uncertainty reflects a convention rather than an exact measurement.
   val[i] = 0.0;
   err[i] = kMissingMomentError;
 }
 
 static void FillBin(OutputArrays& out, std::size_t i, double mean_t, const SDMEsTable& p) {
+  // Convert one momentum-transfer bin from SDMEs to the project's real moment
+  // basis and retain the source-bin centre as plotting provenance.
   // Photoproduction has transverse responses only. These expressions map the
   // GlueX SDMEs and uncertainties onto the alpha=0..3 moment convention.
   out.Q2[i] = mean_t;
@@ -231,6 +240,8 @@ static std::string DefaultOutFile(const std::string& key) {
 }
 
 static DatasetSpec GetDatasetSpec(const std::string& requestedKeyRaw) {
+  // Resolve aliases before creating an output file, so unsupported datasets
+  // fail without leaving a partial ROOT artifact.
   // Accept common GlueX spellings at the CLI while retaining one canonical key
   // and one canonical tutorial-local output filename.
   const std::string requestedKey = requestedKeyRaw.empty() ? "gluex" : requestedKeyRaw;

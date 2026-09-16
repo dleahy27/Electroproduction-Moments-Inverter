@@ -2,6 +2,10 @@
 
 // Editable example configuration consumed by `emi --settings`.  Functions are
 // inline because ROOT's interpreter includes this header as a small C++ unit.
+//
+// Treat this file as the human-readable steering card for an analysis.  Wave
+// content, fit cost, generation choices, and bootstrap settings are collected
+// here so tutorial scripts can share one reproducible physics definition.
 
 #include "emi/Config.h"
 

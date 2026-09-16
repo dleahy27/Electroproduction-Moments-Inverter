@@ -4,6 +4,9 @@
 
 Generation and fitting use the same explicit gauge, so complex amplitudes can
 be compared directly after choosing either the initial or recoil case.
+
+Only branches present in both trees enter the comparison, so absent polarization
+information cannot accidentally be interpreted as a physical zero.
 """
 
 import re

@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 
-"""Bootstrap every configured experimental data bin."""
+"""Bootstrap every configured experimental data bin.
+
+The Cartesian product of configured channels and Q-squared bins defines the
+batch.  Checked subprocess calls stop the sweep at the first failed analysis
+instead of leaving a silently incomplete output collection.
+"""
 
 import subprocess
 from tutorials.electroproduction_paper.datasets import CHANNELS, MAIN_CHANNEL_KEYS

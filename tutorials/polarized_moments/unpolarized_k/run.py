@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 
-"""Generate polarized fixed points and fit their unpolarized moments."""
+"""Generate polarized fixed points and fit their unpolarized moments.
+
+Each repeat uses a deterministic seed derived from the base value.  Optional
+suppression factors vary one truth component so the reduced model's response
+can be measured by the companion analysis.
+"""
 
 import subprocess
 from tutorials.paths import PROJECT_DIR

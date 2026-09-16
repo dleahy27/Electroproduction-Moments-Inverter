@@ -1,6 +1,10 @@
 // Generate exact or pseudo-data moments from a fixed amplitude model.  The
 // PhotoTest path also records truth amplitudes and model metadata so tutorial
 // plots can compare fitted and generated complex amplitudes wave by wave.
+//
+// "Fixed" means that no minimization occurs here.  A chosen complex amplitude
+// vector is converted into its complete moment set, optionally fluctuated, and
+// serialized using the same branch conventions consumed by the fitter.
 #include "emi/Runner.h"
 
 #include "Detail.h"
@@ -33,6 +37,9 @@ using namespace detail;
 
 static void FillExampleAmplitudes(const EvaluationContext& ctx,
                                   std::vector<double>& fullVals) {
+  // Deterministic index arithmetic creates nontrivial magnitudes and phases
+  // without an external input table. Clamping respects user-adjusted parameter
+  // bounds while preserving exact repeatability for closure studies.
   std::vector<double> freeValues(ctx.freeToFull.size(), 0.0);
   for (size_t i = 0; i < ctx.freeToFull.size(); ++i) {
     const auto& parameter = ctx.fullPars[static_cast<size_t>(ctx.freeToFull[i])];
@@ -702,6 +709,9 @@ static void GenerateFixedPoint(const FixedMomentsConfig& generation,
 }
 
 void GenerateFixedMoments(const FixedMomentsConfig& config) {
+  // The mode selects how raw amplitudes are obtained.  Gauge rotation,
+  // normalization, moment evaluation, and ROOT serialization are then shared,
+  // ensuring that all generated inputs obey the same schema.
   GenerateFixedPoint(config, false);
 }
 

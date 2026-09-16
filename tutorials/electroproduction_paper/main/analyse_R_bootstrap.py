@@ -4,6 +4,9 @@
 
 Each point is the mean and sample width over accepted bootstrap toys. Older
 files without an R branch derive the same ratio lazily from amplitude squares.
+
+Evaluating the ratio toy by toy retains amplitude correlations and nonlinear
+propagation, including non-Gaussian tails that a first-order formula can miss.
 """
 
 import matplotlib.pyplot as plt

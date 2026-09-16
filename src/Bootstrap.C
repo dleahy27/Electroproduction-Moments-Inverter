@@ -1,6 +1,11 @@
 // Parametric bootstrap driver.  Each worker fluctuates the measured moments,
 // refits them independently, and writes a temporary ROOT file; TFileMerger
 // combines those files into one sample without sharing mutable ROOT objects.
+//
+// This is a parametric bootstrap: each pseudo-experiment is sampled from the
+// measured central values and covariance model rather than by resampling raw
+// events.  Repeating the complete nonlinear fit propagates both measurement
+// fluctuations and the possibility of distinct local minima.
 #include "emi/Runner.h"
 
 #include "Detail.h"
@@ -190,6 +195,9 @@ void RunBootstrapWorker(const detail::InternalConfig& config, unsigned toys,
 } // namespace
 
 void RunBootstrap(const BootstrapConfig& config, const ModelConfig& model) {
+  // Every toy starts from the same measured covariance model but receives an
+  // independent pseudo-data draw and set of minimizer starts.  Only the best
+  // accepted fit contributes to the final ensemble.
   if (config.fit.input.empty()) throw std::invalid_argument("Bootstrap input is required");
   if (config.fit.output.empty()) throw std::invalid_argument("Bootstrap output is required");
   if (config.toys == 0) throw std::invalid_argument("Bootstrap toys must be positive");

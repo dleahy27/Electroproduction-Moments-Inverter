@@ -1,6 +1,8 @@
 // Validate and read a moment bin from a ROOT TTree.  Branch discovery accepts
 // the project's indexed moment convention, then maps the observed covariance
 // into the exact ordering used by the selected physics model.
+// A source tree may store one entry per kinematic bin or array-valued branches
+// in a single entry; the helpers below normalize both layouts to scalar values.
 #include "Detail.h"
 
 #include "TBranch.h"
@@ -27,6 +29,9 @@ bool TryReadArrayBranchElement(TTree* t,
                                       const char* branchName,
                                       int bin,
                                       double& value) {
+  // Historical inputs may store all kinematic bins in one C-style array branch.
+  // Absence returns false so optional moments can be skipped; an out-of-range
+  // requested element is rejected once the actual leaf length is known.
   TBranch* branch = t->GetBranch(branchName);
   if (!branch) {
     value = 0.0;
@@ -142,6 +147,9 @@ bool ParseMomentBranch(const std::string& name, const InternalConfig& cfg,
 } // namespace
 
 std::vector<ObservedMoment> ReadObservedMoments(const InternalConfig& cfg) {
+  // Branch names drive discovery rather than a hard-coded moment list.  Reduced
+  // experimental tables are therefore valid, provided every moment used in
+  // chi-square has a finite uncertainty and a constructible model expression.
   std::unique_ptr<TFile> fin(TFile::Open(cfg.momentsFile.c_str(), "READ"));
   if (!fin || fin->IsZombie()) throw std::runtime_error("Failed to open file " + cfg.momentsFile);
   TTree* t = dynamic_cast<TTree*>(fin->Get(cfg.momentsTree.c_str()));

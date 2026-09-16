@@ -1,6 +1,11 @@
 // Evaluate chi-square and its analytic gradient for a proposed amplitude
 // vector.  This is the minimizer's hot path, so trigonometric pairs and sparse
 // moment derivatives are evaluated together where the platform permits it.
+//
+// Observed moments are bilinear functions of complex amplitudes.  Magnitudes
+// and phases are therefore expanded into real and imaginary interference terms
+// before contraction with precomputed angular coefficients.  The same pass
+// accumulates derivatives so Minuit can use an analytic gradient.
 #include "Detail.h"
 
 #include "TRandom3.h"

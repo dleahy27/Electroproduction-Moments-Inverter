@@ -3,6 +3,11 @@
 // Public, dependency-light configuration objects.  Fluent Set... methods let
 // C++, the CLI settings header, and ROOT's interpreter express the same model
 // without exposing implementation classes from src/.
+//
+// All structures are value types: constructing or copying one has no I/O side
+// effects.  Paths, tree names, bin choices, and numerical controls are checked
+// only when a Runner operation begins, where useful context can be included in
+// any error message.
 
 #include <cstdint>
 #include <filesystem>

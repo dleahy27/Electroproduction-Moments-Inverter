@@ -1,6 +1,8 @@
 // Reusable resonance line shapes for deterministic mass-dependent generators.
 // Complex phases arise from the Breit-Wigner denominator and are retained so
 // interference between resonances is represented before moments are formed.
+// The line shape is dimensionless; production couplings supply the amplitude
+// scale, while pole masses, widths, and the scan mass are all expressed in GeV.
 #include "MassModels/MassModel.h"
 
 #include <cmath>

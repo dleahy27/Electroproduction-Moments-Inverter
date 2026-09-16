@@ -4,6 +4,9 @@
 
 The selected row is the lowest accepted chi-square start; its R uncertainty is
 the covariance-propagated value written by the C++ fitter.
+
+This is the local Gaussian counterpart to the bootstrap calculation: it uses
+the curvature around one minimum rather than a distribution of refitted toys.
 """
 
 import matplotlib.pyplot as plt

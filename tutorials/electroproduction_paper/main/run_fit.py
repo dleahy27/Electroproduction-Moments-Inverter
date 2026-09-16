@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 
-"""Fit one experimental moment bin."""
+"""Fit one experimental moment bin.
+
+The constants below define one reproducible inversion.  Optional CLI values are
+added only when set, leaving UserSettings.h as the source of default controls.
+"""
 
 import subprocess
 from tutorials.electroproduction_paper.datasets import CHANNELS

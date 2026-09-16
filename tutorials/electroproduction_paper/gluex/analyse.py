@@ -5,6 +5,10 @@
 Fit files show all minima numerically tied with the best solution. Bootstrap
 files use linear magnitude and circular phase statistics before their trends
 are assembled in the published t-bin order.
+
+Displaying tied minima matters because amplitude inversions can possess
+discrete ambiguities: equal objective values need not imply identical complex
+amplitudes even when they reproduce the same measured moments.
 """
 
 import matplotlib.pyplot as plt

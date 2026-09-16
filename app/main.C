@@ -1,6 +1,12 @@
 // Command-line front end for the library operations declared in Runner.h.
 // The parser deliberately remains dependency-free so the executable needs
 // only ROOT and the standard library on analysis machines and clusters.
+//
+// This file is intentionally a thin translation layer: it converts textual
+// command-line options into the strongly typed configuration objects in
+// Config.h, then hands those objects to the library.  Physics calculations
+// belong in src/, which keeps command-line parsing separate from the model and
+// also lets the same operations be called directly from C++.
 #include "emi/Runner.h"
 #include "RuntimeSettings.h"
 
@@ -91,6 +97,8 @@ private:
 };
 
 void PrintHelp() {
+  // Keep help text beside the parser so every supported command and spelling
+  // can be audited without consulting a second option-definition framework.
   std::cout << R"(Electroproduction Moments Inverter
 
 Usage:
@@ -142,6 +150,9 @@ Configuration:
 }
 
 emi::FitConfig ReadFit(const Arguments& args, emi::FitConfig fit) {
+  // Begin with settings loaded through Cling, then apply only options supplied
+  // explicitly on the command line. CLI values therefore take precedence
+  // without replacing unrelated defaults from UserSettings.h.
   if (args.Has("input")) fit.input = args.Get("input");
   if (args.Has("output")) fit.output = args.Get("output");
   if (args.Has("tree")) fit.tree = args.Get("tree");
@@ -175,6 +186,8 @@ emi::NucleonPolarization ReadPolarization(const Arguments& args,
 }
 
 emi::ModelConfig ReadGauge(const Arguments& args, emi::ModelConfig model) {
+  // The k gauge is a coordinate convention required by single-polarization
+  // fits; parsing it separately keeps that convention out of generic fit I/O.
   // A single-polarization fit has a continuous change-of-spin-basis freedom.
   // The four-part label chooses which k=+1 amplitude is made real to remove
   // that freedom; it does not add a measured constraint to the data.
@@ -255,6 +268,9 @@ emi::FixedMomentsConfig ReadFixedGeneration(
 } // namespace
 
 int main(int argc, char** argv) {
+  // Every command follows the same boundary: parse text, load typed settings,
+  // apply overrides, and invoke one public Runner operation. Exceptions become
+  // a nonzero process status for shell scripts and batch systems.
   try {
     if (argc < 2 || std::string_view(argv[1]) == "--help" ||
         std::string_view(argv[1]) == "help") {

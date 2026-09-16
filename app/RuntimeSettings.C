@@ -1,6 +1,9 @@
 // Load a user settings header at run time through ROOT's Cling interpreter.
 // This preserves a compiled C++ configuration API while letting tutorial
 // users change waves and bounds without rebuilding the executable.
+// Cling compiles the selected header inside the running process.  The returned
+// configuration is copied into ordinary C++ value objects, so no interpreted
+// object or pointer needs to outlive this loading step.
 #include "RuntimeSettings.h"
 
 #include "TInterpreter.h"

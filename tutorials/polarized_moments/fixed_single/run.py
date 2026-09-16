@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 
-"""Generate and fit the initial- and recoil-polarized examples."""
+"""Generate and fit the initial- and recoil-polarized examples.
+
+The loop repeats one closure workflow for both single-polarization choices.  An
+optional k gauge selects a representative from an observable-equivalent family.
+"""
 
 import subprocess
 from tutorials.paths import PROJECT_DIR

@@ -1,5 +1,13 @@
 #pragma once
 
+// Shared internal types and helper declarations for the fitting engine.
+//
+// Unlike the public headers under include/emi, this header exposes the compact
+// representations used in performance-critical code: indexed amplitudes,
+// sparse moment terms, covariance factors, parameter maps, and fit results.
+// Keeping them together makes the conventions used by context construction,
+// evaluation, minimization, and output writing explicit and consistent.
+
 // Private data model shared by the core translation units.  These structures
 // describe model indices, observations, parameter mappings, and minimizer
 // results; users configure the library through include/emi instead.

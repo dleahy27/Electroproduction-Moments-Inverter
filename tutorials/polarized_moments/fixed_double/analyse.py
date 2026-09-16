@@ -4,6 +4,9 @@
 
 Both nucleon spin indices are observed, removing the continuous spin-basis
 ambiguity left in a single-polarization measurement.
+
+Matched magnitude and phase branches are compared at the accepted minimum;
+Argand coordinates expose their combined radial and angular displacement.
 """
 
 import re

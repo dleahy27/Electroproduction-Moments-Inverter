@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 
-"""Bootstrap one experimental moment bin."""
+"""Bootstrap one experimental moment bin.
+
+This focused runner is the convenient place to tune toy count, fit starts, and
+parallel workers before launching the complete channel sweep.
+"""
 
 import subprocess
 from tutorials.electroproduction_paper.datasets import CHANNELS

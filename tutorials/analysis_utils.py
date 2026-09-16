@@ -3,6 +3,10 @@
 The functions here contain mechanics that should behave identically in every
 study.  Wave choices, kinematic values, and other physics assumptions remain in
 the calling module so they are visible to a reader reproducing that analysis.
+
+ROOT's ``RDataFrame`` is used only at the file boundary.  Converting selected
+columns to NumPy arrays early keeps the subsequent statistics and plotting
+steps explicit while avoiding repeated scans of the same tree.
 """
 
 import re
@@ -63,7 +67,11 @@ def best_index(data, objective="chi2", require_fit_ok=True):
 
 
 def phase_branch(magnitude_branch):
-    """Return the phase branch paired with an amplitude magnitude branch."""
+    """Return the phase branch paired with an amplitude magnitude branch.
+
+    EMI inserts ``phi`` after the one-character reflectivity label; keeping that
+    convention in one helper avoids ad-hoc string replacements in every plot.
+    """
     return magnitude_branch[0] + "phi" + magnitude_branch[1:]
 
 
@@ -78,7 +86,12 @@ def input_moment_branch(fit_branch):
 
 
 def wave_label(branch):
-    """Convert a_T_1_0 to the compact scientific label P+_T0."""
+    """Convert a storage name such as ``a_T_1_0`` to a plot label.
+
+    Orbital angular momentum l=0,1,2,... maps to S,P,D,...; ``a`` and ``b`` are
+    positive and negative reflectivity, while ``T``/``L`` denotes photon
+    orientation and the final field is the magnetic projection m.
+    """
     reflectivity, polarization, ell, projection = branch.split("_")
     orbital = ("S", "P", "D", "F", "G")[int(ell)]
     sign = "+" if reflectivity == "a" else "-"
@@ -99,14 +112,22 @@ def circular_mean(angles):
 
 
 def circular_std(angles):
-    """Calculate circular standard deviation from the mean resultant length."""
+    """Calculate circular standard deviation from the mean resultant length.
+
+    The resultant is the length of the mean unit phasor.  It approaches one for
+    concentrated phases and zero for phases spread around the full circle.
+    """
     # Round-off can put a theoretically unit-length resultant just above one.
     resultant = np.clip(np.abs(np.mean(np.exp(1j * angles))), 0.0, 1.0)
     return np.sqrt(-2.0 * np.log(resultant))
 
 
 def wrap_phase(angles):
-    """Map angles to ``[-pi, pi)`` using the argument of a unit vector."""
+    """Map angles to the principal interval using a unit-vector argument.
+
+    The sine/cosine form handles arbitrarily large inputs and avoids branching
+    separately for values above and below the chosen 2*pi interval.
+    """
     return np.arctan2(np.sin(angles), np.cos(angles))
 
 

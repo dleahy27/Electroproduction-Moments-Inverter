@@ -5,6 +5,9 @@
 The CSV manifest is the authoritative join between mass, k scale, truth file,
 and fit file. Arrays are indexed by scale, mass, and wave so every plot uses
 the same ordering and missing scan points remain explicit NaNs.
+
+Truth and fit are compared in both amplitude and observable moment space.  The
+latter remains meaningful when amplitude coordinates depend on a gauge choice.
 """
 
 import csv
@@ -51,7 +54,11 @@ def moment_sort_key(pair):
 
 
 def offset_masses(masses, number_of_scales):
-    """Separate scale points while retaining mass as the x variable."""
+    """Separate coincident scale markers while retaining mass as x.
+
+    The displacement is purely graphical and is expressed in GeV.  It does not
+    modify the mass used to generate or fit any scan point.
+    """
     if len(masses) < 2 or number_of_scales < 2:
         return np.tile(masses, (number_of_scales, 1))
     offsets = np.linspace(
@@ -63,12 +70,20 @@ def offset_masses(masses, number_of_scales):
 
 
 def read_scan_point(point, waves, moment_pairs):
-    """Read one generated point and its lowest-chi-square accepted fit."""
+    """Read one generated point and its lowest-chi-square accepted fit.
+
+    Returns complex k=+1 truth, k=-1 truth, fitted amplitudes, generated moments,
+    and fitted moments in the caller-provided ordering.  ``None`` marks an
+    incomplete point so a resumed scan can still be analysed without shifting
+    the indices of every later mass.
+    """
     truth_path = PROJECT_DIR / point["truth_file"]
     fit_path = PROJECT_DIR / point["fit_file"]
     if not truth_path.is_file() or not fit_path.is_file():
         return None
 
+    # Assemble the exact branch set before starting either ROOT event loop.  A
+    # magnitude and phase are needed to reconstruct each complex amplitude.
     truth_columns = [
         branch
         for wave in waves
@@ -93,6 +108,8 @@ def read_scan_point(point, waves, moment_pairs):
     fit = fit_frame.AsNumpy(columns=fit_columns)
     entry = best_index(fit)
 
+    # Preallocate fixed-shape arrays so all scan points can later be inserted
+    # into the common [scale, mass, wave] data cube without Python object arrays.
     plus = np.empty(len(waves), dtype=complex)
     minus = np.empty(len(waves), dtype=complex)
     fitted = np.empty(len(waves), dtype=complex)
@@ -116,6 +133,8 @@ def read_scan_point(point, waves, moment_pairs):
             truth[f"{wave}_m1"][0], truth[f"{phase}_m1"][0]
         ) * rotations[wave[0]]
 
+    # Moments require no phase alignment: they are bilinear observables and are
+    # invariant under the common rotations applied above for amplitude plots.
     generated_moments = np.array([
         truth[truth_name][0] for truth_name, _ in moment_pairs
     ])
@@ -143,12 +162,16 @@ def finish_mass_axis(axis, title, ylabel):
     style_axis(axis, grid=True)
 
 
-# Read the scan definition written by the runner.
+# Read the scan definition written by the runner.  The manifest, rather than a
+# filename parser, is the authoritative mapping from physical coordinates to
+# files and remains reliable if the filename formatting changes.
 with MANIFEST_FILE.open(newline="") as stream:
     points = list(csv.DictReader(stream))
 
 masses = np.array(sorted({float(point["mass_GeV"]) for point in points}))
 scales = np.array(sorted({float(point["k_minus_scale"]) for point in points}))
+# Dictionaries turn manifest values into dense array indices.  Values originate
+# from the same decimal strings, so exact lookup is safe within this process.
 mass_index = {mass: index for index, mass in enumerate(masses)}
 scale_index = {scale: index for index, scale in enumerate(scales)}
 

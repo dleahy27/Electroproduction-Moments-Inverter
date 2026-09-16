@@ -1,6 +1,8 @@
 // Coordinate multi-start amplitude fits.  Starts can run in separate ROOT
 // processes, after which the best finite minimum and its diagnostics are
 // copied to the final ROOT tree in a deterministic order.
+// Multiple starts are essential because the amplitude-to-moment map is
+// nonlinear and can contain discrete ambiguities as well as local minima.
 #include "emi/Runner.h"
 
 #include "Detail.h"
@@ -146,6 +148,9 @@ void RunWorker(const detail::InternalConfig& config,
 } // namespace
 
 void RunFit(const FitConfig& config, const ModelConfig& model) {
+  // Build immutable problem data once in the parent process.  Workers explore
+  // disjoint random starts with equivalent contexts, avoiding shared mutable
+  // ROOT and Minuit objects.
   if (config.input.empty()) throw std::invalid_argument("Fit input is required");
   if (config.output.empty()) throw std::invalid_argument("Fit output is required");
   if (config.starts == 0) throw std::invalid_argument("Fit starts must be positive");

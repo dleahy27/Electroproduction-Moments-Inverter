@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 
-"""Generate and fit the double-polarized fixed-amplitude example."""
+"""Generate and fit the double-polarized fixed-amplitude example.
+
+Generation creates exact moments from a known two-k amplitude set.  Fitting
+with the same polarization content then provides direct amplitude-level closure.
+"""
 
 import subprocess
 from tutorials.paths import PROJECT_DIR

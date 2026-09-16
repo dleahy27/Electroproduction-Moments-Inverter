@@ -1,5 +1,9 @@
 #pragma once
 
+// Public interface for the deterministic photoproduction mass-scan model.
+// Options deliberately expose only the two study controls: an additive S-wave
+// background and the relative strength of the negative-k partner sector.
+
 // Interface to the deterministic photoproduction closure-test model.  Keeping
 // its options explicit makes every generated scan point reproducible.
 

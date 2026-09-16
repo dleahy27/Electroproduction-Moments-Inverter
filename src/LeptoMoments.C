@@ -1,6 +1,10 @@
 // Convert published electroproduction tables into the ROOT moment schema used
 // by the fitter.  Statistical and systematic uncertainties are combined in
 // quadrature because the source tables provide independent contributions.
+// The numerical tables are kept in code to make the conversion reproducible:
+// rebuilding a ROOT input does not depend on an untracked spreadsheet or on
+// locale-sensitive text parsing.  Conversion factors below implement the
+// published mapping from spin-density matrix elements to angular moments.
 #include "emi/Runner.h"
 
 #include "TFile.h"
@@ -25,6 +29,8 @@ constexpr double kSqrt6Over5  = 0.48989794855663561963945681494118;
 constexpr double kSqrt12Over5 = 0.69282032302755092063339055356909;
 
 struct ValErr2 {
+  // Keep the two published error sources separate until final ROOT output so
+  // the independence assumption used by the quadrature sum remains visible.
   double v{0.0};
   double stat{0.0};
   double syst{0.0};
@@ -77,6 +83,8 @@ static void ResizeOutputs(OutputArrays& out, std::size_t n) {
 }
 
 static void FillBin(OutputArrays& out, int i, double q2, const SDMEsTable& p) {
+  // Apply the analytic SDME-to-moment map for one Q^2 bin.  Square-root factors
+  // encode the spherical-harmonic normalization expected by the fitter.
   // Convert published spin-density matrix elements into EMI response moments.
   // Explicit formulas keep all sign and sqrt(2) conventions auditable.
   out.Q2[i] = q2;
@@ -156,6 +164,8 @@ static std::string DefaultOutFile(const std::string& datasetKey) {
 }
 
 static DatasetSpec GetDatasetSpec(const std::string& requestedKey) {
+  // Normalize aliases before selecting an embedded table; spelling choices at
+  // the CLI cannot alter the numerical content written to ROOT.
   // These small immutable tables are embedded source data. The selector joins
   // each table to its Q2 grid and canonical tutorial-local filename.
   const std::string key = NormalizeKey(requestedKey);
@@ -332,6 +342,8 @@ static DatasetSpec GetDatasetSpec(const std::string& requestedKey) {
 }
 
 static void BuildOutputs(const DatasetSpec& ds, OutputArrays& out) {
+  // Allocate each branch to the full bin count once, then fill in published
+  // order so ROOT receives stable contiguous arrays during tree serialization.
   // Fixed-size C arrays preserve compatibility with the original ROOT files;
   // only the leading `n` entries are meaningful for a given dataset.
   if (ds.q2.size() != ds.bins.size()) {

@@ -2,6 +2,8 @@
 
 // High-level public API.  Each function owns a complete analysis operation and
 // writes a self-describing ROOT file, while Config.h carries all user choices.
+// These declarations form the stable boundary for compiled applications; the
+// classes and helper functions under src/ remain implementation details.
 
 #include "emi/Config.h"
 

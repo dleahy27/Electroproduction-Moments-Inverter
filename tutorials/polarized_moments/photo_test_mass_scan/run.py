@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 
-"""Generate PhotoTest mass-scan points and fit them with the single-k model."""
+"""Generate PhotoTest mass-scan points and fit them with the single-k model.
+
+For every invariant mass and k-minus scale, truth is generated from interfering
+resonances and its unpolarized projection is fitted.  A CSV manifest records the
+exact pairing without reconstructing floating-point values from filenames.
+"""
 
 import csv
 import subprocess
@@ -33,6 +38,8 @@ fit_dir = CASE_DIR / "output/root"
 truth_dir.mkdir(parents=True, exist_ok=True)
 fit_dir.mkdir(parents=True, exist_ok=True)
 
+# ``linspace`` includes both endpoints.  Every scale therefore samples the same
+# physical mass grid, which permits point-by-point comparisons in the plots.
 masses = np.linspace(MASS_MIN, MASS_MAX, MASS_BINS)
 
 # Generate and fit every mass/scale pair, reusing completed files by default.
@@ -45,6 +52,9 @@ for scale_index, scale in enumerate(SCALES):
         stem = f"scale_{scale_index:02d}_mass_{mass_index:02d}"
         truth_file = truth_dir / f"{stem}_truth.root"
         fit_file = fit_dir / f"{stem}_fit.root"
+        # Reusing one seed holds the random-start sequence fixed between scan
+        # points.  Changes across mass or scale then reflect the physics input
+        # rather than a different draw of initial minimizer coordinates.
         run_seed = SEED #+ scale_index * len(masses) + mass_index
 
         manifest_rows.append({
@@ -62,6 +72,9 @@ for scale_index, scale in enumerate(SCALES):
             flush=True,
         )
 
+        # Truth must be regenerated before its dependent fit.  The separate
+        # booleans below also allow an interrupted scan to resume at its first
+        # missing artifact when OVERWRITE is false.
         generate_truth = OVERWRITE or not truth_file.exists()
         if generate_truth:
             command = [
@@ -102,7 +115,9 @@ for scale_index, scale in enumerate(SCALES):
         else:
             print(f"  using existing {fit_file.name}", flush=True)
 
-# Record the files and settings used by the analysis script.
+# Write the manifest only after commands have been considered for every point.
+# In dry-run mode it documents the proposed scan; otherwise it records the
+# generated file pairing consumed by analyse.py.
 manifest = fit_dir / "scan_points.csv"
 with manifest.open("w", newline="") as stream:
     writer = csv.DictWriter(stream, fieldnames=manifest_rows[0].keys())
