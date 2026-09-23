@@ -19,6 +19,19 @@
 
 namespace emi {
 
+// Gaussian used to initialize one independent amplitude magnitude. Use k=0
+// without nucleon polarization and k=+/-1 with polarization. The amplitude
+// eliminated by normalization must not be listed.
+struct InitialAmplitude {
+  char reflectivity;
+  char orientation;
+  int l;
+  int m;
+  int k;
+  double mean;
+  double standardDeviation;
+};
+
 struct FitConfig {
   // One TTree entry is one kinematic bin; all random starts fit that same row.
   std::filesystem::path input;
@@ -37,6 +50,11 @@ struct FitConfig {
   bool hesse = true;
   bool useNumericalGradients = false;
   bool verbose = true;
+
+  // These distributions are used only when every independent magnitude other
+  // than the normalization amplitude is present. An empty or partial list
+  // retains the default broad random initialization for all magnitudes.
+  std::vector<InitialAmplitude> initialAmplitudes;
 
   FitConfig& SetStarts(unsigned value) { starts = value; return *this; }
   FitConfig& SetWorkers(unsigned value) { workers = value; return *this; }
@@ -159,7 +177,9 @@ struct MassModelGenerationConfig {
   // No arbitrary default: a mass-dependent mode must be given a mass.
   std::optional<double> massGeV;
   bool backgroundEnabled = true;
-  double kMinusScale = 1.0;
+  // Signed k-sector asymmetry for PhotoTest. s=+1 selects k=+1, s=-1
+  // selects k=-1, and s=0 gives both sectors equal amplitude factors.
+  double kAsymmetry = 0.0;
 };
 
 // Settings used by `emi generate-fixed`. In Custom mode, amplitudes absent

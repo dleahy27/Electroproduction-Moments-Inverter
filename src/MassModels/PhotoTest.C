@@ -1,6 +1,6 @@
 // Concrete gamma p -> eta pi0 p toy model used by the mass-scan tutorial.
-// Resonance couplings define k=+1; k=-1 is a controlled scaled copy, making
-// the effect of omitting a helicity sector directly measurable in closure fits.
+// A signed asymmetry splits each wave between k=+1 and k=-1, making the effect
+// of omitting a helicity sector directly measurable in closure fits.
 // This is a pedagogical toy model, not a data-driven resonance fit.  Its fixed
 // couplings create S-, P-, and D-wave interference with enough structure to
 // test mass-dependent inversion and polarization assumptions.
@@ -44,8 +44,6 @@ struct Coupling {
 };
 
 constexpr std::array<Sector, 4> kSectors{{
-    // Couplings below are indexed only by reflectivity; k=-1 is derived from
-    // the matching k=+1 complex amplitude after all contributions are summed.
     {'a', +1},
     {'a', -1},
     {'b', +1},
@@ -104,6 +102,10 @@ const std::array<Complex, 2> kBackground{{
     {+0.008, -0.006},
 }};
 
+// This fixed offset prevents the two k sectors from being coherent while
+// preserving one stable relative phase for every wave and asymmetry setting.
+constexpr double kMinusPhaseOffset = 0.73;
+
 constexpr std::size_t ToIndex(ResonanceId resonance) {
   return static_cast<std::size_t>(resonance);
 }
@@ -113,10 +115,10 @@ constexpr std::size_t ToIndex(ResonanceId resonance) {
 PhotoTest::PhotoTest() = default;
 
 PhotoTest::PhotoTest(Options options) : options_(options) {
-  if (!std::isfinite(options_.kMinusScale) ||
-      options_.kMinusScale < 0.0) {
+  if (!std::isfinite(options_.kAsymmetry) ||
+      options_.kAsymmetry < -1.0 || options_.kAsymmetry > 1.0) {
     throw std::invalid_argument(
-        "PhotoTest k-minus scale must be finite and nonnegative");
+        "PhotoTest k asymmetry must be finite and between -1 and 1");
   }
 }
 
@@ -162,11 +164,15 @@ AmplitudeSet PhotoTest::Evaluate(double massGeV) const {
       if (options_.backgroundEnabled && wave.l == 0 && wave.m == 0) {
         value += kBackground[reflectivityIndex];
       }
-      if (kSectors[sectorIndex].k == -1) {
-        // Scale after resonances and background are combined, making the whole
-        // negative-k complex amplitude an exact partner of positive k.
-        value *= options_.kMinusScale;
-      }
+      const bool negativeK = kSectors[sectorIndex].k == -1;
+      const double sectorFactor = negativeK
+          ? (1.0 - options_.kAsymmetry) / 2.0
+          : (1.0 + options_.kAsymmetry) / 2.0;
+      // Apply the split after resonances and background are combined so each
+      // k sector has the same wave shape. The negative sector receives one
+      // global fixed phase shift for every wave.
+      value *= sectorFactor;
+      if (negativeK) value *= std::polar(1.0, kMinusPhaseOffset);
 
       amplitudes.push_back({
           {kSectors[sectorIndex].reflectivity, 'T',

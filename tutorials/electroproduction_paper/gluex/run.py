@@ -25,6 +25,7 @@ RUN_BOOTSTRAPS = True
 
 CASE_DIR = PROJECT_DIR / "tutorials/electroproduction_paper/gluex"
 EMI = PROJECT_DIR / "build/emi"
+SETTINGS = CASE_DIR / "settings.h"
 input_file = INPUT_DIR / "gluex_moments.root"
 output_dir = CASE_DIR / "output/root"
 output_dir.mkdir(parents=True, exist_ok=True)
@@ -33,7 +34,7 @@ for bin_index in BINS:
     if RUN_FITS:
         subprocess.run(
             [
-                str(EMI), "fit", "--photo",
+                str(EMI), "fit", "--settings", str(SETTINGS), "--photo",
                 "--input", str(input_file), "--tree", "expMoments",
                 "--bin", str(bin_index),
                 "--output", str(output_dir / f"gluex_fit_{bin_index}.root"),
@@ -46,7 +47,7 @@ for bin_index in BINS:
     if RUN_BOOTSTRAPS:
         subprocess.run(
             [
-                str(EMI), "bootstrap", "--photo",
+                str(EMI), "bootstrap", "--settings", str(SETTINGS), "--photo",
                 "--input", str(input_file), "--tree", "expMoments",
                 "--bin", str(bin_index),
                 "--output",

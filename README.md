@@ -213,6 +213,15 @@ have `delta=0`, recoil-only data have `beta=0`, and double-polarization data
 may contain all values from zero to three. Every value branch has the usual
 matching `_err` branch.
 
+The Pauli indices follow the axial-vector reflection convention. Components
+1 and 3 are the in-plane spin components and are odd under reflection in the
+production plane; component 2 is normal to that plane and is even. This parity
+assignment retains the interference between the `k=+1` and `k=-1` sectors,
+which determines their relative phase. Only a phase common to every amplitude
+remains unobservable. In a single-polarization fit, the additional real
+unnatural reference described above fixes the SO(2) spin-basis angle; it is not
+a second independently adjustable reflectivity phase.
+
 An unpolarized fit accepts either `RH_<alpha>_<L>_<M>` or the
 `beta=delta=0` projection `RH_<alpha>_0_0_<L>_<M>`. The same fallback applies
 to electroproduction `RH04` branches. A polarized generated file can therefore
@@ -234,8 +243,29 @@ fit
     .UseNumericalGradients(false);
 ```
 
-Parameter limits, minimizer tolerances, start-distribution widths, and step sizes
-are implementation defaults. If one wants to change them, this will require going into the actual code itself to change.
+Parameter limits, minimizer tolerances, and step sizes are implementation
+defaults. Magnitude start distributions can be set per amplitude in
+`FitConfig::initialAmplitudes`:
+
+```cpp
+fit.initialAmplitudes = {
+    // reflectivity, orientation, l, m, k, mean, standard deviation
+    {'a', 'T', 0, 0, 0, 0.30, 0.05},
+    {'b', 'T', 0, 0, 0, 0.15, 0.03},
+    // ...one row for every independent magnitude...
+};
+```
+
+Use `k=0` for an unpolarized model and `k=+1` or `k=-1` when nucleon
+polarization is enabled. Omit the positive-reflectivity transverse amplitude
+at the highest selected `(l,m)`: its magnitude is derived from the
+normalization constraint. Fixed-zero parity amplitudes are omitted as well.
+The configured Gaussian distributions are activated only when the list covers
+every other independent magnitude. An empty or incomplete list keeps the
+default broad random initialization for the entire start; phases remain
+uniform on their allowed interval. Complete configured draws are rejected and
+resampled when their weighted squared magnitudes lie outside the normalization
+manifold, so their relative values are not silently rescaled.
 
 ## Run a fit
 
@@ -356,7 +386,7 @@ settings file.
 `emi --generate-fixed` is accepted as an equivalent spelling.
 For batch scripts, `generate-fixed` also accepts `--settings FILE`,
 `--output FILE`, `--epsilon VALUE`, `--seed N`, `--mass VALUE`,
-`--k-minus-scale VALUE`, `--no-background`, `--quiet`, and `--verbose`.
+`--k-asymmetry VALUE`, `--no-background`, `--quiet`, and `--verbose`.
 `--suppression VALUE` overrides the configured value only when
 `FixedMoments()` selects `KPositiveDominant` or `KReflectivitySplit`.
 The mass-model options apply only when `FixedMoments()` selects `PhotoTest`.
@@ -399,13 +429,16 @@ a fresh complete complex-amplitude set from `Evaluate(double massGeV)` on every
 call. Four constant-width Breit-Wigners provide the fixed S-, P-, and D-wave
 contributions, and the two D-wave resonances are summed coherently before the
 result is converted to magnitude and phase. Fixed complex backgrounds can be
-enabled for the four S-wave sectors. `kMinusScale` multiplies each complete
-`k=-1` amplitude, including its background.
+enabled for the four S-wave sectors. The signed `kAsymmetry` control, `s`,
+multiplies each complete `k=+1` amplitude by `(1+s)/2` and each complete
+`k=-1` amplitude by `(1-s)/2`, including backgrounds. It accepts values in
+`[-1, 1]`; the endpoints select one sector and zero splits the two equally.
+Every `k=-1` amplitude receives the same fixed global phase offset.
 
 Configure it in `FixedMoments()` or override its scan controls at runtime:
 
 ```bash
-./build/emi generate-fixed --mass 1.306 --k-minus-scale 0.5
+./build/emi generate-fixed --mass 1.306 --k-asymmetry 0.5
 ./build/emi generate-fixed --mass 1.306 --no-background
 ```
 
@@ -417,7 +450,7 @@ python -m tutorials.polarized_moments.photo_test_mass_scan.analyse
 ```
 
 The runner uses 20 linearly spaced masses from 0.5 to 2 GeV by default; edit
-`MASS_MIN`, `MASS_MAX`, `MASS_BINS`, and `SCALES` at the top of `run.py`.
+`MASS_MIN`, `MASS_MAX`, `MASS_BINS`, and `ASYMMETRIES` at the top of `run.py`.
 It writes a CSV manifest beside the fit outputs and resumes existing ROOT files
 by default. Set `OVERWRITE=True` only when old files are incompatible. Edit
 `STARTS`, `WORKERS`, and the nonzero base `SEED` to control cost and
@@ -442,7 +475,7 @@ generation context. The rotation leaves all moments unchanged and writes
 `aphi_T_2_2_1` as exactly zero. It then applies the existing common amplitude
 normalisation so that `RH_0_0_0_0_0` equals the configured normalisation
 moment. The ROOT file stores `mass_model`, `invariant_mass_GeV`,
-`k_minus_scale`, `background_enabled`, the phase removed by the rotation, the
+`k_asymmetry`, `background_enabled`, the phase removed by the rotation, the
 raw zeroth moment, and the common normalisation scale alongside the generated
 truth amplitudes and moments.
 

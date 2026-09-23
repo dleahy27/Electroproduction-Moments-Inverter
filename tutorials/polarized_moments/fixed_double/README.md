@@ -5,7 +5,8 @@ generated and fitted trees therefore contain explicit `k=+1` and `k=-1`
 amplitudes without the continuous ambiguity present in a single-polarization
 measurement.
 
-Edit the numerical settings at the top of `run.py`, then execute:
+Edit the numerical settings at the top of `run.py`; the wave model is isolated
+in this directory's `settings.h`. Then execute:
 
 ```bash
 python -m tutorials.polarized_moments.fixed_double.run

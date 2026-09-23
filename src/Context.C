@@ -17,6 +17,8 @@
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace emi::detail {
 
@@ -42,6 +44,7 @@ InternalConfig MakeInternalConfig(const FitConfig& fit, const ModelConfig& model
   config.runHesse = fit.hesse;
   config.useNumericalGradients = fit.useNumericalGradients;
   config.verbose = fit.verbose;
+  config.initialAmplitudes = fit.initialAmplitudes;
   config.momentsFile = fit.input.string();
   config.momentsTree = fit.tree;
   config.bin = fit.bin;
@@ -106,6 +109,80 @@ std::shared_ptr<EvaluationContext> BuildContext(const InternalConfig& cfg) {
     if (ctx->fullPars[static_cast<size_t>(i)].fixed) continue;
     ctx->fullToFree[static_cast<size_t>(i)] = static_cast<int>(ctx->freeToFull.size());
     ctx->freeToFull.push_back(i);
+  }
+
+  // A partial list deliberately does not bias only some coordinates: custom
+  // initialization becomes active only when every independent magnitude has
+  // a distribution. Labels are nevertheless validated so misspellings do not
+  // silently select the fallback behavior.
+  std::unordered_map<long long, StartDistribution> configuredStarts;
+  for (const auto& start : cfg.initialAmplitudes) {
+    if ((start.reflectivity != 'a' && start.reflectivity != 'b') ||
+        (start.orientation != 'T' && start.orientation != 'L')) {
+      throw std::invalid_argument(
+          "Initial amplitude must use reflectivity a/b and orientation T/L");
+    }
+    if (!std::isfinite(start.mean) ||
+        !std::isfinite(start.standardDeviation) ||
+        start.standardDeviation < 0.0) {
+      throw std::invalid_argument(
+          "Initial-amplitude means must be finite and standard deviations "
+          "must be finite and nonnegative");
+    }
+    const int m = start.orientation == 'L' && cfg.enforceLongitudinalParity
+                      ? std::abs(start.m)
+                      : start.m;
+    const long long key = MakeParameterKey(
+        start.reflectivity, start.orientation, start.k, start.l, m, false);
+    const auto inserted = configuredStarts.emplace(
+        key, StartDistribution{start.mean, start.standardDeviation});
+    if (!inserted.second) {
+      throw std::invalid_argument("Duplicate initial-amplitude distribution");
+    }
+  }
+
+  std::unordered_set<long long> expectedStarts;
+  for (int fullIndex : ctx->freeToFull) {
+    const auto& parameter = ctx->fullPars[static_cast<size_t>(fullIndex)];
+    if (parameter.phase) continue;
+    const auto label = ParseParameterLabel(parameter.name);
+    expectedStarts.insert(MakeParameterKey(
+        label.reflectivity, label.orientation, label.k, label.l, label.m,
+        false));
+  }
+  for (const auto& configured : configuredStarts) {
+    if (!expectedStarts.count(configured.first)) {
+      throw std::invalid_argument(
+          "Initial-amplitude distribution does not name an independent "
+          "magnitude (do not list the normalization amplitude)");
+    }
+  }
+  if (!configuredStarts.empty() &&
+      configuredStarts.size() == expectedStarts.size()) {
+    ctx->magnitudeStarts.resize(ctx->freeToFull.size());
+    for (size_t freeIndex = 0; freeIndex < ctx->freeToFull.size(); ++freeIndex) {
+      const auto& parameter =
+          ctx->fullPars[static_cast<size_t>(ctx->freeToFull[freeIndex])];
+      if (parameter.phase) continue;
+      const auto label = ParseParameterLabel(parameter.name);
+      const auto found = configuredStarts.find(MakeParameterKey(
+          label.reflectivity, label.orientation, label.k, label.l, label.m,
+          false));
+      ctx->magnitudeStarts[freeIndex] = found->second;
+      if (found->second.mean < parameter.low ||
+          found->second.mean > parameter.high) {
+        throw std::invalid_argument(
+            "An initial-amplitude mean lies outside its parameter limits");
+      }
+    }
+    if (cfg.verbose) {
+      std::cout << "Using configured Gaussian distributions for "
+                << expectedStarts.size() << " initial amplitudes.\n";
+    }
+  } else if (!configuredStarts.empty() && cfg.verbose) {
+    std::cout << "Ignoring incomplete initial-amplitude list (received "
+              << configuredStarts.size() << " of " << expectedStarts.size()
+              << "); using default random initialization.\n";
   }
 
   const auto inputMoments = ReadObservedMoments(cfg);
@@ -260,11 +337,13 @@ void FillHessianProducts(const EvaluationContext& ctx,
                                 const std::vector<double>& fullVals,
                                 bool covarianceIsUsable,
                                 std::vector<double>& parErrors,
+                                std::vector<double>& parCorrelations,
                                 std::vector<double>& momentErrors,
                                 double& ratioR,
                                 double& ratioRError) {
   const double nan = std::numeric_limits<double>::quiet_NaN();
   std::fill(parErrors.begin(), parErrors.end(), nan);
+  std::fill(parCorrelations.begin(), parCorrelations.end(), nan);
   std::fill(momentErrors.begin(), momentErrors.end(), nan);
   ratioRError = nan;
 
@@ -313,6 +392,25 @@ void FillHessianProducts(const EvaluationContext& ctx,
     double variance = fullCov[p * ctx.fullPars.size() + p];
     if (variance < 0.0 && variance > -1e-12) variance = 0.0;
     parErrors[p] = (variance >= 0.0 && std::isfinite(variance)) ? std::sqrt(variance) : nan;
+  }
+
+  // Store only the upper triangle.  The analysis reconstructs the symmetric
+  // matrix, while omitting the diagonal avoids hundreds of redundant branches.
+  std::size_t pairIndex = 0;
+  for (size_t first = 0; first < ctx.fullPars.size(); ++first) {
+    for (size_t second = first + 1; second < ctx.fullPars.size(); ++second) {
+      const double denominator = parErrors[first] * parErrors[second];
+      if (denominator > 0.0 && std::isfinite(denominator)) {
+        double correlation =
+            fullCov[first * ctx.fullPars.size() + second] / denominator;
+        if (std::isfinite(correlation) &&
+            std::abs(correlation) <= 1.0 + 1.0e-10) {
+          parCorrelations[pairIndex] =
+              std::clamp(correlation, -1.0, 1.0);
+        }
+      }
+      ++pairIndex;
+    }
   }
   std::vector<double> pairSin, pairCos;
   BuildPhasePairTrigCache(ctx, fullVals, pairSin, pairCos);
@@ -372,6 +470,28 @@ void BuildRandomStart(const EvaluationContext& ctx,
                                   std::vector<double>& xStart) {
   xStart.assign(ctx.freeToFull.size(), 0.0);
 
+  auto sampleMagnitude = [&](unsigned freeIndex) {
+    const auto& parameter =
+        ctx.fullPars[static_cast<size_t>(ctx.freeToFull[freeIndex])];
+    double mean = ctx.cfg.magnitudeStartMean;
+    double standardDeviation = ctx.cfg.magnitudeStartSigma;
+    if (!ctx.magnitudeStarts.empty()) {
+      const auto& distribution = ctx.magnitudeStarts[freeIndex];
+      if (!distribution) {
+        throw std::logic_error(
+            "Configured magnitude start is missing after validation");
+      }
+      mean = distribution->mean;
+      standardDeviation = distribution->standardDeviation;
+    }
+    if (standardDeviation == 0.0) return mean;
+    double value = rng.Gaus(mean, standardDeviation);
+    while (value < parameter.low || value > parameter.high) {
+      value = rng.Gaus(mean, standardDeviation);
+    }
+    return value;
+  };
+
   for (unsigned i = 0; i < ctx.freeToFull.size(); ++i) {
     const int fullIdx = ctx.freeToFull[i];
     const auto& p = ctx.fullPars[static_cast<size_t>(fullIdx)];
@@ -380,17 +500,30 @@ void BuildRandomStart(const EvaluationContext& ctx,
       // full allowed interval. Magnitudes use the configured truncated normal.
       xStart[i] = rng.Uniform(p.low, p.high);
     } else {
-      double value = rng.Gaus(ctx.cfg.magnitudeStartMean, ctx.cfg.magnitudeStartSigma);
-      while (value < p.low || value > p.high) {
-        value = rng.Gaus(ctx.cfg.magnitudeStartMean, ctx.cfg.magnitudeStartSigma);
-      }
-      xStart[i] = value;
+      xStart[i] = sampleMagnitude(i);
     }
   }
 
   if (ctx.normalisedMagFullIdx >= 0) {
     std::vector<double> fullVals;
     if (!FillFullParameters(ctx, xStart.data(), fullVals)) {
+      if (!ctx.magnitudeStarts.empty()) {
+        // The supplied Gaussians are distributions on the normalization
+        // manifold. Redraw them jointly until the derived magnitude has a
+        // real value instead of rescaling and distorting the requested means.
+        constexpr unsigned maximumAttempts = 100000;
+        for (unsigned attempt = 1; attempt < maximumAttempts; ++attempt) {
+          for (unsigned i = 0; i < ctx.freeToFull.size(); ++i) {
+            const auto& parameter =
+                ctx.fullPars[static_cast<size_t>(ctx.freeToFull[i])];
+            if (!parameter.phase) xStart[i] = sampleMagnitude(i);
+          }
+          if (FillFullParameters(ctx, xStart.data(), fullVals)) return;
+        }
+        throw std::runtime_error(
+            "Configured initial-amplitude distributions did not produce a "
+            "point inside the normalization manifold");
+      }
       // If the random point gives an invalid normalisation square-root, shrink
       // all free magnitudes together and then calculate the derived a_T wave.
       // This enforces sum |T|^2 + epsilon sum |L|^2 < target/2.

@@ -2,7 +2,7 @@
 
 These tutorials exercise EMI with explicit nucleon spin-flip and non-flip
 amplitudes. Each case keeps generated moments, fitted ROOT trees, and plots in
-its own `output` directory.
+its own `output` directory and owns the settings header used by its runner.
 
 Build EMI before running a case:
 
@@ -19,7 +19,7 @@ The cases are:
 - [Unpolarized k test](unpolarized_k/README.md): fit the unpolarized projection
   of generated two-k amplitudes and study quadrature recovery.
 - [PhotoTest mass scan](photo_test_mass_scan/README.md): deterministic S/P/D
-  photoproduction amplitudes across invariant mass and k-minus scale.
+  photoproduction amplitudes across invariant mass and k-sector asymmetry.
 
 Run scripts as modules from the repository root, for example:
 

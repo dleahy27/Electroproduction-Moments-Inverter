@@ -6,7 +6,8 @@ S- and P-wave amplitudes in magnitude-phase and Argand coordinates and shows
 their scaling with momentum transfer.
 
 Edit the fit and bootstrap costs at the top of `run.py`. Either stage can be
-disabled with `RUN_FITS` or `RUN_BOOTSTRAPS`.
+disabled with `RUN_FITS` or `RUN_BOOTSTRAPS`. The local `settings.h` fixes the
+S/P photoproduction model independently of every other tutorial.
 
 ```bash
 python -m tutorials.electroproduction_paper.gluex.run

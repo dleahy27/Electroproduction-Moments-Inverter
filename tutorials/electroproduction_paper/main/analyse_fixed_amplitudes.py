@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
 
-"""Compare a fixed generated point with fitted amplitudes and moments.
+"""Compare one fixed electroproduction amplitude point with its fitted result.
 
-The generated tree resolves k=+1 and k=-1, while the unpolarized fit contains
-one effective amplitude. Moment closure is therefore the direct observable
-comparison; the Argand plot also exposes how the two truth sectors combine.
-
-Because generation uses known amplitudes, this is a closure test: discrepancies
-diagnose projection, convention, or inversion effects rather than unknown data.
+The generated and fitted trees both use the unpolarized, single-k branch
+convention. Truth amplitudes and response moments are read from the generated
+ROOT file, so selecting another fixed test requires changing only TEST_NAME.
 """
 
 import re
@@ -21,148 +18,265 @@ from tutorials.analysis_utils import (
     read_tree, save_figure, style_axis, wave_label,
 )
 
-
-# Settings: edit these paths to select a different closure test.
-CASE_DIR = PROJECT_DIR / "tutorials/electroproduction_paper/main"
-TRUTH_FILE = CASE_DIR / "output/generated/fixed_photomoments.root"
-FIT_FILE = CASE_DIR / "output/root/fixed_photomoments_unpolarized_fit.root"
-TRUTH_TREE = "genMoments"
-FIT_TREE = "fitResults"
+# Select the fixed-amplitude test produced by run_fixed_amplitudes.py.
+TEST_NAME = "large_L"
 SHOW_PLOTS = False
 
+CASE_DIR = PROJECT_DIR / "tutorials/electroproduction_paper/main"
+TRUTH_FILE = CASE_DIR / f"output/generated/fixed_{TEST_NAME}_moments.root"
+FIT_FILE = CASE_DIR / f"output/root/fixed_{TEST_NAME}_fit.root"
 OUTPUT_DIR = CASE_DIR / "output/plots/fixed_amplitudes"
+TRUTH_TREE = "genMoments"
+FIT_TREE = "fitResults"
 
 
-# The fit contains one magnitude per wave. The generated file contains the
-# corresponding k=+1 and k=-1 amplitudes.
-fit_branches = set(branches(FIT_FILE, FIT_TREE))
-truth_branches = set(branches(TRUTH_FILE, TRUTH_TREE))
-wave_pattern = re.compile(r"^[ab]_[TL]_\d+_(?:m?\d+)$")
-waves = sorted(name for name in fit_branches if wave_pattern.fullmatch(name))
-fit_phases = [phase_branch(wave) for wave in waves]
-truth_columns = [
-    branch
-    for wave in waves
-    for sector in ("1", "m1")
-    for branch in (f"{wave}_{sector}", f"{phase_branch(wave)}_{sector}")
+AMPLITUDE_PATTERN = re.compile(r"^[ab]_[TL]_\d+_(?:m?\d+)$")
+MOMENT_PATTERN = re.compile(r"^RH_(\d+)_(\d+)_(m?\d+)$")
+GROUPS = [
+    (("a", "T"), "Natural Transverse"),
+    (("b", "T"), "Unnatural Transverse"),
+    (("a", "L"), "Natural Longitudinal"),
+    (("b", "L"), "Unnatural Longitudinal"),
 ]
 
-# Read the truth entry and select the converged fit with the lowest chi squared.
-truth = read_tree(TRUTH_FILE, TRUTH_TREE, truth_columns)
+
+def parse_amplitude(name):
+    """Return reflectivity, orientation, l, and m from an amplitude branch."""
+    reflectivity, orientation, ell, projection = name.split("_")
+    projection = (
+        -int(projection[1:]) if projection.startswith("m")
+        else int(projection)
+    )
+    return reflectivity, orientation, int(ell), projection
+
+
+def keep_amplitude(name):
+    """Apply the physical longitudinal conventions used by the legacy plot."""
+    reflectivity, orientation, _, projection = parse_amplitude(name)
+    if orientation == "L" and projection < 0:
+        return False
+    if reflectivity == "b" and orientation == "L" and projection == 0:
+        return False
+    return True
+
+
+def moment_label(name):
+    """Convert H_alpha_L_M into the compact label used in the notebook."""
+    _, alpha, ell, projection = name.split("_")
+    projection = projection.replace("m", "-")
+    return rf"$H^{alpha}({ell}{projection})$"
+
+
+for path in (TRUTH_FILE, FIT_FILE):
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"Missing fixed-amplitude input for TEST_NAME={TEST_NAME!r}: {path}"
+        )
+
+truth_branches = set(branches(TRUTH_FILE, TRUTH_TREE))
+fit_branches = set(branches(FIT_FILE, FIT_TREE))
+
+# Single-k amplitudes have no trailing _1 or _m1 sector suffix. Require the
+# generated and fitted schemas to agree rather than silently dropping waves.
+truth_magnitudes = {
+    name for name in truth_branches if AMPLITUDE_PATTERN.fullmatch(name)
+}
+fit_magnitudes = {
+    name for name in fit_branches if AMPLITUDE_PATTERN.fullmatch(name)
+}
+if truth_magnitudes != fit_magnitudes:
+    raise RuntimeError(
+        "Truth and fit amplitude branches do not match: "
+        f"missing from fit={sorted(truth_magnitudes - fit_magnitudes)}, "
+        f"missing from truth={sorted(fit_magnitudes - truth_magnitudes)}"
+    )
+if not truth_magnitudes:
+    raise RuntimeError(
+        "No single-k amplitude branches were found; expected names such as "
+        "a_T_1_0 without a k-sector suffix"
+    )
+
+all_magnitudes = sorted(truth_magnitudes)
+missing_phases = [
+    phase_branch(name) for name in all_magnitudes
+    if phase_branch(name) not in truth_branches
+    or phase_branch(name) not in fit_branches
+]
+if missing_phases:
+    raise RuntimeError(f"Missing paired phase branches: {missing_phases}")
+
+magnitudes = [name for name in all_magnitudes if keep_amplitude(name)]
+if not magnitudes:
+    raise RuntimeError("No physical amplitudes remain after parity filtering")
+phases = [phase_branch(name) for name in magnitudes]
+
+# Raw generated responses carry a leading R; fitted responses omit it. RH04 is
+# an experimentally mixed observable and is intentionally excluded so that the
+# nine panels show the separate alpha=0,...,8 responses from the notebook.
+truth_moment_names = {
+    name for name in truth_branches if MOMENT_PATTERN.fullmatch(name)
+}
+fit_moment_names = {
+    name for name in fit_branches
+    if MOMENT_PATTERN.fullmatch("R" + name)
+}
+expected_fit_moments = {name[1:] for name in truth_moment_names}
+if expected_fit_moments != fit_moment_names:
+    raise RuntimeError(
+        "Truth and fit raw-moment branches do not match: "
+        f"missing from fit={sorted(expected_fit_moments - fit_moment_names)}, "
+        f"missing from truth={sorted(fit_moment_names - expected_fit_moments)}"
+    )
+if not truth_moment_names:
+    raise RuntimeError("No raw RH_alpha_L_M truth moments were found")
+
+moment_pairs = sorted(
+    ((truth_name, truth_name[1:]) for truth_name in truth_moment_names),
+    key=lambda pair: tuple(
+        int(value.replace("m", "-")) for value in pair[1].split("_")[1:]
+    ),
+)
+alphas = {
+    int(MOMENT_PATTERN.fullmatch(truth_name).group(1))
+    for truth_name, _ in moment_pairs
+}
+if alphas != set(range(9)):
+    raise RuntimeError(
+        "Expected raw moments for alpha=0,...,8; "
+        f"found alpha={sorted(alphas)}"
+    )
+
+truth_columns = (
+    magnitudes + phases + [truth_name for truth_name, _ in moment_pairs]
+)
 status = [name for name in ("chi2", "fit_ok", "status") if name in fit_branches]
-fit = read_tree(FIT_FILE, FIT_TREE, status + waves + fit_phases)
+if "chi2" not in status:
+    raise RuntimeError("The fit tree has no chi2 branch for best-entry selection")
+fit_columns = status + magnitudes + phases + [
+    fit_name for _, fit_name in moment_pairs
+]
+
+truth = read_tree(TRUTH_FILE, TRUTH_TREE, truth_columns)
+if len(truth[magnitudes[0]]) != 1:
+    raise RuntimeError(
+        f"Expected one generated truth entry, found {len(truth[magnitudes[0]])}"
+    )
+fit = read_tree(FIT_FILE, FIT_TREE, fit_columns)
 entry = best_index(fit)
 
-fit_amplitudes = {
-    wave: complex_amplitude(fit[wave][entry], fit[phase_branch(wave)][entry])
-    for wave in waves
-}
 truth_amplitudes = {
-    wave: [
-        complex_amplitude(
-            truth[f"{wave}_{sector}"][0],
-            truth[f"{phase_branch(wave)}_{sector}"][0],
-        )
-        for sector in ("1", "m1")
-    ]
-    for wave in waves
+    name: complex_amplitude(truth[name][0], truth[phase_branch(name)][0])
+    for name in magnitudes
+}
+fit_amplitudes = {
+    name: complex_amplitude(fit[name][entry], fit[phase_branch(name)][entry])
+    for name in magnitudes
 }
 
-print(f"Best fit entry: {entry}, chi2 = {fit['chi2'][entry]:.7g}")
+print(
+    f"Fixed test {TEST_NAME!r}: best fit entry {entry}, "
+    f"chi2 = {fit['chi2'][entry]:.7g}"
+)
+print(f"Plotting {len(magnitudes)} amplitudes and {len(moment_pairs)} moments")
 
-# Plot the fitted amplitude and the two generated k sectors in the Argand plane.
+
+# Match the legacy notebook's four stacked Argand panels. Colour identifies a
+# wave; marker shape distinguishes the minimizer from the generated point.
+plt.rcParams.update({
+    "font.family": "serif",
+    "text.usetex": True,
+    "mathtext.fontset": "stix",
+    "font.size": 22,
+    "axes.titlesize": 18,
+    "axes.labelsize": 26,
+    "xtick.labelsize": 20,
+    "ytick.labelsize": 20,
+    "legend.fontsize": 18,
+    "lines.linewidth": 2.2,
+    "axes.linewidth": 1.8,
+})
+
 groups = [
-    (("a", "T"), "Natural transverse"),
-    (("b", "T"), "Unnatural transverse"),
-    (("a", "L"), "Natural longitudinal"),
-    (("b", "L"), "Unnatural longitudinal"),
-]
-groups = [
-    (key, title) for key, title in groups
-    if any(tuple(wave.split("_")[:2]) == key for wave in waves)
+    (key, title) for key, title in GROUPS
+    if any(tuple(name.split("_")[:2]) == key for name in magnitudes)
 ]
 figure, axes = plt.subplots(
-    len(groups), 1, figsize=(8, 6 * len(groups)),
-    sharex=True, constrained_layout=True, squeeze=False,
+    len(groups), 1, figsize=(8, 6 * len(groups)), sharex=True,
+    constrained_layout=True, squeeze=False,
 )
 axes = axes[:, 0]
 
-for axis, (group, title) in zip(axes, groups):
-    selected = [wave for wave in waves if tuple(wave.split("_")[:2]) == group]
-    for colour_index, wave in enumerate(selected):
+for group_index, (axis, (group, title)) in enumerate(zip(axes, groups)):
+    selected = [
+        name for name in magnitudes if tuple(name.split("_")[:2]) == group
+    ]
+    for colour_index, name in enumerate(selected):
         colour = f"C{colour_index % 10}"
-        fitted = fit_amplitudes[wave]
-        generated = truth_amplitudes[wave]
+        fitted = fit_amplitudes[name]
+        generated = truth_amplitudes[name]
         axis.plot(
-            fitted.real, fitted.imag, "o", color=colour,
-            markersize=12, label=wave_label(wave),
+            fitted.real, fitted.imag, "o", color=colour, markersize=12,
+            label=wave_label(name),
         )
         axis.plot(
-            [value.real for value in generated],
-            [value.imag for value in generated],
-            "*", color=colour, markeredgecolor="black", markersize=16,
+            generated.real, generated.imag, "*", color=colour,
+            markeredgecolor="black", markersize=16,
         )
 
     axis.set(xlim=(-1, 1), ylim=(-1, 1), ylabel="Im", title=title)
     axis.set_aspect("equal", adjustable="box")
+    axis.set_xticks([-1, -0.5, 0, 0.5, 1])
+    axis.set_yticks([-1, -0.5, 0, 0.5, 1])
     style_axis(axis, grid=True)
     handles, _ = axis.get_legend_handles_labels()
-    handles.append(
-        Line2D([], [], marker="*", color="white", markeredgecolor="black",
-               linestyle="none", label=r"Set amplitude ($k=\pm1$)")
-    )
-    axis.legend(handles=handles, frameon=False, loc="upper left")
+    if group_index == 0:
+        handles.append(
+            Line2D(
+                [], [], marker="*", color="white", markeredgecolor="black",
+                linestyle="none", markersize=12, label="Set Amp",
+            )
+        )
+    axis.legend(handles=handles, frameon=False, loc="upper left", reverse=True)
 axes[-1].set_xlabel("Re")
 
 save_figure(
-    figure, OUTPUT_DIR / "fixed_amplitudes.pdf",
-    show=SHOW_PLOTS, dpi=600, transparent=True,
+    figure, OUTPUT_DIR / f"fixed_{TEST_NAME}.pdf",
+    show=SHOW_PLOTS, dpi=300, transparent=True,
 )
 
 
-# Compare fitted moments with the unpolarized projection of the generated
-# tensor moments. RH_alpha_0_0_L_M maps to H_alpha_L_M; alpha=0 is H04.
-truth_moment_pattern = re.compile(r"^RH_(\d+)_0_0_(\d+)_(m?\d+)$")
-moment_pairs = []
-for truth_name in truth_branches:
-    match = truth_moment_pattern.fullmatch(truth_name)
-    if not match:
-        continue
-    alpha, ell, projection = match.groups()
-    fit_name = f"H04_{ell}_{projection}" if alpha == "0" else f"H_{alpha}_{ell}_{projection}"
-    if fit_name in fit_branches:
-        moment_pairs.append((truth_name, fit_name))
-moment_pairs.sort()
+# Plot every raw response moment in a separate alpha panel, as in the notebook.
+figure, axes = plt.subplots(3, 3, figsize=(18, 18), constrained_layout=True)
+axes = axes.ravel()
 
-truth_moments = read_tree(
-    TRUTH_FILE, TRUTH_TREE, [truth_name for truth_name, _ in moment_pairs]
-)
-fit_moments = read_tree(
-    FIT_FILE, FIT_TREE, [fit_name for _, fit_name in moment_pairs]
-)
-generated = np.array([truth_moments[name][0] for name, _ in moment_pairs])
-fitted = np.array([fit_moments[name][entry] for _, name in moment_pairs])
-labels = [fit_name for _, fit_name in moment_pairs]
-x = np.arange(len(labels))
+for alpha, axis in enumerate(axes):
+    alpha_pairs = [
+        pair for pair in moment_pairs
+        if int(MOMENT_PATTERN.fullmatch(pair[0]).group(1)) == alpha
+    ]
+    generated = np.array([truth[truth_name][0] for truth_name, _ in alpha_pairs])
+    fitted = np.array([fit[fit_name][entry] for _, fit_name in alpha_pairs])
+    labels = [moment_label(fit_name) for _, fit_name in alpha_pairs]
+    x = np.arange(len(alpha_pairs))
 
-figure, axes = plt.subplots(
-    2, 1, figsize=(max(14, 0.35 * len(labels)), 9), sharex=True,
-    constrained_layout=True, gridspec_kw={"height_ratios": [3, 1]},
-)
-axes[0].plot(x, fitted, "o", label="Minimizer")
-axes[0].plot(x, generated, "x", markersize=8, label="Truth")
-axes[0].axhline(0.0, color="0.5", linewidth=1)
-axes[0].set_ylabel("Moment value")
-axes[0].legend(frameon=False)
-
-axes[1].plot(x, fitted - generated, "o", color="black")
-axes[1].axhline(0.0, color="black", linestyle="--", linewidth=1)
-axes[1].set(xlabel="Moment", ylabel=r"$\Delta$")
-axes[1].set_xticks(x, labels, rotation=90)
-for axis in axes:
+    axis.scatter(x, fitted, s=90, label="Minimizer")
+    axis.scatter(
+        x, generated, s=90, marker="x", linewidths=2,
+        color="tab:orange", zorder=4, label="Truth",
+    )
+    axis.axhline(0.0, color="0.45", linestyle=":", linewidth=1)
+    axis.set_title(rf"$\alpha = {alpha}$")
+    axis.set_xticks(x, labels, rotation=90, ha="right", fontsize=16)
+    axis.margins(x=0.05)
+    axis.grid(axis="y", alpha=0.25)
     style_axis(axis)
+    if alpha == 0:
+        axis.legend(frameon=False)
+
+figure.supxlabel("Moment", fontsize=28)
+figure.supylabel("Moment value", fontsize=28)
 
 save_figure(
-    figure, OUTPUT_DIR / "fixed_moments.png",
-    show=SHOW_PLOTS, dpi=300,
+    figure, OUTPUT_DIR / f"fixed_moments_{TEST_NAME}.pdf",
+    show=SHOW_PLOTS, dpi=400,
 )

@@ -75,6 +75,11 @@ struct ParameterLabel {
   bool valid = false;
 };
 
+struct StartDistribution {
+  double mean = 0.0;
+  double standardDeviation = 0.0;
+};
+
 // Validated, worker-friendly copy of public fit and model configuration.
 struct InternalConfig {
   std::vector<Wave> waves;
@@ -95,6 +100,7 @@ struct InternalConfig {
   bool useNumericalGradients = false;
   std::uint32_t seed = 0;
   bool verbose = true;
+  std::vector<InitialAmplitude> initialAmplitudes;
   double magnitudeStartMean = 0.5;
   double magnitudeStartSigma = 0.5;
   double magnitudeMin = 0.0;
@@ -168,6 +174,9 @@ struct EvaluationContext {
   std::vector<double> normalisationWeights;
   int phaseReferenceMagFullIdx = -1;
   int rotationGaugeMagFullIdx = -1;
+  // Aligned with freeToFull. This remains empty unless the public
+  // initial-amplitude list supplies every independent magnitude.
+  std::vector<std::optional<StartDistribution>> magnitudeStarts;
   mutable unsigned callCount = 0;
 };
 
@@ -295,7 +304,9 @@ void MakeOutputMomentBranches(TTree* tree,
 void FillHessianProducts(
     const EvaluationContext& context, const ROOT::Math::Minimizer& minimizer,
     const std::vector<double>& fullValues, bool covarianceIsUsable,
-    std::vector<double>& parameterErrors, std::vector<double>& momentErrors,
+    std::vector<double>& parameterErrors,
+    std::vector<double>& parameterCorrelations,
+    std::vector<double>& momentErrors,
     double& ratio, double& ratioError);
 
 } // namespace emi::detail

@@ -15,12 +15,15 @@ from tutorials.paths import PROJECT_DIR
 # Settings: edit the shared channel list in datasets.py to change this sweep.
 TREE_NAME = "expMoments"
 ELECTROPRODUCTION = True
-TOYS = None  # None uses the value in app/UserSettings.h.
-STARTS_PER_TOY = None  # None uses the value in app/UserSettings.h.
-WORKERS = None  # None uses the value in app/UserSettings.h.
+TOYS = 1_000
+STARTS_PER_TOY = 1_000
+WORKERS = 10
+SEED = 0
+USE_HESSE = False
 
 
 EMI = PROJECT_DIR / "build" / "emi"
+SETTINGS = PROJECT_DIR / "tutorials/electroproduction_paper/main/experimental_settings.h"
 OUTPUT_DIR = PROJECT_DIR / "tutorials/electroproduction_paper/main/output/root"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -30,18 +33,19 @@ for name in MAIN_CHANNEL_KEYS:
     for bin_number in range(len(channel.q2)):
         command = [
             str(EMI), "bootstrap",
+            "--settings", str(SETTINGS),
             "--input", str(channel.input_file),
             "--tree", TREE_NAME,
             "--bin", str(bin_number),
             "--epsilon", str(channel.epsilon),
             "--output", str(OUTPUT_DIR / f"{name}_bootstrap_{bin_number}.root"),
+            "--toys", str(TOYS),
+            "--starts-per-toy", str(STARTS_PER_TOY),
+            "--workers", str(WORKERS),
+            "--seed", str(SEED),
         ]
         if ELECTROPRODUCTION:
             command.append("--electro")
-        if TOYS is not None:
-            command.extend(["--toys", str(TOYS)])
-        if STARTS_PER_TOY is not None:
-            command.extend(["--starts-per-toy", str(STARTS_PER_TOY)])
-        if WORKERS is not None:
-            command.extend(["--workers", str(WORKERS)])
+        if USE_HESSE:
+            command.append("--hesse")
         subprocess.run(command, cwd=PROJECT_DIR, check=True)

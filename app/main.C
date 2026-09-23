@@ -137,9 +137,11 @@ Synthetic-generation options:
   --output FILE           override FixedMoments().output
   --epsilon VALUE         override FixedMoments().epsilon
   --seed N                override FixedMoments().seed
+  --polarization MODE     override FixedMoments().model nucleon mode
+  --k-gauge REF           use the same single-polarization gauge as the fit
   --suppression VALUE     override suppression in a dominant-K mode
   --mass VALUE            PhotoTest invariant mass in GeV
-  --k-minus-scale VALUE   scale the complete PhotoTest k=- sector
+  --k-asymmetry VALUE     PhotoTest s in [-1, 1]: split k sectors by s
   --no-background         disable the PhotoTest S-wave background
   --quiet                 do not print generated amplitudes
   --verbose               print generated amplitudes
@@ -217,7 +219,7 @@ emi::ModelConfig ReadGauge(const Arguments& args, emi::ModelConfig model) {
 emi::FixedMomentsConfig ReadFixedGeneration(
     const Arguments& args, emi::FixedMomentsConfig generation) {
   args.RequireOnly({"settings", "output", "epsilon", "seed", "suppression",
-                    "mass", "k-minus-scale"},
+                    "mass", "k-asymmetry", "polarization", "k-gauge"},
                    {"quiet", "verbose", "no-background"});
   if (args.Has("quiet") && args.Has("verbose")) {
     throw std::invalid_argument("Choose either --quiet or --verbose, not both");
@@ -244,24 +246,28 @@ emi::FixedMomentsConfig ReadFixedGeneration(
   const bool photoTest =
       generation.mode == emi::FixedGenerationMode::PhotoTest;
   if (!photoTest &&
-      (args.Has("mass") || args.Has("k-minus-scale") ||
+      (args.Has("mass") || args.Has("k-asymmetry") ||
        args.Has("no-background"))) {
     throw std::invalid_argument(
-        "--mass, --k-minus-scale, and --no-background apply only to "
+        "--mass, --k-asymmetry, and --no-background apply only to "
         "PhotoTest in FixedMoments()");
   }
   if (args.Has("mass")) {
     generation.massModel.massGeV = args.Real("mass", 0.0);
   }
-  if (args.Has("k-minus-scale")) {
-    generation.massModel.kMinusScale = args.Real(
-        "k-minus-scale", generation.massModel.kMinusScale);
+  if (args.Has("k-asymmetry")) {
+    generation.massModel.kAsymmetry = args.Real(
+        "k-asymmetry", generation.massModel.kAsymmetry);
   }
   if (args.Has("no-background")) {
     generation.massModel.backgroundEnabled = false;
   }
   if (args.Has("quiet")) generation.printAmplitudes = false;
   if (args.Has("verbose")) generation.printAmplitudes = true;
+  // Generation and fitting must use the same spin basis.  Applying the CLI
+  // overrides here is especially important for closure scripts that produce
+  // initial- and recoil-polarized samples from one UserSettings file.
+  generation.model = ReadGauge(args, generation.model);
   return generation;
 }
 

@@ -2,8 +2,8 @@
 
 """Plot the generated and fitted PhotoTest mass scan.
 
-The CSV manifest is the authoritative join between mass, k scale, truth file,
-and fit file. Arrays are indexed by scale, mass, and wave so every plot uses
+The CSV manifest is the authoritative join between mass, k asymmetry, truth
+file, and fit file. Arrays are indexed by asymmetry, mass, and wave so every plot uses
 the same ordering and missing scan points remain explicit NaNs.
 
 Truth and fit are compared in both amplitude and observable moment space.  The
@@ -11,7 +11,12 @@ latter remains meaningful when amplitude coordinates depend on a gauge choice.
 """
 
 import csv
+import gc
 import re
+
+import matplotlib
+
+matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
@@ -34,8 +39,9 @@ CASE_DIR = PROJECT_DIR / "tutorials/polarized_moments/photo_test_mass_scan"
 MANIFEST_FILE = CASE_DIR / "output/root/scan_points.csv"
 OUTPUT_DIR = CASE_DIR / "output/plots"
 SHOW_PLOTS = False
-FIGURE_DPI = 220
+FIGURE_DPI = 100
 POINT_OFFSET_FRACTION = 0.06
+CORRELATION_PREFIX = "corr__"
 
 
 ROOT.gROOT.SetBatch(not SHOW_PLOTS)
@@ -53,23 +59,23 @@ def moment_sort_key(pair):
     return tuple(int(field.replace("m", "-")) for field in fields)
 
 
-def offset_masses(masses, number_of_scales):
+def offset_masses(masses, number_of_asymmetries):
     """Separate coincident scale markers while retaining mass as x.
 
     The displacement is purely graphical and is expressed in GeV.  It does not
     modify the mass used to generate or fit any scan point.
     """
-    if len(masses) < 2 or number_of_scales < 2:
-        return np.tile(masses, (number_of_scales, 1))
+    if len(masses) < 2 or number_of_asymmetries < 2:
+        return np.tile(masses, (number_of_asymmetries, 1))
     offsets = np.linspace(
         -POINT_OFFSET_FRACTION / 2,
         POINT_OFFSET_FRACTION / 2,
-        number_of_scales,
+        number_of_asymmetries,
     )
     return masses[None, :] + offsets[:, None]
 
 
-def read_scan_point(point, waves, moment_pairs):
+def read_scan_point(point, waves, moment_pairs, correlation_parameters):
     """Read one generated point and its lowest-chi-square accepted fit.
 
     Returns complex k=+1 truth, k=-1 truth, fitted amplitudes, generated moments,
@@ -97,19 +103,33 @@ def read_scan_point(point, waves, moment_pairs):
     status_columns = [
         name for name in ("chi2", "fit_ok", "status") if name in fit_names
     ]
-    fit_columns = status_columns + [
-        branch for wave in waves for branch in (wave, phase_branch(wave))
+    fit_columns = [
+        branch
+        for wave in waves
+        for branch in (wave, phase_branch(wave))
     ]
-    fit_columns += [fit_name for _, fit_name in moment_pairs]
+    fit_columns += [
+        fit_name for _, fit_name in moment_pairs
+    ]
+    fit_columns += sorted(
+        name for name in fit_names if name.startswith(CORRELATION_PREFIX)
+    )
 
     truth = ROOT.RDataFrame("genMoments", str(truth_path)).AsNumpy(
         columns=truth_columns
     )
-    fit = fit_frame.AsNumpy(columns=fit_columns)
-    entry = best_index(fit)
+    # Selecting the minimum needs only a few small columns.  Loading hundreds
+    # of amplitude, error, moment, and correlation branches for every random
+    # start would otherwise dominate memory use for a large scan.
+    fit_quality = fit_frame.AsNumpy(columns=status_columns)
+    selected_entry = int(best_index(fit_quality))
+    fit = fit_frame.Range(selected_entry, selected_entry + 1).AsNumpy(
+        columns=fit_columns
+    )
+    entry = 0
 
     # Preallocate fixed-shape arrays so all scan points can later be inserted
-    # into the common [scale, mass, wave] data cube without Python object arrays.
+    # into the common [asymmetry, mass, wave] data cube without Python object arrays.
     plus = np.empty(len(waves), dtype=complex)
     minus = np.empty(len(waves), dtype=complex)
     fitted = np.empty(len(waves), dtype=complex)
@@ -141,17 +161,39 @@ def read_scan_point(point, waves, moment_pairs):
     fitted_moments = np.array([
         fit[fit_name][entry] for _, fit_name in moment_pairs
     ])
-    return plus, minus, fitted, generated_moments, fitted_moments
+    correlation = read_correlation_matrix(
+        fit,
+        entry,
+        correlation_parameters,
+    )
+
+    result = (
+        plus,
+        minus,
+        fitted,
+        generated_moments,
+        fitted_moments,
+        correlation,
+    )
+
+    del truth
+    del fit
+    del fit_quality
+    del fit_frame
+
+    gc.collect()
+
+    return result
 
 
-def scale_handles(scales, colours):
+def asymmetry_handles(asymmetries, colours):
     """Make a compact colour legend shared by the scan figures."""
     return [
         Line2D(
             [], [], marker="o", linestyle="none", color=colour,
-            label=fr"$s={scale:.3g}$",
+            label=fr"$s={asymmetry:.3g}$",
         )
-        for scale, colour in zip(scales, colours)
+        for asymmetry, colour in zip(asymmetries, colours)
     ]
 
 
@@ -162,6 +204,48 @@ def finish_mass_axis(axis, title, ylabel):
     style_axis(axis, grid=True)
 
 
+def save_scan_figure(figure, path):
+    """Save one scan figure and promptly collect its cyclic artist objects."""
+    save_figure(
+        figure, path, show=SHOW_PLOTS, dpi=FIGURE_DPI
+    )
+    plt.close(figure)
+    del figure
+    gc.collect()
+
+
+def read_correlation_matrix(fit, entry, parameters):
+    """Read pairwise correlation branches from one selected fit-result row."""
+    matrix = np.full((len(parameters), len(parameters)), np.nan)
+    np.fill_diagonal(matrix, 1.0)
+    indices = {name: index for index, name in enumerate(parameters)}
+    for branch, values in fit.items():
+        if not branch.startswith(CORRELATION_PREFIX):
+            continue
+        pair = branch.removeprefix(CORRELATION_PREFIX).split("__", maxsplit=1)
+        if len(pair) != 2:
+            continue
+        name_x, name_y = pair
+        if name_x not in indices or name_y not in indices:
+            continue
+        value = float(values[entry])
+        if not np.isfinite(value) or abs(value) > 1.0 + 1.0e-10:
+            continue
+        x_index = indices[name_x]
+        y_index = indices[name_y]
+        matrix[x_index, y_index] = np.clip(value, -1.0, 1.0)
+        matrix[y_index, x_index] = matrix[x_index, y_index]
+    return matrix
+
+
+def parameter_label(name):
+    """Return a compact label for an amplitude magnitude or phase parameter."""
+    if "phi_" in name:
+        magnitude_name = name[0] + name[name.index("_"):]
+        return rf"$\phi$({wave_label(magnitude_name)})"
+    return wave_label(name)
+
+
 # Read the scan definition written by the runner.  The manifest, rather than a
 # filename parser, is the authoritative mapping from physical coordinates to
 # files and remains reliable if the filename formatting changes.
@@ -169,11 +253,13 @@ with MANIFEST_FILE.open(newline="") as stream:
     points = list(csv.DictReader(stream))
 
 masses = np.array(sorted({float(point["mass_GeV"]) for point in points}))
-scales = np.array(sorted({float(point["k_minus_scale"]) for point in points}))
+asymmetries = np.array(sorted({float(point["k_asymmetry"]) for point in points}))
 # Dictionaries turn manifest values into dense array indices.  Values originate
 # from the same decimal strings, so exact lookup is safe within this process.
 mass_index = {mass: index for index, mass in enumerate(masses)}
-scale_index = {scale: index for index, scale in enumerate(scales)}
+asymmetry_index = {
+    asymmetry: index for index, asymmetry in enumerate(asymmetries)
+}
 
 # Discover the common unpolarized amplitudes and moments from one scan point.
 first_point = next(
@@ -192,9 +278,21 @@ fit_names = {str(name) for name in first_fit.GetColumnNames()}
 
 wave_pattern = re.compile(r"^[ab]_T_\d+_(?:m?\d+)$")
 waves = sorted(
-    (name for name in fit_names if wave_pattern.fullmatch(name)),
+    (
+        name
+        for name in fit_names
+        if wave_pattern.fullmatch(name)
+        and phase_branch(name) in fit_names
+    ),
     key=wave_sort_key,
 )
+if not waves:
+    raise RuntimeError("The fit tree contains no amplitude magnitude/phase pairs")
+correlation_parameters = [
+    parameter
+    for wave in waves
+    for parameter in (wave, phase_branch(wave))
+]
 
 # RH_alpha_0_0_L_M is the unpolarized projection H_alpha_L_M. The alpha=0
 # moments use the conventional H04 name in the unpolarized fit output.
@@ -214,9 +312,9 @@ for truth_name in truth_names:
         moment_pairs.append((truth_name, fit_name))
 moment_pairs.sort(key=moment_sort_key)
 
-# Store all results as arrays indexed by scale, mass, and observable.
-amplitude_shape = (len(scales), len(masses), len(waves))
-moment_shape = (len(scales), len(masses), len(moment_pairs))
+# Store all results as arrays indexed by asymmetry, mass, and observable.
+amplitude_shape = (len(asymmetries), len(masses), len(waves))
+moment_shape = (len(asymmetries), len(masses), len(moment_pairs))
 truth_plus = np.full(amplitude_shape, np.nan + 1j * np.nan, dtype=complex)
 truth_minus = np.full(amplitude_shape, np.nan + 1j * np.nan, dtype=complex)
 fitted_amplitudes = np.full(
@@ -224,30 +322,38 @@ fitted_amplitudes = np.full(
 )
 truth_moments = np.full(moment_shape, np.nan)
 fitted_moments = np.full(moment_shape, np.nan)
+correlation_shape = (
+    len(asymmetries), len(masses),
+    len(correlation_parameters), len(correlation_parameters),
+)
+correlations = np.full(correlation_shape, np.nan)
 
 read_points = 0
 for point in points:
-    result = read_scan_point(point, waves, moment_pairs)
+    result = read_scan_point(
+        point, waves, moment_pairs, correlation_parameters
+    )
     if result is None:
         continue
-    scale_row = scale_index[float(point["k_minus_scale"])]
+    asymmetry_row = asymmetry_index[float(point["k_asymmetry"])]
     mass_column = mass_index[float(point["mass_GeV"])]
-    truth_plus[scale_row, mass_column] = result[0]
-    truth_minus[scale_row, mass_column] = result[1]
-    fitted_amplitudes[scale_row, mass_column] = result[2]
-    truth_moments[scale_row, mass_column] = result[3]
-    fitted_moments[scale_row, mass_column] = result[4]
+    truth_plus[asymmetry_row, mass_column] = result[0]
+    truth_minus[asymmetry_row, mass_column] = result[1]
+    fitted_amplitudes[asymmetry_row, mass_column] = result[2]
+    truth_moments[asymmetry_row, mass_column] = result[3]
+    fitted_moments[asymmetry_row, mass_column] = result[4]
+    correlations[asymmetry_row, mass_column] = result[5]
     read_points += 1
 
 
-# Use colour for scale and a small horizontal displacement for coincident
+# Use colour for asymmetry and a small horizontal displacement for coincident
 # nominal masses. The displacement is multiplicative because the mass grid is
 # logarithmic.
-colours = plt.colormaps["viridis"](np.linspace(0.08, 0.92, len(scales)))
-plot_masses = offset_masses(masses, len(scales))
+colours = plt.colormaps["viridis"](np.linspace(0.08, 0.92, len(asymmetries)))
+plot_masses = offset_masses(masses, len(asymmetries))
 #log_spacing = np.median(np.diff(np.log(masses))) if len(masses) > 1 else 0.0
 #marker_gap = 0.0
-colour_legend = scale_handles(scales, colours)
+colour_legend = asymmetry_handles(asymmetries, colours)
 plt.rcParams.update({
     "font.family": "serif",
     "mathtext.fontset": "stix",
@@ -258,7 +364,7 @@ plt.rcParams.update({
 # Plot each input/output moment comparison in its own file.
 moment_dir = OUTPUT_DIR / "moments"
 for index, (_, moment) in enumerate(moment_pairs):
-    figure, axis = plt.subplots(figsize=(16, 8), constrained_layout=True)
+    figure, axis = plt.subplots(figsize=(16, 8), constrained_layout=False)
     for row, colour in enumerate(colours):
         axis.scatter(
             plot_masses[row], truth_moments[row, :, index],
@@ -277,10 +383,7 @@ for index, (_, moment) in enumerate(moment_pairs):
                label="Fitted moment"),
     ]
     axis.legend(handles=colour_legend + marker_legend, frameon=False, ncol=2)
-    save_figure(
-        figure, moment_dir / f"{moment}.pdf",
-        show=SHOW_PLOTS, dpi=FIGURE_DPI,
-    )
+    save_scan_figure(figure, moment_dir / f"{moment}.pdf")
 
 
 # Plot each amplitude magnitude and phase in separate mass-scan figures.
@@ -289,7 +392,7 @@ error_dir = OUTPUT_DIR / "signed_errors"
 for index, wave in enumerate(waves):
     title = wave_label(wave)
 
-    figure, axis = plt.subplots(figsize=(16, 8), constrained_layout=True)
+    figure, axis = plt.subplots(figsize=(16, 8), constrained_layout=False)
     for row, colour in enumerate(colours):
         axis.scatter(
             plot_masses[row],
@@ -317,12 +420,9 @@ for index, wave in enumerate(waves):
     axis.legend(
         handles=colour_legend + amplitude_markers, frameon=False, ncol=2
     )
-    save_figure(
-        figure, amplitude_dir / f"{wave}_magnitude.pdf",
-        show=SHOW_PLOTS, dpi=FIGURE_DPI,
-    )
+    save_scan_figure(figure, amplitude_dir / f"{wave}_magnitude.pdf")
 
-    figure, axis = plt.subplots(figsize=(16, 8), constrained_layout=True)
+    figure, axis = plt.subplots(figsize=(16, 8), constrained_layout=False)
     for row, colour in enumerate(colours):
         plus_phase = np.angle(truth_plus[row, :, index])
         minus_phase = np.angle(truth_minus[row, :, index])
@@ -349,12 +449,38 @@ for index, wave in enumerate(waves):
     axis.legend(
         handles=colour_legend + amplitude_markers, frameon=False, ncol=2
     )
-    save_figure(
-        figure, amplitude_dir / f"{phase_branch(wave)}.pdf",
-        show=SHOW_PLOTS, dpi=FIGURE_DPI,
-    )
+    save_scan_figure(figure, amplitude_dir / f"{phase_branch(wave)}.pdf")
 
-# Plot the signed amplitude error as a function of the k=-1 scaling.
+
+# Plot the Hessian correlation matrix stored with each selected fit result.
+correlation_dir = OUTPUT_DIR / "correlations"
+correlation_figure_count = 0
+labels = [parameter_label(name) for name in correlation_parameters]
+for asymmetry_row, asymmetry in enumerate(asymmetries):
+    for mass_column, mass in enumerate(masses):
+        matrix = correlations[asymmetry_row, mass_column]
+        off_diagonal = ~np.eye(len(matrix), dtype=bool)
+        if not np.any(np.isfinite(matrix[off_diagonal])):
+            continue
+        figure, axis = plt.subplots(figsize=(18, 16), constrained_layout=False)
+        image = axis.imshow(
+            matrix, vmin=-1.0, vmax=1.0, cmap="coolwarm", interpolation="none"
+        )
+        axis.set_xticks(np.arange(len(labels)), labels, rotation=90)
+        axis.set_yticks(np.arange(len(labels)), labels)
+        axis.set_title(
+            rf"Amplitude correlations: $M={mass:.3f}$ GeV, $s={asymmetry:.3g}$"
+        )
+        figure.colorbar(image, ax=axis, label="Correlation coefficient")
+        save_scan_figure(
+            figure,
+            correlation_dir
+            / f"asymmetry_{asymmetry_row:02d}_mass_{mass_column:02d}_correlation.pdf",
+        )
+        correlation_figure_count += 1
+
+
+# Plot the signed amplitude error as a function of the k-sector asymmetry.
 # Make one figure per mass bin, with natural (a) and unnatural (b)
 # linear and squared-amplitude differences above their respective totals.
 for mass_index, mass in enumerate(masses):
@@ -369,12 +495,11 @@ for mass_index, mass in enumerate(masses):
     signed_squared_error = (
         np.abs(fitted_amplitudes[:, mass_index, :]) ** 2 - quadrature ** 2
     )
-
     figure, axes = plt.subplots(
         2, 4,
         figsize=(28, 10),
         sharex=True,
-        constrained_layout=True,
+        constrained_layout=False,
     )
 
     (
@@ -414,14 +539,14 @@ for mass_index, mass in enumerate(masses):
         natural_colours, natural_waves
     ):
         natural_axis.plot(
-            scales,
+            asymmetries,
             signed_error[:, wave_index],
             marker="o",
             color=colour,
             label=wave_label(wave),
         )
         natural_squared_axis.plot(
-            scales,
+            asymmetries,
             signed_squared_error[:, wave_index],
             marker="o",
             color=colour,
@@ -432,14 +557,14 @@ for mass_index, mass in enumerate(masses):
         unnatural_colours, unnatural_waves
     ):
         unnatural_axis.plot(
-            scales,
+            asymmetries,
             signed_error[:, wave_index],
             marker="o",
             color=colour,
             label=wave_label(wave),
         )
         unnatural_squared_axis.plot(
-            scales,
+            asymmetries,
             signed_squared_error[:, wave_index],
             marker="o",
             color=colour,
@@ -454,7 +579,7 @@ for mass_index, mass in enumerate(masses):
     ):
         wave_indices = [index for index, _ in exchange_waves]
         total_axis.scatter(
-            scales,
+            asymmetries,
             np.sum(errors[:, wave_indices], axis=1),
             marker="o",
             color="tab:blue",
@@ -467,10 +592,8 @@ for mass_index, mass in enumerate(masses):
             linestyle="--",
             linewidth=0.9,
         )
-        axis.set_xlabel(r"Scaling factor (relative to $k=+1$)")
-        # A symmetric-log transform keeps the physically useful zero-scale
-        # point while still separating values that span several decades.
-        axis.set_xscale("symlog", linthresh=0.05)
+        axis.set_xlabel(r"K-sector asymmetry $s$")
+        axis.set_xlim(-1.05, 1.05)
         style_axis(axis, grid=True)
 
     natural_axis.set_title("Natural exchange — amplitude difference")
@@ -512,16 +635,18 @@ for mass_index, mass in enumerate(masses):
         rf"Invariant mass $M={mass:.3f}$ GeV"
     )
 
-    save_figure(
+    save_scan_figure(
         figure,
         error_dir / f"signed_error_mass_{mass:.3f}.pdf",
-        show=SHOW_PLOTS,
-        dpi=FIGURE_DPI,
     )
+
 
 
 # Each moment produces one figure; each wave produces magnitude and phase
 # figures; each mass point produces one signed-error summary figure.
-figure_count = len(moment_pairs) + 2 * len(waves) + len(masses)
+figure_count = (
+    len(moment_pairs) + 2 * len(waves) + len(masses)
+    + correlation_figure_count
+)
 print(f"Read {read_points} of {len(points)} scan points")
 print(f"Wrote {figure_count} figures beneath {OUTPUT_DIR}")

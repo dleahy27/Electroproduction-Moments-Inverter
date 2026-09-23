@@ -9,7 +9,7 @@ A_quad = sqrt(|A_+|^2 + |A_-|^2).
 ```
 
 Select `KPositiveDominant` or `KReflectivitySplit` in `FixedMoments()` inside
-`app/UserSettings.h`. The suppression values and repeat count are controlled
+the local `settings.h`. The suppression values and repeat count are controlled
 at the top of `run.py`.
 
 The default base seed is nonzero. Each suppression/repeat pair receives a

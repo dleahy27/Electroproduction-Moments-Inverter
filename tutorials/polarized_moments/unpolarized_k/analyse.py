@@ -255,18 +255,18 @@ for axis, (group, title) in zip(axes, groups):
         axis.plot(fitted.real, fitted.imag, "o", color=colour,
                   markersize=12, label=wave_label(wave))
         axis.plot(generated[0].real, generated[0].imag, "^", color=colour,
-                  markersize=11)
+                  markersize=11, markeredgecolor="black")
         axis.plot(generated[1].real, generated[1].imag, "v", color=colour,
-                  markersize=11)
+                  markersize=11, markeredgecolor="black")
     axis.set(xlim=(-1, 1), ylim=(-1, 1), ylabel="Im", title=title)
     axis.set_aspect("equal", adjustable="box")
     style_axis(axis, grid=True)
     handles, _ = axis.get_legend_handles_labels()
     handles.extend([
         Line2D([], [], marker="^", color="black", linestyle="none",
-               label=r"Generated $k=+1$"),
+               label=r"Generated $k=+1$", markeredgecolor="black"),
         Line2D([], [], marker="v", color="black", linestyle="none",
-               label=r"Generated $k=-1$"),
+               label=r"Generated $k=-1$", markeredgecolor="black"),
     ])
     axis.legend(handles=handles, loc="upper left", frameon=False)
 axes[-1].set_xlabel("Re")

@@ -14,11 +14,14 @@ from tutorials.paths import PROJECT_DIR
 # Settings: edit the shared channel list in datasets.py to change this sweep.
 TREE_NAME = "expMoments"
 ELECTROPRODUCTION = True
-STARTS = None  # None uses the value in app/UserSettings.h.
-WORKERS = None  # None uses the value in app/UserSettings.h.
+STARTS = 10_000
+WORKERS = 10
+SEED = 0
+USE_HESSE = True
 
 
 EMI = PROJECT_DIR / "build" / "emi"
+SETTINGS = PROJECT_DIR / "tutorials/electroproduction_paper/main/experimental_settings.h"
 OUTPUT_DIR = PROJECT_DIR / "tutorials/electroproduction_paper/main/output/root"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -28,16 +31,18 @@ for name in MAIN_CHANNEL_KEYS:
     for bin_number in range(len(channel.q2)):
         command = [
             str(EMI), "fit",
+            "--settings", str(SETTINGS),
             "--input", str(channel.input_file),
             "--tree", TREE_NAME,
             "--bin", str(bin_number),
             "--epsilon", str(channel.epsilon),
             "--output", str(OUTPUT_DIR / f"{name}_fit_{bin_number}.root"),
+            "--starts", str(STARTS),
+            "--workers", str(WORKERS),
+            "--seed", str(SEED),
         ]
         if ELECTROPRODUCTION:
             command.append("--electro")
-        if STARTS is not None:
-            command.extend(["--starts", str(STARTS)])
-        if WORKERS is not None:
-            command.extend(["--workers", str(WORKERS)])
+        if not USE_HESSE:
+            command.append("--no-hesse")
         subprocess.run(command, cwd=PROJECT_DIR, check=True)

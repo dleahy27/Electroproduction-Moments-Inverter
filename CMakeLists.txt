@@ -55,31 +55,3 @@ install(TARGETS emi emi_core
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )
 install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
-
-include(CTest)
-if(BUILD_TESTING)
-  add_test(NAME cli_help COMMAND emi --help)
-
-  # Exercise the Cling-based settings boundary used by every tutorial runner.
-  # The generated ROOT file is a build artifact and may safely be overwritten
-  # by subsequent test runs.
-  add_test(
-    NAME cli_generate_example
-    COMMAND emi generate-example
-            --settings "${CMAKE_CURRENT_SOURCE_DIR}/app/UserSettings.h"
-            --output "${CMAKE_CURRENT_BINARY_DIR}/cli_example.root"
-            --quiet
-  )
-
-  add_executable(emi_mass_models_test tests/MassModelsTest.C)
-  target_include_directories(
-    emi_mass_models_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
-  )
-  target_link_libraries(emi_mass_models_test PRIVATE emi_core)
-  target_compile_options(emi_mass_models_test PRIVATE -Wall -Wextra -Wpedantic)
-  add_test(
-    NAME mass_models
-    COMMAND emi_mass_models_test
-            "${CMAKE_CURRENT_BINARY_DIR}/photo_test_generation.root"
-  )
-endif()

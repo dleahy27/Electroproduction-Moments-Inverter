@@ -5,6 +5,8 @@ around the paper analysis. Published ROOT moment files are versioned in the
 local `input/` directory. Central channel metadata (beam, meson, `Q^2`,
 invariant mass, epsilon, and published `R`) is defined once in `datasets.py`.
 Generated ROOT results and figures stay inside each case directory.
+Every runner loads a settings header from its own case directory, so changing
+the example in `app/UserSettings.h` cannot silently change a tutorial model.
 
 Build EMI before running a case:
 

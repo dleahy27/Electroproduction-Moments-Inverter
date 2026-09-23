@@ -288,7 +288,6 @@ static void FillRandomModeAmplitudes(const EvaluationContext& ctx,
 static PhotoTestFillInfo FillPhotoTestAmplitudes(
     const EvaluationContext& ctx,
     const FixedMomentsConfig& generation,
-    TRandom3& random,
     std::vector<double>& fullVals) {
   if (!generation.photoproduction || !ctx.cfg.photoproduction) {
     throw std::invalid_argument(
@@ -334,21 +333,34 @@ static PhotoTestFillInfo FillPhotoTestAmplitudes(
 
   MassModels::PhotoTest model({
       generation.massModel.backgroundEnabled,
-      generation.massModel.kMinusScale,
+      generation.massModel.kAsymmetry,
   });
   auto amplitudes = model.Evaluate(*generation.massModel.massGeV);
 
-  const auto reference = std::find_if(
+  auto reference = std::find_if(
       amplitudes.begin(), amplitudes.end(),
       [](const MassModels::ComplexAmplitude& amplitude) {
         const auto& key = amplitude.key;
         return key.reflectivity == 'a' && key.orientation == 'T' &&
                key.l == 2 && key.m == 2 && key.k == 1;
       });
+  // The context fixes a k=+1 phase reference. At s=-1 that amplitude is
+  // intentionally zero, so use its k=-1 counterpart solely to choose a
+  // harmless representation for the nonzero sector.
   if (reference == amplitudes.end() ||
       !(std::abs(reference->value) > 1e-14)) {
+    reference = std::find_if(
+        amplitudes.begin(), amplitudes.end(),
+        [](const MassModels::ComplexAmplitude& amplitude) {
+          const auto& key = amplitude.key;
+          return key.reflectivity == 'a' && key.orientation == 'T' &&
+                 key.l == 2 && key.m == 2 && key.k == -1 &&
+                 std::abs(amplitude.value) > 1e-14;
+        });
+  }
+  if (reference == amplitudes.end()) {
     throw std::runtime_error(
-        "PhotoTest phase reference a_T_2_2_1 is zero");
+        "PhotoTest has no nonzero amplitude for its phase rotation");
   }
 
   PhotoTestFillInfo info;
@@ -361,26 +373,6 @@ static PhotoTestFillInfo FillPhotoTestAmplitudes(
   for (auto& amplitude : amplitudes) {
       amplitude.value *= phaseRotation;
   }
-  // Give every non-reference amplitude an independent, mass-independent
-  // production phase. The a_T_2_2_1 amplitude remains the phase reference.
-  for (auto& amplitude : amplitudes) {
-      const auto& key = amplitude.key;
-
-      const bool isReference =
-          key.reflectivity == 'a' &&
-          key.orientation == 'T' &&
-          key.l == 2 &&
-          key.m == 2 &&
-          key.k == 1;
-
-      if (isReference || std::abs(amplitude.value) <= 1e-14) {
-          continue;
-      }
-
-      const double randomPhase = random.Uniform(-kPi, kPi);
-      amplitude.value *= std::polar(1.0, randomPhase);
-  }
-
   std::unordered_map<long long, int> parameterIndices;
   // Match semantic mass-model keys to the parameter ordering constructed for
   // the selected wave, reflectivity, and polarization configuration.
@@ -463,7 +455,7 @@ static std::optional<PhotoTestFillInfo> FillConfiguredAmplitudes(
     return std::nullopt;
   }
   if (generation.mode == FixedGenerationMode::PhotoTest) {
-    return FillPhotoTestAmplitudes(ctx, generation, random, fullVals);
+    return FillPhotoTestAmplitudes(ctx, generation, fullVals);
   }
   FillRandomModeAmplitudes(ctx, generation, random, fullVals);
   return std::nullopt;
@@ -540,8 +532,14 @@ static std::vector<std::string> RequestedMomentSeedBranches(const InternalConfig
     if (alpha == 4) continue;
     for (int beta = 0; beta <= betaMax; ++beta) {
       for (int delta = 0; delta <= deltaMax; ++delta) {
-        const int parity = ((alpha == 2 || alpha == 3 || alpha == 6 || alpha == 7) ? -1 : 1)
-                         * (beta >= 2 ? -1 : 1) * (delta >= 2 ? -1 : 1);
+        // Spin is an axial vector, so its in-plane Pauli components x and z
+        // (indices 1 and 3) are odd under reflection in the production plane.
+        // This must match PolarizationParity() when deciding whether an M=0
+        // seed branch is physically allowed.
+        const int parity =
+            ((alpha == 2 || alpha == 3 || alpha == 6 || alpha == 7) ? -1 : 1)
+            * ((beta == 1 || beta == 3) ? -1 : 1)
+            * ((delta == 1 || delta == 3) ? -1 : 1);
         for (int L = 0; L <= 2 * maximumL; ++L) {
           for (int M = 0; M <= L; ++M) {
             if (parity < 0 && M == 0) continue;
@@ -664,8 +662,8 @@ static void GenerateFixedPoint(const FixedMomentsConfig& generation,
     TObjString("PhotoTest").Write("mass_model");
     TParameter<double>("invariant_mass_GeV",
                        *generation.massModel.massGeV).Write();
-    TParameter<double>("k_minus_scale",
-                       generation.massModel.kMinusScale).Write();
+    TParameter<double>("k_asymmetry",
+                       generation.massModel.kAsymmetry).Write();
     TParameter<int>("background_enabled",
                     generation.massModel.backgroundEnabled ? 1 : 0).Write();
     TParameter<double>("reference_phase_before_rotation",

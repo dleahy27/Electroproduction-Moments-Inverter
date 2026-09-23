@@ -11,10 +11,10 @@ from tutorials.paths import PROJECT_DIR
 
 
 # Settings: edit these values before running the closure test.
-POLARIZATIONS = ["initial", "recoil"]
+POLARIZATIONS = ("initial", "recoil")
 EPSILON = 0.8
-STARTS = 10_000
-WORKERS = 1
+STARTS = 100_000
+WORKERS = 10
 SEED = 12_345
 K_GAUGE = None  # For example, "b:T:1:0". It does not apply to "both".
 USE_HESSE = False
@@ -22,6 +22,7 @@ USE_HESSE = False
 
 EMI = PROJECT_DIR / "build" / "emi"
 CASE_DIR = PROJECT_DIR / "tutorials/polarized_moments/fixed_single"
+SETTINGS = CASE_DIR / "settings.h"
 GENERATED_DIR = CASE_DIR / "output/generated"
 OUTPUT_DIR = CASE_DIR / "output/root"
 GENERATED_DIR.mkdir(parents=True, exist_ok=True)
@@ -37,9 +38,10 @@ for polarization in POLARIZATIONS:
     subprocess.run(
         [
             str(EMI), "generate-example",
-            "--polarization", polarization,
+            "--settings", str(SETTINGS),
             "--epsilon", str(EPSILON),
             "--output", str(input_file),
+            "--polarization", polarization,
             "--quiet",
             *gauge,
         ],
@@ -50,6 +52,7 @@ for polarization in POLARIZATIONS:
     print(f"Fitting {polarization}-polarization closure input")
     fit_command = [
         str(EMI), "fit",
+        "--settings", str(SETTINGS),
         "--electro",
         "--input", str(input_file),
         "--tree", "genMoments",

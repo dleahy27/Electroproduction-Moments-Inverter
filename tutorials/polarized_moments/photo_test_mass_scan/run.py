@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 
-"""Generate PhotoTest mass-scan points and fit them with the single-k model.
+"""Generate PhotoTest mass-asymmetry points and fit the single-k model.
 
-For every invariant mass and k-minus scale, truth is generated from interfering
-resonances and its unpolarized projection is fitted.  A CSV manifest records the
-exact pairing without reconstructing floating-point values from filenames.
+For every invariant mass and k-sector asymmetry, truth is generated from
+interfering resonances and its unpolarized projection is fitted. A CSV manifest
+records the exact pairing without reconstructing floating-point values from
+filenames.
 """
 
 import csv
@@ -17,11 +18,11 @@ from tutorials.paths import PROJECT_DIR
 MASS_BINS = 20
 MASS_MIN = 0.5
 MASS_MAX = 2
-SCALES = (0.0, 0.05, 0.15, 0.3, 1.0, 10.0, 100.0)
-STARTS = 10000
+ASYMMETRIES = (-1.0, -0.75, -0.5, 0.0, 0.5, 0.75, 1.0)
+STARTS = 100_000
 WORKERS = 10
 SEED = 1441
-SETTINGS_FILE = "app/UserSettings.h"
+SETTINGS_FILE = "tutorials/polarized_moments/photo_test_mass_scan/settings.h"
 INCLUDE_BACKGROUND = False
 # False resumes a partial scan. Set True only when the model or settings have
 # changed and every existing truth/fit pair must be replaced.
@@ -38,37 +39,37 @@ fit_dir = CASE_DIR / "output/root"
 truth_dir.mkdir(parents=True, exist_ok=True)
 fit_dir.mkdir(parents=True, exist_ok=True)
 
-# ``linspace`` includes both endpoints.  Every scale therefore samples the same
+# ``linspace`` includes both endpoints. Every asymmetry therefore samples the same
 # physical mass grid, which permits point-by-point comparisons in the plots.
 masses = np.linspace(MASS_MIN, MASS_MAX, MASS_BINS)
 
-# Generate and fit every mass/scale pair, reusing completed files by default.
+# Generate and fit every mass/asymmetry pair, reusing completed files by default.
 manifest_rows = []
-total = len(masses) * len(SCALES)
+total = len(masses) * len(ASYMMETRIES)
 point_number = 0
-for scale_index, scale in enumerate(SCALES):
+for asymmetry_index, asymmetry in enumerate(ASYMMETRIES):
     for mass_index, mass in enumerate(masses):
         point_number += 1
-        stem = f"scale_{scale_index:02d}_mass_{mass_index:02d}"
+        stem = f"asymmetry_{asymmetry_index:02d}_mass_{mass_index:02d}"
         truth_file = truth_dir / f"{stem}_truth.root"
         fit_file = fit_dir / f"{stem}_fit.root"
         # Reusing one seed holds the random-start sequence fixed between scan
-        # points.  Changes across mass or scale then reflect the physics input
+        # points. Changes across mass or asymmetry then reflect the physics input
         # rather than a different draw of initial minimizer coordinates.
-        run_seed = SEED #+ scale_index * len(masses) + mass_index
+        run_seed = SEED #+ asymmetry_index * len(masses) + mass_index
 
         manifest_rows.append({
-            "scale_index": scale_index,
+            "asymmetry_index": asymmetry_index,
             "mass_index": mass_index,
             "mass_GeV": f"{mass:.17g}",
-            "k_minus_scale": f"{scale:.17g}",
+            "k_asymmetry": f"{asymmetry:.17g}",
             "seed": run_seed,
             "truth_file": str(truth_file.relative_to(PROJECT_DIR)),
             "fit_file": str(fit_file.relative_to(PROJECT_DIR)),
         })
         print(
             f"[{point_number:3d}/{total}] mass={mass:.7g} GeV, "
-            f"k-minus scale={scale:.5g}",
+            f"k asymmetry s={asymmetry:.5g}",
             flush=True,
         )
 
@@ -82,7 +83,7 @@ for scale_index, scale in enumerate(SCALES):
                 "--settings", str(SETTINGS),
                 "--output", str(truth_file),
                 "--mass", f"{mass:.17g}",
-                "--k-minus-scale", f"{scale:.17g}",
+                "--k-asymmetry", f"{asymmetry:.17g}",
                 "--quiet",
             ]
             if not INCLUDE_BACKGROUND:

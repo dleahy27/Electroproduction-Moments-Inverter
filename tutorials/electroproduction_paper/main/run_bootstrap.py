@@ -19,31 +19,35 @@ TREE_NAME = "expMoments"
 BIN = 0
 EPSILON = CHANNEL.epsilon
 ELECTROPRODUCTION = True
-TOYS = None  # None uses the value in app/UserSettings.h.
-STARTS_PER_TOY = None  # None uses the value in app/UserSettings.h.
-WORKERS = None  # None uses the value in app/UserSettings.h.
+TOYS = 1_000
+STARTS_PER_TOY = 1_000
+WORKERS = 10
+SEED = 0
+USE_HESSE = False
 
 
 # Build the EMI command from the settings above.
 output_path = PROJECT_DIR / OUTPUT_FILE
 output_path.parent.mkdir(parents=True, exist_ok=True)
+settings_file = PROJECT_DIR / "tutorials/electroproduction_paper/main/experimental_settings.h"
 command = [
     str(PROJECT_DIR / "build" / "emi"),
     "bootstrap",
+    "--settings", str(settings_file),
     "--input", str(INPUT_FILE),
     "--tree", TREE_NAME,
     "--bin", str(BIN),
     "--epsilon", str(EPSILON),
     "--output", str(output_path),
+    "--toys", str(TOYS),
+    "--starts-per-toy", str(STARTS_PER_TOY),
+    "--workers", str(WORKERS),
+    "--seed", str(SEED),
 ]
 if ELECTROPRODUCTION:
     command.append("--electro")
-if TOYS is not None:
-    command.extend(["--toys", str(TOYS)])
-if STARTS_PER_TOY is not None:
-    command.extend(["--starts-per-toy", str(STARTS_PER_TOY)])
-if WORKERS is not None:
-    command.extend(["--workers", str(WORKERS)])
+if USE_HESSE:
+    command.append("--hesse")
 
 # Run the bootstrap and stop if EMI reports an error.
 subprocess.run(command, cwd=PROJECT_DIR, check=True)

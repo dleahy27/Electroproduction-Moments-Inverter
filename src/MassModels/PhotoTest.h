@@ -2,7 +2,7 @@
 
 // Public interface for the deterministic photoproduction mass-scan model.
 // Options deliberately expose only the two study controls: an additive S-wave
-// background and the relative strength of the negative-k partner sector.
+// background and a signed asymmetry between the two k sectors.
 
 // Interface to the deterministic photoproduction closure-test model.  Keeping
 // its options explicit makes every generated scan point reproducible.
@@ -13,13 +13,13 @@
 
 namespace emi::MassModels {
 
-// Hard-coded gamma p -> eta pi0 p truth model. The k=+1 amplitudes define the
-// model and each k=-1 amplitude is a scaled copy of its k=+1 partner.
+// Hard-coded gamma p -> eta pi0 p truth model. The shared wave model is split
+// between k=+1 and k=-1 by a signed asymmetry, with a fixed relative phase.
 class PhotoTest final {
 public:
   struct Options {
     bool backgroundEnabled = true;
-    double kMinusScale = 1.0;
+    double kAsymmetry = 0.0;
   };
 
   PhotoTest();

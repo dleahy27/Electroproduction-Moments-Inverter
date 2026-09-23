@@ -12,7 +12,7 @@ from tutorials.paths import PROJECT_DIR
 
 
 # Settings: edit these values before running the study.
-SETTINGS_FILE = "app/UserSettings.h"
+SETTINGS_FILE = "tutorials/polarized_moments/unpolarized_k/settings.h"
 EPSILON = None  # None uses the value in the settings file.
 STARTS = 1_000
 WORKERS = 8

@@ -9,8 +9,8 @@ directory; all results from this tutorial are written locally.
 
 - `run_fit.py` and `run_bootstrap.py` run one editable data bin.
 - `run_all_fits.py` and `run_all_bootstraps.py` run every configured channel.
-- `run_fixed_amplitudes.py` generates and fits the fixed photoproduction
-  closure point configured in `app/UserSettings.h`.
+- `run_fixed_amplitudes.py` generates and fits the deterministic full S/P/D
+  electroproduction point in `fixed_amplitudes_settings.h`.
 - `analyse_experimental_hessian.py` and
   `analyse_experimental_bootstrap.py` plot the fitted amplitudes.
 - `analyse_hessian_moments.py` and `analyse_bootstrap_moments.py` compare fitted
@@ -36,8 +36,9 @@ python -m tutorials.electroproduction_paper.main.run_all_fits
 python -m tutorials.electroproduction_paper.main.run_all_bootstraps
 ```
 
-The fit cost comes from `app/UserSettings.h` unless the optional values near
-the top of a runner are set explicitly.
+The P-wave content is defined in `experimental_settings.h`. Fit, Hessian, and
+bootstrap controls are passed explicitly by the runners as command-line
+overrides.
 
 Each experimental bin is fitted with many random starting points. The Hessian
 analyses select the accepted entry with minimum chi square. Bootstrap analyses
@@ -58,7 +59,8 @@ python -m tutorials.electroproduction_paper.main.analyse_R_bootstrap
 
 ## Fixed-amplitude closure
 
-Set `FixedMoments()` in `app/UserSettings.h`, then run:
+Edit `fixed_amplitudes_settings.h` to change the generated point or its
+near-truth initialization distributions, then run:
 
 ```bash
 python -m tutorials.electroproduction_paper.main.run_fixed_amplitudes
@@ -74,5 +76,5 @@ output/plots/       all figures, grouped by analysis
 ```
 
 Delete a result or set the runner's overwrite option when changing the wave
-model. Reusing files produced with a different `UserSettings.h` can otherwise
+model. Reusing files produced with a different settings header can otherwise
 mix incompatible branch layouts.

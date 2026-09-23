@@ -33,7 +33,9 @@ package is not intended as a standalone wheel detached from the checkout.
 
 1. Read the case README and edit the uppercase settings near the top of its
    runner. In particular, check random starts, bootstrap samples, worker count,
-   seed, and overwrite policy before a large job.
+   seed, and overwrite policy before a large job. Each runnable case also owns
+   a local `settings.h` (or a clearly named settings header) containing its
+   wave model and generation choices.
 2. Run the case's `run` or `run_*` module. All commands use `subprocess.run`
    with `check=True`, so a failed C++ job stops the scan immediately.
 3. Run the matching `analyse` module. It reads the produced ROOT trees and

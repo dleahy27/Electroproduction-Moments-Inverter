@@ -35,4 +35,7 @@ std::complex<double> ConstantWidthBreitWigner(
   return numerator / denominator;
 }
 
+// In future can add more complex mass parametrisations of resonances
+// See Flatte, BWs taking into account centrifugal suppression etc.
+
 } // namespace emi::MassModels

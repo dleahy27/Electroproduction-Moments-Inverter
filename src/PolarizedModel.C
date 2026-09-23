@@ -89,11 +89,15 @@ double PhotonResponse(int alpha, int row, int column, bool& carriesI) {
 
 int PolarizationParity(int alpha, int beta, int delta) {
   // Combining the photon, target, and recoil transformations determines
-  // whether this tensor component is even or odd under azimuthal reflection.
+  // whether this tensor component is even or odd under reflection in the
+  // production plane. Nucleon spin is an axial vector: its in-plane x and z
+  // components (Pauli indices 1 and 3) change sign, while the normal y
+  // component (index 2) does not. Treating indices 2 and 3 as odd would remove
+  // the physical interference between the k=+1 and k=-1 amplitudes.
   const int photon = (alpha == 2 || alpha == 3 || alpha == 6 || alpha == 7)
                          ? -1 : 1;
-  const int target = beta >= 2 ? -1 : 1;
-  const int recoil = delta >= 2 ? -1 : 1;
+  const int target = (beta == 1 || beta == 3) ? -1 : 1;
+  const int recoil = (delta == 1 || delta == 3) ? -1 : 1;
   return photon * target * recoil;
 }
 

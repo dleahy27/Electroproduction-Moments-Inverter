@@ -36,10 +36,10 @@ inline ModelConfig Model() {
 // Editable configuration used by `emi generate-fixed`.
 inline FixedMomentsConfig FixedMoments() {
   FixedMomentsConfig generation;
-  generation.output = "fixed_photomoments.root";
+  generation.output = "fixed_recoil_moments.root";
   generation.photoproduction = true; // false selects electroproduction.
   generation.epsilon = 0.8;          // Ignored for photoproduction.
-  generation.seed = 12345;
+  generation.seed = 44335;
   generation.printAmplitudes = true;
 
   // Generate with the same waves as the fit, but retain both k sectors in
@@ -50,13 +50,13 @@ inline FixedMomentsConfig FixedMoments() {
   // PhotoTest evaluates a deterministic S/P/D Breit-Wigner model at one mass.
   generation.mode = FixedGenerationMode::PhotoTest;
   generation.massModel.massGeV = 1.300;
-  generation.massModel.backgroundEnabled = true;
-  generation.massModel.kMinusScale = 1.0;
-
-  // Used only by the non-custom random modes.
-  generation.randomMinimum = 0.20;
-  generation.randomMaximum = 1.00;
-  generation.suppression = 0.10;
+  generation.massModel.backgroundEnabled = false;
+  generation.massModel.kAsymmetry = 0.0;
+//
+//   // Used only by the non-custom random modes.
+//   generation.randomMinimum = 0.20;
+//   generation.randomMaximum = 1.00;
+//   generation.suppression = 0.10;
 
   // Fixed/random lists are unused by deterministic mass-model modes.
   generation.fixedAmplitudes = {};
@@ -69,7 +69,7 @@ inline FixedMomentsConfig FixedMoments() {
 // arguments may still override these values for individual runs.
 inline FitConfig Fit() {
   FitConfig fit;
-  fit.input = "fixed_photomoments.root";
+  fit.input = "fixed_recoil_moments.root";
   fit.tree = "genMoments";
   fit.output = "fixed_photomoments_unpolarized_fit.root";
   fit.photoproduction = true;
@@ -78,8 +78,17 @@ inline FitConfig Fit() {
       .SetStarts(10000)
       .SetWorkers(1)
       .SetSeed(12345)
-      .UseHesse(false)
+      .UseHesse(true)
       .UseNumericalGradients(false);
+
+  // Optionally give every independent amplitude magnitude (except the one
+  // derived from normalization) a Gaussian start distribution. Use k=0 for
+  // unpolarized fits. If this list is incomplete, EMI uses its default broad
+  // random initialization for the complete start instead.
+  // fit.initialAmplitudes = {
+  //     {'a', 'T', 0, 0, 0, 0.30, 0.05},
+  //     // ...one row for every other independent magnitude...
+  // };
   return fit;
 }
 
@@ -91,7 +100,7 @@ inline BootstrapConfig Bootstrap() {
   bootstrap.fit = Fit();
   bootstrap.toys = 1000;
   bootstrap.startsPerToy = 1000;
-  bootstrap.fit.UseHesse(false);
+  bootstrap.fit.UseHesse(true);
   return bootstrap;
 }
 

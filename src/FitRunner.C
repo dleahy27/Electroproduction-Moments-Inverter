@@ -38,6 +38,24 @@ void MakeErrorBranches(TTree* tree, const std::vector<Definition>& definitions,
   }
 }
 
+template <typename Definition>
+void MakeCorrelationBranches(
+    TTree* tree, const std::vector<Definition>& definitions,
+    std::vector<double>& storage) {
+  const std::size_t count = definitions.size();
+  storage.assign(count * (count - 1) / 2,
+                 std::numeric_limits<double>::quiet_NaN());
+  std::size_t pairIndex = 0;
+  for (std::size_t first = 0; first < count; ++first) {
+    for (std::size_t second = first + 1; second < count; ++second) {
+      const std::string name =
+          "corr__" + definitions[first].name + "__" +
+          definitions[second].name;
+      tree->Branch(name.c_str(), &storage[pairIndex++]);
+    }
+  }
+}
+
 std::filesystem::path PartFile(const std::filesystem::path& output, unsigned worker) {
   // Each fork writes a complete ROOT file. ROOT's merger combines trees more
   // safely than several processes attempting to append to one file.
@@ -81,13 +99,17 @@ void RunWorker(const detail::InternalConfig& config,
   tree.Branch("log_val", &logValue);
 
   std::vector<double> parameters, rawMoments, outputMoments;
-  std::vector<double> parameterErrors, outputMomentErrors;
+  std::vector<double> parameterErrors, parameterCorrelations;
+  std::vector<double> outputMomentErrors;
   double ratio = std::numeric_limits<double>::quiet_NaN();
   double ratioError = std::numeric_limits<double>::quiet_NaN();
   detail::MakeParameterBranches(&tree, context->fullPars, parameters);
   detail::MakeOutputMomentBranches(&tree, context->outputMoments, outputMoments);
   if (config.runHesse) {
     MakeErrorBranches(&tree, context->fullPars, parameterErrors);
+    MakeCorrelationBranches(
+        &tree, context->fullPars, parameterCorrelations
+    );
     MakeErrorBranches(&tree, context->outputMoments, outputMomentErrors);
   }
   tree.Branch("R", &ratio);
@@ -134,6 +156,7 @@ void RunWorker(const detail::InternalConfig& config,
       detail::FillHessianProducts(
           *context, *result.minimizer, parameters,
           hesseOk && covarianceStatus >= 1, parameterErrors,
+          parameterCorrelations,
           outputMomentErrors, ratio, ratioError);
     }
     tree.Fill();

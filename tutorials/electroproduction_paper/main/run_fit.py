@@ -2,8 +2,8 @@
 
 """Fit one experimental moment bin.
 
-The constants below define one reproducible inversion.  Optional CLI values are
-added only when set, leaving UserSettings.h as the source of default controls.
+The constants below define one reproducible inversion. The local settings file
+defines the P-wave model; run controls are passed as command-line overrides.
 """
 
 import subprocess
@@ -19,28 +19,33 @@ TREE_NAME = "expMoments"
 BIN = 0
 EPSILON = CHANNEL.epsilon
 ELECTROPRODUCTION = True
-STARTS = None  # None uses the value in app/UserSettings.h.
-WORKERS = None  # None uses the value in app/UserSettings.h.
+STARTS = 10_000
+WORKERS = 10
+SEED = 0
+USE_HESSE = True
 
 
 # Build the EMI command from the settings above.
 output_path = PROJECT_DIR / OUTPUT_FILE
 output_path.parent.mkdir(parents=True, exist_ok=True)
+settings_file = PROJECT_DIR / "tutorials/electroproduction_paper/main/experimental_settings.h"
 command = [
     str(PROJECT_DIR / "build" / "emi"),
     "fit",
+    "--settings", str(settings_file),
     "--input", str(INPUT_FILE),
     "--tree", TREE_NAME,
     "--bin", str(BIN),
     "--epsilon", str(EPSILON),
     "--output", str(output_path),
+    "--starts", str(STARTS),
+    "--workers", str(WORKERS),
+    "--seed", str(SEED),
 ]
 if ELECTROPRODUCTION:
     command.append("--electro")
-if STARTS is not None:
-    command.extend(["--starts", str(STARTS)])
-if WORKERS is not None:
-    command.extend(["--workers", str(WORKERS)])
+if not USE_HESSE:
+    command.append("--no-hesse")
 
 # Run the fit and stop if EMI reports an error.
 subprocess.run(command, cwd=PROJECT_DIR, check=True)

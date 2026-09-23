@@ -51,14 +51,16 @@ def read_tree(path, tree_name, columns, definitions=None):
 def best_index(data, objective="chi2", require_fit_ok=True):
     """Return the accepted row with the smallest finite objective value.
 
-    A Minuit invocation can finish with finite parameters while still carrying
-    a failure status.  Applying all available quality flags prevents such a row
-    from winning solely because its reported objective happens to be small.
+    When ``fit_ok`` is stored, it records the return value of Minuit's
+    minimization call and is the authoritative convergence flag.  A non-zero
+    Minuit status can still accompany a converged fit (for example when its
+    covariance needed adjustment), so status is used only as a fallback for
+    older trees that do not contain ``fit_ok``.
     """
     good = np.isfinite(data[objective])
     if require_fit_ok and "fit_ok" in data:
         good &= data["fit_ok"].astype(bool)
-    if "status" in data:
+    elif require_fit_ok and "status" in data:
         good &= data["status"] == 0
     indices = np.flatnonzero(good)
     if not len(indices):
