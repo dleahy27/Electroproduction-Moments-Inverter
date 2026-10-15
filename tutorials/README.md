@@ -1,70 +1,66 @@
 # EMI tutorials
 
-Each tutorial is a complete, reproducible physics study: a runner creates ROOT
-results, an analysis module turns those results into figures, and a local
-README records the model assumptions. Generated files remain below that
-tutorial's ignored `output/` directory.
+Each case has a runner, an analysis script and a README describing its model.
+The runner writes ROOT files; the analysis writes figures. Generated files
+stay in the case's ignored `output/` directory.
 
 ## Setup
 
-Build and test EMI from the repository root:
+From the repository root:
 
 ```bash
-python build.py --test
-```
-
-Install these Python modules in editable mode so they can be called from any
-working directory:
-
-```bash
+conda env create -f environment.yml
+conda activate emi
+python build.py
 python -m pip install -e ./tutorials
 ```
 
-The package declares NumPy and Matplotlib. PyROOT is supplied by the ROOT
-installation used for the C++ build and must be available in the selected
-Python environment. Without installation, run modules from the repository root
-so Python can resolve the `tutorials` package.
+The runners use `build/emi` and locate their inputs and outputs relative to the
+checkout. The editable Python installation lets you run them from another
+working directory. C++ ROOT and PyROOT must come from the same installation;
+the `emi` environment provides both.
 
-Editable installation is intentional: the runners locate the repository-local
-`build/emi` executable and keep their results beside the tutorial sources. This
-package is not intended as a standalone wheel detached from the checkout.
+## Running a case
 
-## Workflow
+Read the case README and check its settings before starting a large job.
+Wave choices and generation models are in its settings header. Run counts,
+worker counts, seeds and overwrite options are either in that header or near
+the top of the runner.
 
-1. Read the case README and edit the uppercase settings near the top of its
-   runner. In particular, check random starts, bootstrap samples, worker count,
-   seed, and overwrite policy before a large job. Each runnable case also owns
-   a local `settings.h` (or a clearly named settings header) containing its
-   wave model and generation choices.
-2. Run the case's `run` or `run_*` module. All commands use `subprocess.run`
-   with `check=True`, so a failed C++ job stops the scan immediately.
-3. Run the matching `analyse` module. It reads the produced ROOT trees and
-   writes PDF figures below `output/plots`.
-
-Use a nonzero seed when results must be reproducible. In EMI, seed zero asks
-ROOT to initialize from a changing machine seed.
-
-The shared [`analysis_utils.py`](analysis_utils.py) documents tree conversion,
-best-minimum selection, circular phase statistics, and amplitude branch names.
-Reaction-specific channel metadata is in
-[`electroproduction_paper/datasets.py`](electroproduction_paper/datasets.py).
-
-## Tutorial families
-
-- [Electroproduction paper analysis](electroproduction_paper/README.md): fits
-  published rho, omega, phi, and GlueX moment data and compares Hessian and
-  bootstrap uncertainty estimates.
-- [Polarized moments analysis](polarized_moments/README.md): closure tests for
-  spin-resolved amplitudes, photon-helicity sectors, and a mass-dependent
-  photoproduction model.
-
-For example:
+Run the modules with `python -m`, for example:
 
 ```bash
 python -m tutorials.polarized_moments.fixed_double.run
 python -m tutorials.polarized_moments.fixed_double.analyse
 ```
 
-ROOT files can be large and are ignored by default. The published input files
-under `electroproduction_paper/input/` are explicitly tracked; do not place
-temporary outputs there.
+A failed C++ command stops the runner. Importing a Python module does not start
+a fit or create figures. Use a nonzero seed for repeatable results; seed zero
+asks ROOT to choose a seed.
+
+## Studies
+
+- [Electroproduction paper](electroproduction_paper/README.md): published rho,
+  omega, phi and GlueX inputs, fits, and Hessian/bootstrap comparisons.
+- [Polarized moments](polarized_moments/README.md): spin-resolved closure tests
+  and the PhotoTest mass/asymmetry scan.
+- [Mass-dependent fits](photo_test_m/README.md): a single-resonance closure,
+  the full PhotoTest closure and an effective single-k fit to two-k truth.
+
+## Analysis and output files
+
+The scan runners combine point trees into `scan.root`; `scan_case` identifies
+the input point. The polarized-moment scans also keep CSV manifests and accept
+`--merge-only` to rebuild the merged file without fitting again. PhotoTest
+mass-fit scans store their asymmetries in the ROOT file itself. Individual
+point files remain available for inspection and refitting.
+
+[`root_io.py`](root_io.py) handles merging. Analyses read ROOT columns through
+RDataFrame, calculate with NumPy and plot with Matplotlib. Shared tree readers,
+fit selection and phase statistics are in
+[`analysis_utils.py`](analysis_utils.py); published channel metadata is in
+[`electroproduction_paper/datasets.py`](electroproduction_paper/datasets.py).
+
+Generated ROOT files, data tables and figures are ignored by Git. The published
+ROOT inputs already tracked under `electroproduction_paper/input/` remain part
+of the repository. Keep new outputs in each case's `output/` directory.

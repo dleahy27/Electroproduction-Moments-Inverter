@@ -13,16 +13,19 @@ from matplotlib.lines import Line2D
 import numpy as np
 
 from tutorials.analysis_utils import (
-    best_index, branches, complex_amplitude, phase_branch, read_tree,
-    save_figure, style_axis, wave_label,
+    best_index,
+    branches,
+    complex_amplitude,
+    phase_branch,
+    read_tree,
+    save_figure,
+    style_axis,
+    wave_label,
 )
-
 
 # ROOT identifiers use ``m1`` for -1. Capturing the base wave and spin sector
 # separately lets colour describe the wave while marker direction describes k.
-AMPLITUDE_PATTERN = re.compile(
-    r"^(?P<wave>[ab]_[TL]_\d+_m?\d+)_(?P<sector>1|m1)$"
-)
+AMPLITUDE_PATTERN = re.compile(r"^(?P<wave>[ab]_[TL]_\d+_m?\d+)_(?P<sector>1|m1)$")
 SECTORS = ("1", "m1")
 SECTOR_MARKERS = {"1": "^", "m1": "v"}
 # Generated magnitudes below this numerical tolerance represent amplitudes
@@ -47,9 +50,7 @@ def _amplitude_schema(truth_file, truth_tree, fit_file, fit_tree):
     truth_magnitudes = {
         name for name in truth_names if AMPLITUDE_PATTERN.fullmatch(name)
     }
-    fit_magnitudes = {
-        name for name in fit_names if AMPLITUDE_PATTERN.fullmatch(name)
-    }
+    fit_magnitudes = {name for name in fit_names if AMPLITUDE_PATTERN.fullmatch(name)}
 
     # An intersection would silently discard missing results and could produce
     # a plausible but incomplete figure, so require exact schema agreement.
@@ -70,16 +71,16 @@ def _amplitude_schema(truth_file, truth_tree, fit_file, fit_tree):
         ),
     )
     missing_phases = [
-        phase_branch(name) for name in magnitudes
-        if phase_branch(name) not in truth_names
-        or phase_branch(name) not in fit_names
+        phase_branch(name)
+        for name in magnitudes
+        if phase_branch(name) not in truth_names or phase_branch(name) not in fit_names
     ]
     if missing_phases:
         raise RuntimeError(f"Missing paired phase branches: {missing_phases}")
 
-    base_waves = sorted({
-        AMPLITUDE_PATTERN.fullmatch(name).group("wave") for name in magnitudes
-    })
+    base_waves = sorted(
+        {AMPLITUDE_PATTERN.fullmatch(name).group("wave") for name in magnitudes}
+    )
     for wave in base_waves:
         present = {
             AMPLITUDE_PATTERN.fullmatch(name).group("sector")
@@ -96,24 +97,46 @@ def _amplitude_schema(truth_file, truth_tree, fit_file, fit_tree):
 def _add_legend(axis, waves, colours):
     """Explain wave colours independently of the three marker meanings."""
     wave_handles = [
-        Line2D([], [], color=colours[wave], linewidth=3,
-               label=wave_label(wave))
+        Line2D([], [], color=colours[wave], linewidth=3, label=wave_label(wave))
         for wave in waves
     ]
     marker_handles = [
-        Line2D([], [], marker="^", color="black", linestyle="none",
-               label=r"Generated $k=+1$"),
-        Line2D([], [], marker="v", color="black", linestyle="none",
-               label=r"Generated $k=-1$"),
-        Line2D([], [], marker="o", color="black", linestyle="none",
-               label="Truth-closest equivalent minimum"),
+        Line2D(
+            [],
+            [],
+            marker="^",
+            color="black",
+            linestyle="none",
+            label=r"Generated $k=+1$",
+        ),
+        Line2D(
+            [],
+            [],
+            marker="v",
+            color="black",
+            linestyle="none",
+            label=r"Generated $k=-1$",
+        ),
+        Line2D(
+            [],
+            [],
+            marker="o",
+            color="black",
+            linestyle="none",
+            label="Truth-closest equivalent minimum",
+        ),
     ]
     axis.legend(handles=wave_handles + marker_handles, frameon=False, ncol=3)
 
 
 def analyse_fixed_closure(
-    truth_file, fit_file, output_dir, *, truth_tree="genMoments",
-    fit_tree="fitResults", show_plot=False,
+    truth_file,
+    fit_file,
+    output_dir,
+    *,
+    truth_tree="genMoments",
+    fit_tree="fitResults",
+    show_plot=False,
 ):
     """Compare generated and fitted amplitudes in Cartesian and polar form."""
     magnitudes, base_waves, truth_names, fit_names = _amplitude_schema(
@@ -132,12 +155,14 @@ def analyse_fixed_closure(
     # The truth tree has one point; every fit row is an independent random
     # start. Include available quality flags when choosing the best minimum.
     truth = read_tree(
-        truth_file, truth_tree,
+        truth_file,
+        truth_tree,
         magnitudes + phases + [truth_name for truth_name, _ in moment_pairs],
     )
     status = [name for name in ("chi2", "fit_ok", "status") if name in fit_names]
     fit = read_tree(
-        fit_file, fit_tree,
+        fit_file,
+        fit_tree,
         status + magnitudes + phases + [fit_name for _, fit_name in moment_pairs],
     )
     best_entry = best_index(fit)
@@ -148,10 +173,9 @@ def analyse_fixed_closure(
     # Truth may select among observationally equivalent minima in a synthetic
     # closure test. Experimental-data analyses cannot and do not use this step.
     truth_vector = np.asarray([truth_amplitudes[name] for name in magnitudes])
-    fit_matrix = np.column_stack([
-        complex_amplitude(fit[name], fit[phase_branch(name)])
-        for name in magnitudes
-    ])
+    fit_matrix = np.column_stack(
+        [complex_amplitude(fit[name], fit[phase_branch(name)]) for name in magnitudes]
+    )
     amplitude_rms = np.sqrt(
         np.mean(np.abs(fit_matrix - truth_vector[None, :]) ** 2, axis=1)
     )
@@ -216,36 +240,41 @@ def analyse_fixed_closure(
     # is not part of the model. Keep such branches in the table above so the
     # stored zero remains available as a diagnostic.
     plotted_magnitudes = {
-        name for name in magnitudes
+        name
+        for name in magnitudes
         if abs(truth_amplitudes[name]) > ZERO_MAGNITUDE_TOLERANCE
     }
     plotted_waves = [
-        wave for wave in base_waves
+        wave
+        for wave in base_waves
         if any(f"{wave}_{sector}" in plotted_magnitudes for sector in SECTORS)
     ]
     if not plotted_waves:
-        raise RuntimeError("All generated amplitudes are zero; there is nothing to plot")
+        raise RuntimeError(
+            "All generated amplitudes are zero; there is nothing to plot"
+        )
 
     groups = [
-        (key, title) for key, title in GROUPS
+        (key, title)
+        for key, title in GROUPS
         if any(tuple(wave.split("_")[:2]) == key for wave in plotted_waves)
     ]
-    colours = {
-        wave: f"C{index % 10}" for index, wave in enumerate(plotted_waves)
-    }
+    colours = {wave: f"C{index % 10}" for index, wave in enumerate(plotted_waves)}
 
     # Cartesian Argand representation. Draw the fit circle larger and first so
     # its rim remains visible behind the triangle when closure is exact.
     figure, axes = plt.subplots(
-        len(groups), 1, figsize=(9, 6 * len(groups)),
-        constrained_layout=True, squeeze=False,
+        len(groups),
+        1,
+        figsize=(9, 6 * len(groups)),
+        constrained_layout=True,
+        squeeze=False,
     )
     axes = axes[:, 0]
     extent = 0.1
     for axis, (group, title) in zip(axes, groups):
         selected = [
-            wave for wave in plotted_waves
-            if tuple(wave.split("_")[:2]) == group
+            wave for wave in plotted_waves if tuple(wave.split("_")[:2]) == group
         ]
         for wave in selected:
             for sector in SECTORS:
@@ -255,17 +284,29 @@ def analyse_fixed_closure(
                 generated = truth_amplitudes[name]
                 fitted = fit_amplitudes[name]
                 axis.plot(
-                    fitted.real, fitted.imag, "o", color=colours[wave],
-                    markeredgecolor="black", markersize=12, zorder=3,
+                    fitted.real,
+                    fitted.imag,
+                    "o",
+                    color=colours[wave],
+                    markeredgecolor="black",
+                    markersize=12,
+                    zorder=3,
                 )
                 axis.plot(
-                    generated.real, generated.imag, SECTOR_MARKERS[sector],
-                    color=colours[wave], markeredgecolor="black",
-                    markersize=9, zorder=4,
+                    generated.real,
+                    generated.imag,
+                    SECTOR_MARKERS[sector],
+                    color=colours[wave],
+                    markeredgecolor="black",
+                    markersize=9,
+                    zorder=4,
                 )
                 extent = max(
-                    extent, abs(generated.real), abs(generated.imag),
-                    abs(fitted.real), abs(fitted.imag),
+                    extent,
+                    abs(generated.real),
+                    abs(generated.imag),
+                    abs(fitted.real),
+                    abs(fitted.imag),
                 )
         axis.set_title(title)
         axis.set_ylabel("Im")
@@ -280,21 +321,26 @@ def analyse_fixed_closure(
     axes[-1].set_xlabel("Re")
     figure.suptitle("Polarized fixed-amplitude closure")
     save_figure(
-        figure, output_dir / f"{fit_file.stem}_argand.pdf",
-        show=show_plot, dpi=600, transparent=True,
+        figure,
+        output_dir / f"{fit_file.stem}_argand.pdf",
+        show=show_plot,
+        dpi=600,
+        transparent=True,
     )
 
     # Polar coordinates separate radial and angular discrepancies. Phase is
     # undefined at exactly zero magnitude, so those points stay in Argand only.
     figure, axes = plt.subplots(
-        len(groups), 1, figsize=(9, 6 * len(groups)),
-        constrained_layout=True, squeeze=False,
+        len(groups),
+        1,
+        figsize=(9, 6 * len(groups)),
+        constrained_layout=True,
+        squeeze=False,
     )
     axes = axes[:, 0]
     for axis, (group, title) in zip(axes, groups):
         selected = [
-            wave for wave in plotted_waves
-            if tuple(wave.split("_")[:2]) == group
+            wave for wave in plotted_waves if tuple(wave.split("_")[:2]) == group
         ]
         for wave in selected:
             for sector in SECTORS:
@@ -305,14 +351,23 @@ def analyse_fixed_closure(
                 fitted = fit_amplitudes[name]
                 if abs(fitted) > 1.0e-12:
                     axis.plot(
-                        np.angle(fitted), abs(fitted), "o", color=colours[wave],
-                        markeredgecolor="black", markersize=12, zorder=3,
+                        np.angle(fitted),
+                        abs(fitted),
+                        "o",
+                        color=colours[wave],
+                        markeredgecolor="black",
+                        markersize=12,
+                        zorder=3,
                     )
                 if abs(generated) > 1.0e-12:
                     axis.plot(
-                        np.angle(generated), abs(generated),
-                        SECTOR_MARKERS[sector], color=colours[wave],
-                        markeredgecolor="black", markersize=9, zorder=4,
+                        np.angle(generated),
+                        abs(generated),
+                        SECTOR_MARKERS[sector],
+                        color=colours[wave],
+                        markeredgecolor="black",
+                        markersize=9,
+                        zorder=4,
                     )
         axis.set_title(title)
         axis.set_xlim(-np.pi, np.pi)
@@ -327,6 +382,9 @@ def analyse_fixed_closure(
     axes[-1].set_xlabel("Phase (rad)")
     figure.suptitle("Polarized fixed-amplitude closure")
     save_figure(
-        figure, output_dir / f"{fit_file.stem}_magnitude_phase.pdf",
-        show=show_plot, dpi=600, transparent=True,
+        figure,
+        output_dir / f"{fit_file.stem}_magnitude_phase.pdf",
+        show=show_plot,
+        dpi=600,
+        transparent=True,
     )

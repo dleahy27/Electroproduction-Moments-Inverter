@@ -26,6 +26,10 @@ packages = [
   "tutorials.polarized_moments.fixed_single",
   "tutorials.polarized_moments.photo_test_mass_scan",
   "tutorials.polarized_moments.unpolarized_k",
+  "tutorials.photo_test_m",
+  "tutorials.photo_test_m.closure",
+  "tutorials.photo_test_m.full_closure",
+  "tutorials.photo_test_m.single_k_test",
 ]
 
 [tool.setuptools.package-dir]

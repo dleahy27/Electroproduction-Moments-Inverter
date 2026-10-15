@@ -5,6 +5,13 @@ vector-meson moments. It can run ordinary fits or Gaussian bootstrap fits,
 rebuild the supplied experimental moment tables, and generate synthetic/random moment
 samples for closure tests.
 
+It also supports simultaneous mass-dependent fits. `emi mass-fit` models each
+configured partial wave as a coherent sum of constant-width Breit-Wigners and
+complex constant backgrounds, then minimizes one chi-square over every scalar
+mass entry in the input tree. Pole masses, widths, and production couplings
+use analytic moment derivatives. See the runnable
+[single-BW tutorial](tutorials/photo_test_m/closure/README.md).
+
 The application is C++17 and ROOT based. CMake compiles the physics and fitting
 code into a reusable library and links the small command-line program against
 it.
@@ -16,19 +23,48 @@ it.
 - ROOT 6.26 or newer with Tree, MathMore, Minuit2, and multiprocessing support
 - Python 3.10 or newer with NumPy and Matplotlib for the tutorials
 
-Activate ROOT before configuring the project. For a binary ROOT installation:
+The supplied conda environment includes C++ ROOT, PyROOT, NumPy, Matplotlib,
+SciPy, CMake and a compiler:
+
+```bash
+conda env create -f environment.yml
+conda activate emi
+root-config --version
+python -c 'import ROOT; print(ROOT.gROOT.GetVersion())'
+```
+
+Use `emi` when building the program or running the tutorials. Its packages are
+independent of other environments on the machine. The main package versions
+are pinned in `environment.yml`.
+
+For the exact Linux x86-64 package builds used here, create the environment
+from the lock file instead:
+
+```bash
+conda create -n emi --file environment-linux-64.lock
+conda activate emi
+```
+
+The lock requires an x86-64-v3 CPU. Use the YAML recipe on other machines so
+conda can choose suitable builds.
+
+With a separate ROOT installation, activate it before building:
 
 ```bash
 source /path/to/root/bin/thisroot.sh
 root-config --version
 ```
 
+PyROOT must match the active Python major/minor version. Use either the conda
+ROOT installation or a separate ROOT installation in a given shell; sourcing
+another `thisroot.sh` can override the libraries selected by conda.
+
 ## Build
 
 From the repository root:
 
 ```bash
-python build.py --test
+python build.py
 ```
 
 This configures CMake and compiles `build/emi`. It is a normal executable
@@ -49,16 +85,15 @@ use:
 ```bash
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
-ctest --test-dir build --output-on-failure
 alias emi='./build/emi'
 ```
 
-If ROOT is not active in the shell, pass the directory containing
-`ROOTConfig.cmake` explicitly with `--root-dir`. Use `BUILD_TESTING=OFF` in a
-manual CMake configuration when only the production library and executable are
-needed.
+Pass `--root-dir /path/to/root/cmake` to select the directory containing
+`ROOTConfig.cmake` explicitly. When switching ROOT installations, move the old
+`build` directory aside before configuring again; CMake caches its ROOT and
+compiler paths.
 
-### Optional checkout-associated installation
+### Install the executable
 
 Install only if you want a convenient `emi` command while retaining this
 configured source checkout:
@@ -222,13 +257,19 @@ remains unobservable. In a single-polarization fit, the additional real
 unnatural reference described above fixes the SO(2) spin-basis angle; it is not
 a second independently adjustable reflectivity phase.
 
+The target--recoil replacement rules are listed in
+[PolarizedModel.C](src/PolarizedModel.C). Each of the 16 `(beta, delta)`
+entries specifies the replacement helicities and their real or imaginary
+prefactor.
+
 An unpolarized fit accepts either `RH_<alpha>_<L>_<M>` or the
 `beta=delta=0` projection `RH_<alpha>_0_0_<L>_<M>`. The same fallback applies
 to electroproduction `RH04` branches. A polarized generated file can therefore
 be fitted directly with `--polarization none`, without duplicate alias branches
 or a conversion step.
 
-An explicit wave list is used instead of `lmax` and `mmax` (like in brufit) to avoid having to construct moments with placeholder zero values with zero errors.
+EMI takes an explicit wave list. Only the moments needed for those waves
+are constructed.
 
 `FixedMoments()` controls the user-defined fixed-moment generator described
 below. `Fit()` and `Bootstrap()` contain the default run counts, worker count,
@@ -301,7 +342,7 @@ The underlying `emi` executable still accepts command-line values. Run
 
 Analytical gradients are used by default. Set
 `.UseNumericalGradients(true)` in `UserSettings.h`, or pass
-`--numerical-gradients` to use. An example script implementing a controlled comparison is provided:
+`--numerical-gradients` to use numerical derivatives. To compare their timing:
 
 ```bash
 python -m tutorials.electroproduction_paper.performance.analyse
@@ -321,9 +362,10 @@ STARTS_PER_TOY = 2
 WORKERS = 1
 ```
 
-Each bootstrap independently samples from a Gaussian that is constructed from the published SDME values, with the width given by the quadrature of the published errors.
-The standard minimization procedure outlined earlier is then ran for starts per worker and it retains the best valid minimum from its random starts. Hessian calculation is off
-for bootstrap by default because the bootstrap distribution supplies the uncertainty.
+Each bootstrap sample draws SDMEs from Gaussians centred on the published
+values, using the published errors added in quadrature as their widths. The
+fitter keeps the best valid minimum from its random starts. HESSE is off by
+default for bootstrap runs; uncertainties come from the sample distribution.
 
 The direct command is:
 
@@ -386,7 +428,8 @@ settings file.
 `emi --generate-fixed` is accepted as an equivalent spelling.
 For batch scripts, `generate-fixed` also accepts `--settings FILE`,
 `--output FILE`, `--epsilon VALUE`, `--seed N`, `--mass VALUE`,
-`--k-asymmetry VALUE`, `--no-background`, `--quiet`, and `--verbose`.
+`--noise VALUE`, `--k-asymmetry VALUE`, `--no-background`, `--quiet`, and
+`--verbose`.
 `--suppression VALUE` overrides the configured value only when
 `FixedMoments()` selects `KPositiveDominant` or `KReflectivitySplit`.
 The mass-model options apply only when `FixedMoments()` selects `PhotoTest`.
@@ -405,6 +448,7 @@ No rebuild is needed. All choices for one synthetic point are together there:
 - waves, reflectivities, and `None`, `Initial`, `Recoil`, or `Both` nucleon
   polarization;
 - the generation mode;
+- optional relative moment noise via `noise`;
 - exact and individually random amplitudes in `Custom` mode.
 
 The available modes are:
@@ -422,6 +466,14 @@ non-custom mode, leave both amplitude lists empty and use `randomMinimum`,
 `randomMaximum`, and `suppression` to configure it. `AllRandom` with `Both`
 polarization is the independent-random K baseline.
 
+Set `generation.noise` to a nonnegative relative width, for example `0.05`,
+to smear every generated non-normalization moment with a Gaussian of width
+`noise * abs(moment)`. The value is absent by default, leaving the generated
+moments exact. The normalized `H04_0_0` moment stays exactly equal to the
+configured normalization target. Nonzero smeared moments store their injected
+width in the corresponding `_err` branch; use `--noise VALUE` to override the
+setting for one generation run.
+
 #### PhotoTest mass model
 
 `PhotoTest` is an internal generation model under `src/MassModels`. It returns
@@ -433,7 +485,9 @@ enabled for the four S-wave sectors. The signed `kAsymmetry` control, `s`,
 multiplies each complete `k=+1` amplitude by `(1+s)/2` and each complete
 `k=-1` amplitude by `(1-s)/2`, including backgrounds. It accepts values in
 `[-1, 1]`; the endpoints select one sector and zero splits the two equally.
-Every `k=-1` amplitude receives the same fixed global phase offset.
+Every `k=-1` amplitude receives a fixed phase offset for its `(l,m)` wave;
+the hard-coded offsets are shared by both reflectivities and remain unchanged
+throughout a scan.
 
 Configure it in `FixedMoments()` or override its scan controls at runtime:
 
@@ -476,7 +530,7 @@ generation context. The rotation leaves all moments unchanged and writes
 normalisation so that `RH_0_0_0_0_0` equals the configured normalisation
 moment. The ROOT file stores `mass_model`, `invariant_mass_GeV`,
 `k_asymmetry`, `background_enabled`, the phase removed by the rotation, the
-raw zeroth moment, and the common normalisation scale alongside the generated
+unnormalised zeroth moment, and the common normalisation scale alongside the generated
 truth amplitudes and moments.
 
 In `Custom` mode an exact row is:
@@ -611,7 +665,7 @@ only:
 Single-run output also stores `err__*` parameter and physical-moment errors when
 HESSE succeeds.
 
-Raw input values always remain readable from the original experimental or
+Original input values always remain readable from the experimental or
 generated moment file.
 
 ## Code layout
@@ -625,7 +679,11 @@ include/emi/Runner.h       public library entry points
 src/Input.C                ROOT input discovery and validation
 src/Model.C                amplitudes and Clebsch-Gordan moment construction
 src/Evaluation.C           moments, chi-square, and gradients
-src/Context.C              fit context, normalisation, and Hessian products
+src/Context.C              fit context and configured start distributions
+src/Uncertainties.C        Hessian covariance propagation and output errors
+src/MassFit.C              simultaneous mass-dependent fits and generated spectra
+src/WorkerOutput.h         shared worker-file naming and ROOT merging
+src/Progress.h             parent-rendered progress for forked workers
 src/Minimizer.C            Minuit2 setup
 src/FitRunner.C            ordinary-fit orchestration
 src/Bootstrap.C            bootstrap orchestration
@@ -636,8 +694,7 @@ src/FixedMoments.C         fixed synthetic input
 src/RandomMoments.C        random synthetic inputs
 src/MassModels/MassModel.* internal shared mass-model value types and BW helper
 src/MassModels/PhotoTest.* deterministic photoproduction S/P/D model
-tests/MassModelsTest.C     PhotoTest formula and generation integration checks
-build.py                   CMake configure/build/test helper
+build.py                  CMake configure/build helper
 tutorials/analysis_utils.py
                            shared PyROOT, NumPy, and plotting operations
 tutorials/electroproduction_paper/
@@ -646,6 +703,9 @@ tutorials/polarized_moments/
                            polarized closure and mass-scan cases
 tutorials/pyproject.toml   installable tutorial-package metadata
 ```
+
+See [`src/README.md`](src/README.md) for the source data flow, conventions, and
+ROOT ownership rules.
 
 `include/emi` is a normal public-header directory, not a second copy of the
 program. `emi` is short for Electroproduction Moments Inverter and is also the
@@ -687,8 +747,8 @@ python -m pip install -e ./tutorials
 ```
 
 PyROOT is supplied by the ROOT installation used to build EMI and is not
-installed from PyPI. Every case has a README, keeps editable settings near the
-top of its runner, and saves generated ROOT files and figures beneath its own
+installed from PyPI. Each case documents its settings and saves generated ROOT files and figures
+beneath its own
 ignored `output/` directory. See [`tutorials/README.md`](tutorials/README.md)
 for the complete workflow.
 

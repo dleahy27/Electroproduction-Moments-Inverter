@@ -5,7 +5,7 @@ This tutorial fits and bootstraps the 18 momentum-transfer bins in
 S- and P-wave amplitudes in magnitude-phase and Argand coordinates and shows
 their scaling with momentum transfer.
 
-Edit the fit and bootstrap costs at the top of `run.py`. Either stage can be
+Edit the fit and bootstrap run counts at the top of `run.py`. Either stage can be
 disabled with `RUN_FITS` or `RUN_BOOTSTRAPS`. The local `settings.h` fixes the
 S/P photoproduction model independently of every other tutorial.
 

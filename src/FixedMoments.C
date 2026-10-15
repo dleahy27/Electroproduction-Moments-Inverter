@@ -11,10 +11,10 @@
 #include "MassModels/PhotoTest.h"
 
 #include "TFile.h"
-#include "TRandom3.h"
-#include "TTree.h"
 #include "TObjString.h"
 #include "TParameter.h"
+#include "TRandom3.h"
+#include "TTree.h"
 
 #include <algorithm>
 #include <array>
@@ -44,8 +44,7 @@ static void FillExampleAmplitudes(const EvaluationContext& ctx,
   for (size_t i = 0; i < ctx.freeToFull.size(); ++i) {
     const auto& parameter = ctx.fullPars[static_cast<size_t>(ctx.freeToFull[i])];
     if (parameter.phase) {
-      const double candidate =
-          -2.4 + 4.8 * static_cast<double>((i * 7) % 19) / 18.0;
+      const double candidate = -2.4 + 4.8 * static_cast<double>((i * 7) % 19) / 18.0;
       freeValues[i] = std::clamp(candidate, parameter.low, parameter.high);
     } else {
       freeValues[i] = 0.025 + 0.005 * static_cast<double>((i * 5) % 7);
@@ -56,22 +55,6 @@ static void FillExampleAmplitudes(const EvaluationContext& ctx,
   }
 }
 
-static std::string AmplitudeName(char reflectivity, char orientation,
-                                 int l, int m, int k, bool phase) {
-  auto index = [](int value) {
-    return value < 0 ? "m" + std::to_string(-value)
-                     : std::to_string(value);
-  };
-  std::string name(1, reflectivity);
-  if (phase) name += "phi";
-  name += '_';
-  name += orientation;
-  name += '_';
-  name += std::to_string(l) + '_' + index(m);
-  if (k != 0) name += '_' + index(k);
-  return name;
-}
-
 static bool IsDominantKMode(FixedGenerationMode mode) {
   return mode == FixedGenerationMode::KPositiveDominant ||
          mode == FixedGenerationMode::KReflectivitySplit;
@@ -79,21 +62,61 @@ static bool IsDominantKMode(FixedGenerationMode mode) {
 
 struct PhotoTestFillInfo {
   double referencePhaseBeforeRotation = 0.0;
-  double rawH000 = 0.0;
+  double unnormalisedH000 = 0.0;
   double amplitudeScale = 1.0;
+  // These values are taken directly from PhotoTest::Evaluate, before the
+  // arbitrary fit-gauge rotation and H_0000 normalization are applied.
+  std::vector<std::string> unnormalisedAmplitudeNames;
+  std::vector<double> unnormalisedAmplitudeValues;
+  std::array<double, 3> unnormalisedIntensityByL{};
 };
 
-static void ValidateRandomRange(double minimum, double maximum,
-                                double magnitudeLimit) {
-  if (!std::isfinite(minimum) || !std::isfinite(maximum) ||
-      minimum < 0.0 || maximum < minimum || maximum > magnitudeLimit) {
+static void ValidateRandomRange(double minimum, double maximum, double magnitudeLimit) {
+  if (!std::isfinite(minimum) || !std::isfinite(maximum) || minimum < 0.0 ||
+      maximum < minimum || maximum > magnitudeLimit) {
     throw std::invalid_argument("Invalid random-amplitude range");
   }
 }
 
+static void ValidateMomentNoise(const FixedMomentsConfig& generation) {
+  if (generation.noise &&
+      (!std::isfinite(*generation.noise) || *generation.noise < 0.0)) {
+    throw std::invalid_argument("Fixed-moment noise must be finite and nonnegative");
+  }
+}
+
+static void ApplyMomentNoise(const FixedMomentsConfig& generation,
+                             const EvaluationContext& ctx,
+                             std::vector<double>& observedVals,
+                             std::vector<double>& errVals) {
+  if (!generation.noise)
+    return;
+  const double relativeWidth = *generation.noise;
+
+  TRandom3 random(generation.seed);
+  if (generation.seed == 0)
+    random.SetSeed(0);
+  for (size_t i = 0; i < ctx.observed.size(); ++i) {
+    const auto& moment = ctx.observed[i];
+    const bool normalisationMoment = moment.alpha == 0 && moment.beta == 0 &&
+                                     moment.delta == 0 && moment.L == 0 &&
+                                     moment.M == 0;
+    if (normalisationMoment)
+      continue;
+
+    const double width = relativeWidth * std::abs(observedVals[i]);
+    // A zero-valued moment has zero requested width. Keep its existing
+    // positive placeholder uncertainty so downstream input validation retains
+    // the moment rather than discarding it for a zero error.
+    if (width == 0.0)
+      continue;
+    observedVals[i] = random.Gaus(observedVals[i], width);
+    errVals[i] = width;
+  }
+}
+
 static void FillCustomAmplitudes(const EvaluationContext& ctx,
-                                 const FixedMomentsConfig& generation,
-                                 TRandom3& random,
+                                 const FixedMomentsConfig& generation, TRandom3& random,
                                  std::vector<double>& fullVals) {
   fullVals.resize(ctx.fullPars.size());
   std::unordered_map<std::string, int> parameterIndices;
@@ -106,69 +129,64 @@ static void FillCustomAmplitudes(const EvaluationContext& ctx,
   }
 
   std::unordered_set<std::string> assigned;
-  const bool usesK =
-      ctx.cfg.nucleonPolarization != NucleonPolarization::None;
+  const bool usesK = ctx.cfg.nucleonPolarization != NucleonPolarization::None;
 
   auto assign = [&](char reflectivity, char orientation, int l, int m, int k,
                     double magnitude, double phase, bool randomPhase) {
     const std::string inputName =
-        AmplitudeName(reflectivity, orientation, l, m, k, false);
+        MakeAmplitudeName(reflectivity, orientation, l, m, k, false);
     if ((reflectivity != 'a' && reflectivity != 'b') ||
         (orientation != 'T' && orientation != 'L')) {
-      throw std::invalid_argument(
-          "Invalid reflectivity or orientation in " + inputName);
+      throw std::invalid_argument("Invalid reflectivity or orientation in " +
+                                  inputName);
     }
     if ((usesK && k != -1 && k != 1) || (!usesK && k != 0)) {
-      throw std::invalid_argument(
-          inputName + (usesK ? " must use k=+1 or k=-1" : " must use k=0"));
+      throw std::invalid_argument(inputName +
+                                  (usesK ? " must use k=+1 or k=-1" : " must use k=0"));
     }
     if (!std::isfinite(magnitude) || magnitude < 0.0 ||
-        magnitude > ctx.cfg.magnitudeMax || !std::isfinite(phase) ||
-        phase < -kPi || phase > kPi) {
+        magnitude > ctx.cfg.magnitudeMax || !std::isfinite(phase) || phase < -kPi ||
+        phase > kPi) {
       throw std::invalid_argument("Invalid magnitude or phase for " + inputName);
     }
     if (ctx.cfg.photoproduction && orientation == 'L') {
-      throw std::invalid_argument(
-          "Photoproduction has no longitudinal amplitude " + inputName);
+      throw std::invalid_argument("Photoproduction has no longitudinal amplitude " +
+                                  inputName);
     }
     if (ctx.cfg.enforceLongitudinalParity && orientation == 'L') {
       m = std::abs(m);
     }
 
     const std::string magnitudeName =
-        AmplitudeName(reflectivity, orientation, l, m, k, false);
+        MakeAmplitudeName(reflectivity, orientation, l, m, k, false);
     const std::string phaseName =
-        AmplitudeName(reflectivity, orientation, l, m, k, true);
+        MakeAmplitudeName(reflectivity, orientation, l, m, k, true);
     if (!assigned.insert(magnitudeName).second) {
-      throw std::invalid_argument(
-          "Amplitude " + inputName +
-          " cannot be both fixed and random or listed twice");
+      throw std::invalid_argument("Amplitude " + inputName +
+                                  " cannot be both fixed and random or listed twice");
     }
     const auto magnitudeIt = parameterIndices.find(magnitudeName);
     const auto phaseIt = parameterIndices.find(phaseName);
-    if (magnitudeIt == parameterIndices.end() ||
-        phaseIt == parameterIndices.end()) {
-      throw std::invalid_argument(
-          "Amplitude " + inputName + " is not in the selected model");
+    if (magnitudeIt == parameterIndices.end() || phaseIt == parameterIndices.end()) {
+      throw std::invalid_argument("Amplitude " + inputName +
+                                  " is not in the selected model");
     }
 
     const int magnitudeIndex = magnitudeIt->second;
     const int phaseIndex = phaseIt->second;
     if (magnitudeIndex == ctx.normalisedMagFullIdx) {
-      throw std::invalid_argument(
-          "Do not list normalization amplitude " + inputName +
-          "; EMI derives its magnitude");
+      throw std::invalid_argument("Do not list normalization amplitude " + inputName +
+                                  "; EMI derives its magnitude");
     }
-    const auto& magnitudeParameter =
-        ctx.fullPars[static_cast<size_t>(magnitudeIndex)];
+    const auto& magnitudeParameter = ctx.fullPars[static_cast<size_t>(magnitudeIndex)];
     if (magnitudeParameter.fixed && magnitude != magnitudeParameter.init) {
-      throw std::invalid_argument(
-          "Amplitude " + inputName + " is fixed to zero by the model");
+      throw std::invalid_argument("Amplitude " + inputName +
+                                  " is fixed to zero by the model");
     }
     if (ctx.fullPars[static_cast<size_t>(phaseIndex)].fixed) {
       if (!randomPhase && std::abs(phase) > 1e-12) {
-        throw std::invalid_argument(
-            "The reference phase of " + inputName + " must be zero");
+        throw std::invalid_argument("The reference phase of " + inputName +
+                                    " must be zero");
       }
       phase = 0.0;
     }
@@ -178,16 +196,13 @@ static void FillCustomAmplitudes(const EvaluationContext& ctx,
   };
 
   for (const auto& amplitude : generation.fixedAmplitudes) {
-    assign(amplitude.reflectivity, amplitude.orientation,
-           amplitude.l, amplitude.m, amplitude.k,
-           amplitude.magnitude, amplitude.phase, false);
+    assign(amplitude.reflectivity, amplitude.orientation, amplitude.l, amplitude.m,
+           amplitude.k, amplitude.magnitude, amplitude.phase, false);
   }
   for (const auto& amplitude : generation.randomAmplitudes) {
-    ValidateRandomRange(amplitude.minimum, amplitude.maximum,
-                        ctx.cfg.magnitudeMax);
-    assign(amplitude.reflectivity, amplitude.orientation,
-           amplitude.l, amplitude.m, amplitude.k,
-           random.Uniform(amplitude.minimum, amplitude.maximum),
+    ValidateRandomRange(amplitude.minimum, amplitude.maximum, ctx.cfg.magnitudeMax);
+    assign(amplitude.reflectivity, amplitude.orientation, amplitude.l, amplitude.m,
+           amplitude.k, random.Uniform(amplitude.minimum, amplitude.maximum),
            random.Uniform(-kPi, kPi), true);
   }
 
@@ -197,14 +212,14 @@ static void FillCustomAmplitudes(const EvaluationContext& ctx,
   }
 }
 
-static double ModeScale(FixedGenerationMode mode,
-                        char reflectivity, int k, double suppression) {
+static double ModeScale(FixedGenerationMode mode, char reflectivity, int k,
+                        double suppression) {
   if (mode == FixedGenerationMode::KPositiveDominant) {
     return k == 1 ? 1.0 : suppression;
   }
   if (mode == FixedGenerationMode::KReflectivitySplit) {
-    const bool dominant = (reflectivity == 'a' && k == 1) ||
-                          (reflectivity == 'b' && k == -1);
+    const bool dominant =
+        (reflectivity == 'a' && k == 1) || (reflectivity == 'b' && k == -1);
     return dominant ? 1.0 : suppression;
   }
   return 1.0;
@@ -212,10 +227,8 @@ static double ModeScale(FixedGenerationMode mode,
 
 static void FillRandomModeAmplitudes(const EvaluationContext& ctx,
                                      const FixedMomentsConfig& generation,
-                                     TRandom3& random,
-                                     std::vector<double>& fullVals) {
-  if (!generation.fixedAmplitudes.empty() ||
-      !generation.randomAmplitudes.empty()) {
+                                     TRandom3& random, std::vector<double>& fullVals) {
+  if (!generation.fixedAmplitudes.empty() || !generation.randomAmplitudes.empty()) {
     throw std::invalid_argument(
         "Amplitude lists must be empty in a non-custom generation mode");
   }
@@ -227,10 +240,9 @@ static void FillRandomModeAmplitudes(const EvaluationContext& ctx,
   ValidateRandomRange(generation.randomMinimum, generation.randomMaximum,
                       ctx.cfg.magnitudeMax);
   if (IsDominantKMode(generation.mode) &&
-      (!std::isfinite(generation.suppression) ||
-       generation.suppression < 0.0 || generation.suppression > 1.0)) {
-    throw std::invalid_argument(
-        "Suppression must be between zero and one");
+      (!std::isfinite(generation.suppression) || generation.suppression < 0.0 ||
+       generation.suppression > 1.0)) {
+    throw std::invalid_argument("Suppression must be between zero and one");
   }
 
   fullVals.assign(ctx.fullPars.size(), 0.0);
@@ -239,8 +251,7 @@ static void FillRandomModeAmplitudes(const EvaluationContext& ctx,
     const auto& parameter = ctx.fullPars[i];
     const auto label = ParseParameterLabel(parameter.name);
     if (parameter.phase) {
-      fullVals[i] = parameter.fixed ? parameter.init
-                                    : random.Uniform(-kPi, kPi);
+      fullVals[i] = parameter.fixed ? parameter.init : random.Uniform(-kPi, kPi);
       continue;
     }
     if (parameter.fixed && static_cast<int>(i) != ctx.normalisedMagFullIdx) {
@@ -251,83 +262,79 @@ static void FillRandomModeAmplitudes(const EvaluationContext& ctx,
     double magnitude;
     if (generation.mode == FixedGenerationMode::KPositiveDominant ||
         generation.mode == FixedGenerationMode::KReflectivitySplit) {
-      const long long key = MakeParameterKey(
-          label.reflectivity, label.orientation, 0, label.l, label.m, false);
-      const auto position = pairedMagnitudes.emplace(
-          key, random.Uniform(generation.randomMinimum,
-                              generation.randomMaximum)).first;
+      const long long key = MakeParameterKey(label.reflectivity, label.orientation, 0,
+                                             label.l, label.m, false);
+      const auto position = pairedMagnitudes
+                                .emplace(key, random.Uniform(generation.randomMinimum,
+                                                             generation.randomMaximum))
+                                .first;
       magnitude = position->second;
     } else {
-      magnitude = random.Uniform(generation.randomMinimum,
-                                 generation.randomMaximum);
+      magnitude = random.Uniform(generation.randomMinimum, generation.randomMaximum);
     }
-    fullVals[i] = magnitude * ModeScale(
-        generation.mode, label.reflectivity, label.k,
-        generation.suppression);
+    fullVals[i] = magnitude * ModeScale(generation.mode, label.reflectivity, label.k,
+                                        generation.suppression);
   }
 
   // Generated amplitudes are rescaled together so the selected zeroth moment
   // is exact. Relative magnitudes and every phase remain unchanged.
-  std::vector<double> rawMoments;
-  EvaluateAllMoments(ctx, fullVals, rawMoments);
-  double rawNorm = rawMoments[static_cast<size_t>(ctx.idxH0_00)];
+  std::vector<double> unnormalisedMoments;
+  EvaluateAllMoments(ctx, fullVals, unnormalisedMoments);
+  double unnormalisedNorm = unnormalisedMoments[static_cast<size_t>(ctx.idxH0_00)];
   if (ctx.idxH4_00 >= 0) {
-    rawNorm += ctx.cfg.epsilon *
-               rawMoments[static_cast<size_t>(ctx.idxH4_00)];
+    unnormalisedNorm +=
+        ctx.cfg.epsilon * unnormalisedMoments[static_cast<size_t>(ctx.idxH4_00)];
   }
-  if (!(rawNorm > 0.0)) {
+  if (!(unnormalisedNorm > 0.0)) {
     throw std::runtime_error("Random amplitude point has zero normalization");
   }
-  const double scale =
-      std::sqrt(ctx.cfg.normalisationMomentTarget / rawNorm);
+  const double scale = std::sqrt(ctx.cfg.normalisationMomentTarget / unnormalisedNorm);
   for (size_t i = 0; i < ctx.fullPars.size(); ++i) {
-    if (!ctx.fullPars[i].phase) fullVals[i] *= scale;
+    if (!ctx.fullPars[i].phase)
+      fullVals[i] *= scale;
   }
 }
 
-static PhotoTestFillInfo FillPhotoTestAmplitudes(
-    const EvaluationContext& ctx,
-    const FixedMomentsConfig& generation,
-    std::vector<double>& fullVals) {
+static PhotoTestFillInfo FillPhotoTestAmplitudes(const EvaluationContext& ctx,
+                                                 const FixedMomentsConfig& generation,
+                                                 std::vector<double>& fullVals) {
   if (!generation.photoproduction || !ctx.cfg.photoproduction) {
-    throw std::invalid_argument(
-        "PhotoTest is a photoproduction mass model");
+    throw std::invalid_argument("PhotoTest is a photoproduction mass model");
   }
   if (ctx.cfg.nucleonPolarization != NucleonPolarization::Both) {
     throw std::invalid_argument(
         "PhotoTest requires NucleonPolarization::Both for generated truth");
   }
-  if (!ctx.cfg.usePositiveReflectivity ||
-      !ctx.cfg.useNegativeReflectivity) {
-    throw std::invalid_argument(
-        "PhotoTest requires both reflectivities");
+  if (!ctx.cfg.usePositiveReflectivity || !ctx.cfg.useNegativeReflectivity) {
+    throw std::invalid_argument("PhotoTest requires both reflectivities");
   }
-  if (!generation.fixedAmplitudes.empty() ||
-      !generation.randomAmplitudes.empty()) {
-    throw std::invalid_argument(
-        "Amplitude lists must be empty in PhotoTest mode");
+  if (!generation.fixedAmplitudes.empty() || !generation.randomAmplitudes.empty()) {
+    throw std::invalid_argument("Amplitude lists must be empty in PhotoTest mode");
   }
   if (!generation.massModel.massGeV) {
-    throw std::invalid_argument(
-        "PhotoTest requires an invariant mass in GeV");
+    throw std::invalid_argument("PhotoTest requires an invariant mass in GeV");
   }
 
   constexpr std::array<Wave, 9> requiredWaves{{
       {0, 0},
-      {1, -1}, {1, 0}, {1, +1},
-      {2, -2}, {2, -1}, {2, 0}, {2, +1}, {2, +2},
+      {1, -1},
+      {1, 0},
+      {1, +1},
+      {2, -2},
+      {2, -1},
+      {2, 0},
+      {2, +1},
+      {2, +2},
   }};
   for (const auto& required : requiredWaves) {
-    const bool present = std::any_of(
-        ctx.cfg.waves.begin(), ctx.cfg.waves.end(),
-        [&](const Wave& wave) {
+    const bool present =
+        std::any_of(ctx.cfg.waves.begin(), ctx.cfg.waves.end(), [&](const Wave& wave) {
           return wave.l == required.l && wave.m == required.m;
         });
     if (!present) {
-      throw std::invalid_argument(
-          "PhotoTest requires wave (l,m)=(" +
-          std::to_string(required.l) + "," +
-          std::to_string(required.m) + ")");
+      throw std::invalid_argument("PhotoTest requires wave (l,m)=(" +
+                                  std::to_string(required.l) + "," +
+                                  std::to_string(required.m) + ")");
     }
   }
 
@@ -337,33 +344,54 @@ static PhotoTestFillInfo FillPhotoTestAmplitudes(
   });
   auto amplitudes = model.Evaluate(*generation.massModel.massGeV);
 
-  auto reference = std::find_if(
-      amplitudes.begin(), amplitudes.end(),
-      [](const MassModels::ComplexAmplitude& amplitude) {
-        const auto& key = amplitude.key;
-        return key.reflectivity == 'a' && key.orientation == 'T' &&
-               key.l == 2 && key.m == 2 && key.k == 1;
-      });
+  PhotoTestFillInfo info;
+  // Preserve the model's own complex amplitudes for diagnostic output.  The
+  // sum of squared moduli is proportional to the angularly integrated model
+  // intensity, but is not a cross section in physical units: the toy model
+  // contains neither flux nor phase-space factors.
+  for (const auto& amplitude : amplitudes) {
+    const auto& key = amplitude.key;
+    const std::string magnitudeName =
+        "raw_" + MakeAmplitudeName(key.reflectivity, key.orientation, key.l, key.m,
+                                   key.k, false);
+    const std::string phaseName =
+        "raw_" +
+        MakeAmplitudeName(key.reflectivity, key.orientation, key.l, key.m, key.k, true);
+    const double magnitude = std::abs(amplitude.value);
+    info.unnormalisedAmplitudeNames.push_back(magnitudeName);
+    info.unnormalisedAmplitudeValues.push_back(magnitude);
+    info.unnormalisedAmplitudeNames.push_back(phaseName);
+    info.unnormalisedAmplitudeValues.push_back(
+        magnitude == 0.0 ? 0.0 : std::arg(amplitude.value));
+    info.unnormalisedIntensityByL.at(static_cast<size_t>(key.l)) +=
+        std::norm(amplitude.value);
+  }
+
+  auto reference = std::find_if(amplitudes.begin(), amplitudes.end(),
+                                [](const MassModels::ComplexAmplitude& amplitude) {
+                                  const auto& key = amplitude.key;
+                                  return key.reflectivity == 'a' &&
+                                         key.orientation == 'T' && key.l == 2 &&
+                                         key.m == 2 && key.k == 1;
+                                });
   // The context fixes a k=+1 phase reference. At s=-1 that amplitude is
   // intentionally zero, so use its k=-1 counterpart solely to choose a
   // harmless representation for the nonzero sector.
-  if (reference == amplitudes.end() ||
-      !(std::abs(reference->value) > 1e-14)) {
-    reference = std::find_if(
-        amplitudes.begin(), amplitudes.end(),
-        [](const MassModels::ComplexAmplitude& amplitude) {
-          const auto& key = amplitude.key;
-          return key.reflectivity == 'a' && key.orientation == 'T' &&
-                 key.l == 2 && key.m == 2 && key.k == -1 &&
-                 std::abs(amplitude.value) > 1e-14;
-        });
+  if (reference == amplitudes.end() || !(std::abs(reference->value) > 1e-14)) {
+    reference = std::find_if(amplitudes.begin(), amplitudes.end(),
+                             [](const MassModels::ComplexAmplitude& amplitude) {
+                               const auto& key = amplitude.key;
+                               return key.reflectivity == 'a' &&
+                                      key.orientation == 'T' && key.l == 2 &&
+                                      key.m == 2 && key.k == -1 &&
+                                      std::abs(amplitude.value) > 1e-14;
+                             });
   }
   if (reference == amplitudes.end()) {
     throw std::runtime_error(
         "PhotoTest has no nonzero amplitude for its phase rotation");
   }
 
-  PhotoTestFillInfo info;
   // Rotate the full amplitude set by one common phase so the reference wave
   // matches the fit convention. Bilinear observables are invariant under it.
   info.referencePhaseBeforeRotation = std::arg(reference->value);
@@ -371,7 +399,7 @@ static PhotoTestFillInfo FillPhotoTestAmplitudes(
       std::polar(1.0, -info.referencePhaseBeforeRotation);
 
   for (auto& amplitude : amplitudes) {
-      amplitude.value *= phaseRotation;
+    amplitude.value *= phaseRotation;
   }
   std::unordered_map<long long, int> parameterIndices;
   // Match semantic mass-model keys to the parameter ordering constructed for
@@ -380,32 +408,29 @@ static PhotoTestFillInfo FillPhotoTestAmplitudes(
     const auto& parameter = ctx.fullPars[static_cast<size_t>(i)];
     const auto label = ParseParameterLabel(parameter.name);
     if (!label.valid) {
-      throw std::runtime_error(
-          "Could not parse amplitude parameter " + parameter.name);
+      throw std::runtime_error("Could not parse amplitude parameter " + parameter.name);
     }
-    parameterIndices.emplace(
-        MakeParameterKey(label.reflectivity, label.orientation, label.k,
-                         label.l, label.m, parameter.phase),
-        i);
+    parameterIndices.emplace(MakeParameterKey(label.reflectivity, label.orientation,
+                                              label.k, label.l, label.m,
+                                              parameter.phase),
+                             i);
   }
 
   fullVals.assign(ctx.fullPars.size(), 0.0);
   std::unordered_set<long long> assignedMagnitudes;
   for (const auto& amplitude : amplitudes) {
     const auto& key = amplitude.key;
-    const long long magnitudeKey = MakeParameterKey(
-        key.reflectivity, key.orientation, key.k, key.l, key.m, false);
-    const long long phaseKey = MakeParameterKey(
-        key.reflectivity, key.orientation, key.k, key.l, key.m, true);
+    const long long magnitudeKey =
+        MakeParameterKey(key.reflectivity, key.orientation, key.k, key.l, key.m, false);
+    const long long phaseKey =
+        MakeParameterKey(key.reflectivity, key.orientation, key.k, key.l, key.m, true);
     const auto magnitude = parameterIndices.find(magnitudeKey);
     const auto phase = parameterIndices.find(phaseKey);
-    if (magnitude == parameterIndices.end() ||
-        phase == parameterIndices.end()) {
-      throw std::invalid_argument(
-          "PhotoTest amplitude " +
-          AmplitudeName(key.reflectivity, key.orientation, key.l, key.m,
-                        key.k, false) +
-          " is not in the selected generation model");
+    if (magnitude == parameterIndices.end() || phase == parameterIndices.end()) {
+      throw std::invalid_argument("PhotoTest amplitude " +
+                                  MakeAmplitudeName(key.reflectivity, key.orientation,
+                                                    key.l, key.m, key.k, false) +
+                                  " is not in the selected generation model");
     }
     if (!assignedMagnitudes.insert(magnitudeKey).second) {
       throw std::runtime_error("PhotoTest produced a duplicate amplitude key");
@@ -413,43 +438,42 @@ static PhotoTestFillInfo FillPhotoTestAmplitudes(
 
     const double absoluteValue = std::abs(amplitude.value);
     fullVals[static_cast<size_t>(magnitude->second)] = absoluteValue;
-    const bool isReference =
-        key.reflectivity == 'a' && key.orientation == 'T' &&
-        key.l == 2 && key.m == 2 && key.k == 1;
+    const bool isReference = key.reflectivity == 'a' && key.orientation == 'T' &&
+                             key.l == 2 && key.m == 2 && key.k == 1;
     fullVals[static_cast<size_t>(phase->second)] =
-        absoluteValue == 0.0 || isReference
-            ? 0.0 : std::arg(amplitude.value);
+        absoluteValue == 0.0 || isReference ? 0.0 : std::arg(amplitude.value);
   }
-  if (assignedMagnitudes.size() != amplitudes.size() ||
-      amplitudes.size() != 36) {
+  if (assignedMagnitudes.size() != amplitudes.size() || amplitudes.size() != 36) {
     throw std::runtime_error(
         "PhotoTest did not produce its complete 36-amplitude basis");
   }
 
-  std::vector<double> rawMoments;
-  EvaluateAllMoments(ctx, fullVals, rawMoments);
+  std::vector<double> unnormalisedMoments;
+  EvaluateAllMoments(ctx, fullVals, unnormalisedMoments);
   if (ctx.idxH0_00 < 0) {
     throw std::runtime_error("PhotoTest could not find H_0_0_0_0_0");
   }
-  info.rawH000 = rawMoments[static_cast<size_t>(ctx.idxH0_00)];
-  if (!(info.rawH000 > 0.0) || !std::isfinite(info.rawH000)) {
+  info.unnormalisedH000 = unnormalisedMoments[static_cast<size_t>(ctx.idxH0_00)];
+  if (!(info.unnormalisedH000 > 0.0) || !std::isfinite(info.unnormalisedH000)) {
     throw std::runtime_error(
-        "PhotoTest has a non-positive raw normalization moment");
+        "PhotoTest has a non-positive unnormalised normalization moment");
   }
-  info.amplitudeScale = std::sqrt(
-      ctx.cfg.normalisationMomentTarget / info.rawH000);
+  info.amplitudeScale =
+      std::sqrt(ctx.cfg.normalisationMomentTarget / info.unnormalisedH000);
   for (size_t i = 0; i < ctx.fullPars.size(); ++i) {
-    if (!ctx.fullPars[i].phase) fullVals[i] *= info.amplitudeScale;
+    if (!ctx.fullPars[i].phase)
+      fullVals[i] *= info.amplitudeScale;
   }
   return info;
 }
 
-static std::optional<PhotoTestFillInfo> FillConfiguredAmplitudes(
-    const EvaluationContext& ctx,
-    const FixedMomentsConfig& generation,
-    std::vector<double>& fullVals) {
+static std::optional<PhotoTestFillInfo>
+FillConfiguredAmplitudes(const EvaluationContext& ctx,
+                         const FixedMomentsConfig& generation,
+                         std::vector<double>& fullVals) {
   TRandom3 random(generation.seed);
-  if (generation.seed == 0) random.SetSeed(0);
+  if (generation.seed == 0)
+    random.SetSeed(0);
   if (generation.mode == FixedGenerationMode::Custom) {
     FillCustomAmplitudes(ctx, generation, random, fullVals);
     return std::nullopt;
@@ -472,15 +496,15 @@ static void PrintAmplitudes(const EvaluationContext& ctx,
             << "-------------------------------------\n";
   for (size_t i = 0; i < ctx.fullPars.size(); ++i) {
     const auto& parameter = ctx.fullPars[i];
-    if (parameter.phase) continue;
+    if (parameter.phase)
+      continue;
     const auto label = ParseParameterLabel(parameter.name);
     const double magnitude = fullVals[i];
     std::cout << std::setw(18) << parameter.name << " = " << std::setw(12)
               << std::setprecision(8) << magnitude;
     if (std::abs(magnitude) > 1e-14) {
-      const auto phase = values.find(AmplitudeName(
-          label.reflectivity, label.orientation, label.l, label.m,
-          label.k, true));
+      const auto phase = values.find(MakeAmplitudeName(
+          label.reflectivity, label.orientation, label.l, label.m, label.k, true));
       if (phase != values.end()) {
         std::cout << "   phase = " << std::setw(12) << phase->second;
       }
@@ -500,11 +524,16 @@ static std::vector<std::string> RequestedMomentSeedBranches(const InternalConfig
   // schema, then replaces its placeholders with calculated moments.
   std::vector<std::string> names;
   int maximumL = 0;
-  for (const auto& wave : cfg.waves) maximumL = std::max(maximumL, wave.l);
+  for (const auto& wave : cfg.waves)
+    maximumL = std::max(maximumL, wave.l);
   const int betaMax = (cfg.nucleonPolarization == NucleonPolarization::Initial ||
-                       cfg.nucleonPolarization == NucleonPolarization::Both) ? 3 : 0;
+                       cfg.nucleonPolarization == NucleonPolarization::Both)
+                          ? 3
+                          : 0;
   const int deltaMax = (cfg.nucleonPolarization == NucleonPolarization::Recoil ||
-                        cfg.nucleonPolarization == NucleonPolarization::Both) ? 3 : 0;
+                        cfg.nucleonPolarization == NucleonPolarization::Both)
+                           ? 3
+                           : 0;
 
   auto add = [&](const std::string& valueName) {
     names.push_back(valueName);
@@ -521,15 +550,15 @@ static std::vector<std::string> RequestedMomentSeedBranches(const InternalConfig
     for (int delta = 0; delta <= deltaMax; ++delta) {
       for (int L = 0; L <= 2 * maximumL; ++L) {
         for (int M = 0; M <= L; ++M) {
-          add((cfg.photoproduction ? "RH_0_" : "RH04_") +
-              suffix(beta, delta, L, M));
+          add((cfg.photoproduction ? "RH_0_" : "RH04_") + suffix(beta, delta, L, M));
         }
       }
     }
   }
   const int maximumAlpha = cfg.photoproduction ? 3 : 8;
   for (int alpha = 1; alpha <= maximumAlpha; ++alpha) {
-    if (alpha == 4) continue;
+    if (alpha == 4)
+      continue;
     for (int beta = 0; beta <= betaMax; ++beta) {
       for (int delta = 0; delta <= deltaMax; ++delta) {
         // Spin is an axial vector, so its in-plane Pauli components x and z
@@ -537,14 +566,13 @@ static std::vector<std::string> RequestedMomentSeedBranches(const InternalConfig
         // This must match PolarizationParity() when deciding whether an M=0
         // seed branch is physically allowed.
         const int parity =
-            ((alpha == 2 || alpha == 3 || alpha == 6 || alpha == 7) ? -1 : 1)
-            * ((beta == 1 || beta == 3) ? -1 : 1)
-            * ((delta == 1 || delta == 3) ? -1 : 1);
+            ((alpha == 2 || alpha == 3 || alpha == 6 || alpha == 7) ? -1 : 1) *
+            ((beta == 1 || beta == 3) ? -1 : 1) * ((delta == 1 || delta == 3) ? -1 : 1);
         for (int L = 0; L <= 2 * maximumL; ++L) {
           for (int M = 0; M <= L; ++M) {
-            if (parity < 0 && M == 0) continue;
-            add("RH_" + std::to_string(alpha) + "_" +
-                suffix(beta, delta, L, M));
+            if (parity < 0 && M == 0)
+              continue;
+            add("RH_" + std::to_string(alpha) + "_" + suffix(beta, delta, L, M));
           }
         }
       }
@@ -557,12 +585,14 @@ static void CreateSeedInputFile(const std::string& fileName,
                                 const std::string& treeName,
                                 const InternalConfig& cfg) {
   std::unique_ptr<TFile> f(TFile::Open(fileName.c_str(), "RECREATE"));
-  if (!f || f->IsZombie()) throw std::runtime_error("Failed to create seed file: " + fileName);
+  if (!f || f->IsZombie())
+    throw std::runtime_error("Failed to create seed file: " + fileName);
 
   TTree t(treeName.c_str(), "Temporary tree used to initialise the moment model");
 
   const std::vector<std::string> branchNames = RequestedMomentSeedBranches(cfg);
-  if (branchNames.empty()) throw std::runtime_error("No seed moment branch names were requested");
+  if (branchNames.empty())
+    throw std::runtime_error("No seed moment branch names were requested");
 
   std::vector<double> storage(branchNames.size(), 0.0);
   for (size_t i = 0; i < branchNames.size(); ++i) {
@@ -582,8 +612,7 @@ static void CreateSeedInputFile(const std::string& fileName,
 
 namespace detail {
 
-std::shared_ptr<EvaluationContext> BuildSyntheticContext(
-    const InternalConfig& config) {
+std::shared_ptr<EvaluationContext> BuildSyntheticContext(const InternalConfig& config) {
   CreateSeedInputFile(config.momentsFile, config.momentsTree, config);
   return BuildContext(config);
 }
@@ -592,9 +621,10 @@ std::shared_ptr<EvaluationContext> BuildSyntheticContext(
 
 static void GenerateFixedPoint(const FixedMomentsConfig& generation,
                                bool useExampleAmplitudes) {
+  ValidateMomentNoise(generation);
   const std::filesystem::path outPath = generation.output.empty()
-      ? std::filesystem::path("fixed_test.root")
-      : generation.output;
+                                            ? std::filesystem::path("fixed_test.root")
+                                            : generation.output;
   if (!outPath.parent_path().empty()) {
     std::filesystem::create_directories(outPath.parent_path());
   }
@@ -634,17 +664,19 @@ static void GenerateFixedPoint(const FixedMomentsConfig& generation,
     observedNames.push_back(ob.name);
     errNames.push_back(ob.name + "_err");
   }
+  ApplyMomentNoise(generation, *ctx, observedVals, errVals);
 
   // H04 is the observable supplied to an electroproduction fit. Keep its
   // separate H0 and H4 values as diagnostics.
-  std::vector<std::string> raw04Names;
-  std::vector<double> raw04Vals;
+  std::vector<std::string> componentResponseNames;
+  std::vector<double> componentResponseValues;
   if (!cfg.photoproduction) {
     for (size_t i = 0; i < ctx->modelsRec.size(); ++i) {
       const auto& moment = ctx->modelsRec[i];
-      if (moment.alpha != 0 && moment.alpha != 4) continue;
-      raw04Names.push_back("R" + moment.name);
-      raw04Vals.push_back(Hvals[i]);
+      if (moment.alpha != 0 && moment.alpha != 4)
+        continue;
+      componentResponseNames.push_back("R" + moment.name);
+      componentResponseValues.push_back(Hvals[i]);
     }
   }
 
@@ -653,25 +685,28 @@ static void GenerateFixedPoint(const FixedMomentsConfig& generation,
     throw std::runtime_error("Failed to open output file: " + outPath.string());
   }
 
-  TTree* t = new TTree(treeName.c_str(), "Generated moments built from a fixed amplitude point");
+  TTree* t = new TTree(treeName.c_str(),
+                       "Generated moments built from a fixed amplitude point");
   t->SetDirectory(fout.get());
 
   if (photoTestInfo) {
     // Store generation controls and the pre-normalisation quantities as ROOT
     // metadata so an isolated scan point remains scientifically interpretable.
     TObjString("PhotoTest").Write("mass_model");
-    TParameter<double>("invariant_mass_GeV",
-                       *generation.massModel.massGeV).Write();
-    TParameter<double>("k_asymmetry",
-                       generation.massModel.kAsymmetry).Write();
+    TParameter<double>("invariant_mass_GeV", *generation.massModel.massGeV).Write();
+    TParameter<double>("k_asymmetry", generation.massModel.kAsymmetry).Write();
     TParameter<int>("background_enabled",
-                    generation.massModel.backgroundEnabled ? 1 : 0).Write();
+                    generation.massModel.backgroundEnabled ? 1 : 0)
+        .Write();
     TParameter<double>("reference_phase_before_rotation",
-                       photoTestInfo->referencePhaseBeforeRotation).Write();
-    TParameter<double>("raw_H_0_0_0",
-                       photoTestInfo->rawH000).Write();
-    TParameter<double>("amplitude_normalisation_scale",
-                       photoTestInfo->amplitudeScale).Write();
+                       photoTestInfo->referencePhaseBeforeRotation)
+        .Write();
+    TParameter<double>("raw_H_0_0_0", photoTestInfo->unnormalisedH000).Write();
+    TParameter<double>("amplitude_normalisation_scale", photoTestInfo->amplitudeScale)
+        .Write();
+  }
+  if (generation.noise) {
+    TParameter<double>("fixed_moment_noise", *generation.noise).Write();
   }
 
   std::vector<double> parStorage;
@@ -683,18 +718,66 @@ static void GenerateFixedPoint(const FixedMomentsConfig& generation,
   std::vector<double> errStorage;
   MakeNamedBranches(t, errNames, errStorage);
 
-  std::vector<double> raw04Storage;
-  MakeNamedBranches(t, raw04Names, raw04Storage);
+  std::vector<double> componentResponseStorage;
+  MakeNamedBranches(t, componentResponseNames, componentResponseStorage);
+
+  std::vector<std::string> unnormalisedPhotoIntensityNames;
+  std::vector<double> unnormalisedPhotoIntensityStorage;
+  std::vector<double> unnormalisedPhotoIntensityValues;
+  std::vector<std::string> unnormalisedPhotoAmplitudeNames;
+  std::vector<double> unnormalisedPhotoAmplitudeStorage;
+  if (photoTestInfo) {
+    unnormalisedPhotoIntensityNames = {
+        "raw_photo_intensity",    "raw_photo_intensity_l0", "raw_photo_intensity_l1",
+        "raw_photo_intensity_l2", "raw_photo_H_0_0_0",      "normalised_photo_H_0_0_0",
+    };
+    const auto& byL = photoTestInfo->unnormalisedIntensityByL;
+    if (ctx->idxH0_00 < 0) {
+      throw std::runtime_error("PhotoTest could not find H_0_0_0_0_0");
+    }
+    unnormalisedPhotoIntensityValues = {
+        byL[0] + byL[1] + byL[2],
+        byL[0],
+        byL[1],
+        byL[2],
+        photoTestInfo->unnormalisedH000,
+        Hvals[static_cast<size_t>(ctx->idxH0_00)],
+    };
+    unnormalisedPhotoAmplitudeNames = photoTestInfo->unnormalisedAmplitudeNames;
+  }
+  MakeNamedBranches(t, unnormalisedPhotoIntensityNames,
+                    unnormalisedPhotoIntensityStorage);
+  MakeNamedBranches(t, unnormalisedPhotoAmplitudeNames,
+                    unnormalisedPhotoAmplitudeStorage);
 
   std::vector<std::string> q2Name = {"Q2"};
   std::vector<double> q2Storage;
   MakeNamedBranches(t, q2Name, q2Storage);
 
+  // A scalar mass branch lets point-by-point PhotoTest scans be merged into
+  // one TTree without recovering the invariant mass from file metadata.
+  std::vector<std::string> massName = {"mass_GeV"};
+  std::vector<double> massStorage;
+  MakeNamedBranches(t, massName, massStorage);
+
   parStorage = fullVals;
   obsStorage = observedVals;
   errStorage = errVals;
-  raw04Storage = raw04Vals;
+  componentResponseStorage = componentResponseValues;
+  // These branches intentionally retain the unnormalised PhotoTest values.
+  // Do not derive them from fullVals, which has been scaled to H_0000 = 2.
+  unnormalisedPhotoIntensityStorage = unnormalisedPhotoIntensityValues;
+  // Branches retain pointers into this storage. Copy values in place: a
+  // conditional vector temporary would move-assign and invalidate the pointers.
+  if (photoTestInfo) {
+    std::copy(photoTestInfo->unnormalisedAmplitudeValues.begin(),
+              photoTestInfo->unnormalisedAmplitudeValues.end(),
+              unnormalisedPhotoAmplitudeStorage.begin());
+  }
   q2Storage.assign(q2Storage.size(), cfg.photoproduction ? 0.0 : 1.0);
+  massStorage.assign(massStorage.size(),
+                     photoTestInfo ? *generation.massModel.massGeV
+                                   : std::numeric_limits<double>::quiet_NaN());
 
   t->Fill();
   fout->Write();
@@ -707,16 +790,14 @@ static void GenerateFixedPoint(const FixedMomentsConfig& generation,
 }
 
 void GenerateFixedMoments(const FixedMomentsConfig& config) {
-  // The mode selects how raw amplitudes are obtained.  Gauge rotation,
+  // The mode selects how unnormalised amplitudes are obtained. Gauge rotation,
   // normalization, moment evaluation, and ROOT serialization are then shared,
   // ensuring that all generated inputs obey the same schema.
   GenerateFixedPoint(config, false);
 }
 
-void GenerateFixedMoments(const std::filesystem::path& output,
-                          double epsilon,
-                          bool printAmplitudes,
-                          const ModelConfig& model,
+void GenerateFixedMoments(const std::filesystem::path& output, double epsilon,
+                          bool printAmplitudes, const ModelConfig& model,
                           bool photoproduction) {
   FixedMomentsConfig config;
   config.output = output;

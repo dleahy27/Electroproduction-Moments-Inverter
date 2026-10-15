@@ -11,7 +11,6 @@
 
 namespace emi::runtime {
 
-UserSettingsConfig LoadUserSettings(
-    const std::filesystem::path& requestedPath = {});
+UserSettingsConfig LoadUserSettings(const std::filesystem::path& requestedPath = {});
 
 } // namespace emi::runtime

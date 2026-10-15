@@ -7,8 +7,9 @@
 // Config.h, then hands those objects to the library.  Physics calculations
 // belong in src/, which keeps command-line parsing separate from the model and
 // also lets the same operations be called directly from C++.
-#include "emi/Runner.h"
 #include "RuntimeSettings.h"
+#include "emi/PhotoTest.h"
+#include "emi/Runner.h"
 
 #include <exception>
 #include <initializer_list>
@@ -44,7 +45,9 @@ public:
     }
   }
 
-  bool Has(const std::string& key) const { return flags_.count(key) || values_.count(key); }
+  bool Has(const std::string& key) const {
+    return flags_.count(key) || values_.count(key);
+  }
 
   std::string Get(const std::string& key, std::string fallback = {}) const {
     const auto found = values_.find(key);
@@ -69,7 +72,8 @@ public:
     // errors fail immediately instead of being silently ignored.
     auto contains = [](std::string_view key, const auto& options) {
       for (std::string_view option : options) {
-        if (key == option) return true;
+        if (key == option)
+          return true;
       }
       return false;
     };
@@ -103,6 +107,8 @@ void PrintHelp() {
 
 Usage:
   emi fit --input FILE --output FILE [options]
+  emi mass-fit --input FILE --output FILE [options]
+  emi generate-mass-model [--output FILE] [--settings FILE]
   emi bootstrap --input FILE --output FILE [options]
   emi make-lepto [--dataset e_rho] [--output FILE]
   emi make-photo [--dataset gluex] [--output FILE]
@@ -121,6 +127,11 @@ Fit options:
   --electro               use the electroproduction model
   --polarization MODE     nucleon mode: initial, recoil, or both (default: none)
   --k-gauge REF           SO(2) real-wave reference, e.g. b:T:1:1
+  --max-calls N           mass-fit function-call budget per start
+  --photo-test            rebuild the mass model from PhotoTest couplings
+  --mass-bins N           mass-generation grid size (at least two)
+  --mass-min VALUE        first generated mass [GeV]
+  --mass-max VALUE        last generated mass [GeV]
   --no-hesse              skip the Hessian uncertainty calculation
   --numerical-gradients    use Minuit's numerical derivatives for cross-checks
   --quiet                 suppress progress output
@@ -137,6 +148,7 @@ Synthetic-generation options:
   --output FILE           override FixedMoments().output
   --epsilon VALUE         override FixedMoments().epsilon
   --seed N                override FixedMoments().seed
+  --noise VALUE           relative Gaussian noise for generated moments
   --polarization MODE     override FixedMoments().model nucleon mode
   --k-gauge REF           use the same single-polarization gauge as the fit
   --suppression VALUE     override suppression in a dominant-K mode
@@ -155,34 +167,53 @@ emi::FitConfig ReadFit(const Arguments& args, emi::FitConfig fit) {
   // Begin with settings loaded through Cling, then apply only options supplied
   // explicitly on the command line. CLI values therefore take precedence
   // without replacing unrelated defaults from UserSettings.h.
-  if (args.Has("input")) fit.input = args.Get("input");
-  if (args.Has("output")) fit.output = args.Get("output");
-  if (args.Has("tree")) fit.tree = args.Get("tree");
-  if (args.Has("bin")) fit.bin = args.Integer("bin", fit.bin);
-  if (args.Has("epsilon")) fit.epsilon = args.Real("epsilon", fit.epsilon);
-  if (args.Has("starts")) fit.starts = args.Unsigned("starts", fit.starts);
-  if (args.Has("workers")) fit.workers = args.Unsigned("workers", fit.workers);
-  if (args.Has("seed")) fit.seed = args.Unsigned("seed", fit.seed);
+  if (args.Has("input"))
+    fit.input = args.Get("input");
+  if (args.Has("output"))
+    fit.output = args.Get("output");
+  if (args.Has("tree"))
+    fit.tree = args.Get("tree");
+  if (args.Has("bin"))
+    fit.bin = args.Integer("bin", fit.bin);
+  if (args.Has("epsilon"))
+    fit.epsilon = args.Real("epsilon", fit.epsilon);
+  if (args.Has("starts"))
+    fit.starts = args.Unsigned("starts", fit.starts);
+  if (args.Has("workers"))
+    fit.workers = args.Unsigned("workers", fit.workers);
+  if (args.Has("seed"))
+    fit.seed = args.Unsigned("seed", fit.seed);
   if (args.Has("photo") && args.Has("electro")) {
     throw std::invalid_argument("Choose either --photo or --electro, not both");
   }
-  if (args.Has("photo")) fit.photoproduction = true;
-  if (args.Has("electro")) fit.photoproduction = false;
-  if (args.Has("no-hesse")) fit.hesse = false;
-  if (args.Has("numerical-gradients")) fit.useNumericalGradients = true;
-  if (args.Has("quiet")) fit.verbose = false;
-  if (args.Has("verbose")) fit.verbose = true;
+  if (args.Has("photo"))
+    fit.photoproduction = true;
+  if (args.Has("electro"))
+    fit.photoproduction = false;
+  if (args.Has("no-hesse"))
+    fit.hesse = false;
+  if (args.Has("numerical-gradients"))
+    fit.useNumericalGradients = true;
+  if (args.Has("quiet"))
+    fit.verbose = false;
+  if (args.Has("verbose"))
+    fit.verbose = true;
   return fit;
 }
 
 emi::NucleonPolarization ReadPolarization(const Arguments& args,
                                           emi::NucleonPolarization fallback) {
-  if (!args.Has("polarization")) return fallback;
+  if (!args.Has("polarization"))
+    return fallback;
   const std::string value = args.Get("polarization");
-  if (value == "initial") return emi::NucleonPolarization::Initial;
-  if (value == "recoil") return emi::NucleonPolarization::Recoil;
-  if (value == "both") return emi::NucleonPolarization::Both;
-  if (value == "none") return emi::NucleonPolarization::None;
+  if (value == "initial")
+    return emi::NucleonPolarization::Initial;
+  if (value == "recoil")
+    return emi::NucleonPolarization::Recoil;
+  if (value == "both")
+    return emi::NucleonPolarization::Both;
+  if (value == "none")
+    return emi::NucleonPolarization::None;
   throw std::invalid_argument(
       "Polarization must be one of: none, initial, recoil, both");
 }
@@ -193,8 +224,7 @@ emi::ModelConfig ReadGauge(const Arguments& args, emi::ModelConfig model) {
   // A single-polarization fit has a continuous change-of-spin-basis freedom.
   // The four-part label chooses which k=+1 amplitude is made real to remove
   // that freedom; it does not add a measured constraint to the data.
-  model.UseNucleonPolarization(
-      ReadPolarization(args, model.nucleonPolarization));
+  model.UseNucleonPolarization(ReadPolarization(args, model.nucleonPolarization));
   if (args.Has("k-gauge")) {
     const std::string value = args.Get("k-gauge");
     std::istringstream input(value);
@@ -206,8 +236,9 @@ emi::ModelConfig ReadGauge(const Arguments& args, emi::ModelConfig model) {
     int l = -1;
     int m = 0;
     if (!(input >> reflectivity >> separator1 >> orientation >> separator2 >> l >>
-          separator3 >> m) || separator1 != ':' || separator2 != ':' ||
-        separator3 != ':' || input.peek() != std::char_traits<char>::eof()) {
+          separator3 >> m) ||
+        separator1 != ':' || separator2 != ':' || separator3 != ':' ||
+        input.peek() != std::char_traits<char>::eof()) {
       throw std::invalid_argument(
           "k-gauge must have the form reflectivity:orientation:l:m");
     }
@@ -216,38 +247,38 @@ emi::ModelConfig ReadGauge(const Arguments& args, emi::ModelConfig model) {
   return model;
 }
 
-emi::FixedMomentsConfig ReadFixedGeneration(
-    const Arguments& args, emi::FixedMomentsConfig generation) {
-  args.RequireOnly({"settings", "output", "epsilon", "seed", "suppression",
+emi::FixedMomentsConfig ReadFixedGeneration(const Arguments& args,
+                                            emi::FixedMomentsConfig generation) {
+  args.RequireOnly({"settings", "output", "epsilon", "seed", "suppression", "noise",
                     "mass", "k-asymmetry", "polarization", "k-gauge"},
                    {"quiet", "verbose", "no-background"});
   if (args.Has("quiet") && args.Has("verbose")) {
     throw std::invalid_argument("Choose either --quiet or --verbose, not both");
   }
-  if (args.Has("output")) generation.output = args.Get("output");
+  if (args.Has("output"))
+    generation.output = args.Get("output");
   if (args.Has("epsilon")) {
     generation.epsilon = args.Real("epsilon", generation.epsilon);
   }
   if (args.Has("seed")) {
     generation.seed = args.Unsigned("seed", generation.seed);
   }
+  if (args.Has("noise")) {
+    generation.noise = args.Real("noise", 0.0);
+  }
   if (args.Has("suppression")) {
     const bool dominantK =
         generation.mode == emi::FixedGenerationMode::KPositiveDominant ||
         generation.mode == emi::FixedGenerationMode::KReflectivitySplit;
     if (!dominantK) {
-      throw std::invalid_argument(
-          "--suppression applies only to KPositiveDominant or "
-          "KReflectivitySplit in FixedMoments()");
+      throw std::invalid_argument("--suppression applies only to KPositiveDominant or "
+                                  "KReflectivitySplit in FixedMoments()");
     }
-    generation.suppression =
-        args.Real("suppression", generation.suppression);
+    generation.suppression = args.Real("suppression", generation.suppression);
   }
-  const bool photoTest =
-      generation.mode == emi::FixedGenerationMode::PhotoTest;
+  const bool photoTest = generation.mode == emi::FixedGenerationMode::PhotoTest;
   if (!photoTest &&
-      (args.Has("mass") || args.Has("k-asymmetry") ||
-       args.Has("no-background"))) {
+      (args.Has("mass") || args.Has("k-asymmetry") || args.Has("no-background"))) {
     throw std::invalid_argument(
         "--mass, --k-asymmetry, and --no-background apply only to "
         "PhotoTest in FixedMoments()");
@@ -256,14 +287,16 @@ emi::FixedMomentsConfig ReadFixedGeneration(
     generation.massModel.massGeV = args.Real("mass", 0.0);
   }
   if (args.Has("k-asymmetry")) {
-    generation.massModel.kAsymmetry = args.Real(
-        "k-asymmetry", generation.massModel.kAsymmetry);
+    generation.massModel.kAsymmetry =
+        args.Real("k-asymmetry", generation.massModel.kAsymmetry);
   }
   if (args.Has("no-background")) {
     generation.massModel.backgroundEnabled = false;
   }
-  if (args.Has("quiet")) generation.printAmplitudes = false;
-  if (args.Has("verbose")) generation.printAmplitudes = true;
+  if (args.Has("quiet"))
+    generation.printAmplitudes = false;
+  if (args.Has("verbose"))
+    generation.printAmplitudes = true;
   // Generation and fitting must use the same spin basis.  Applying the CLI
   // overrides here is especially important for closure scripts that produce
   // initial- and recoil-polarized samples from one UserSettings file.
@@ -278,15 +311,15 @@ int main(int argc, char** argv) {
   // apply overrides, and invoke one public Runner operation. Exceptions become
   // a nonzero process status for shell scripts and batch systems.
   try {
+    (void)&emi::MakePhotoTestMassModel;
     if (argc < 2 || std::string_view(argv[1]) == "--help" ||
         std::string_view(argv[1]) == "help") {
       PrintHelp();
       return 0;
     }
 
-    const std::string command = std::string_view(argv[1]) == "--generate-fixed"
-                                    ? "generate-fixed"
-                                    : argv[1];
+    const std::string command =
+        std::string_view(argv[1]) == "--generate-fixed" ? "generate-fixed" : argv[1];
     const Arguments args(argc, argv, 2);
     auto loadSettings = [&] {
       // Delay Cling startup until a command actually needs editable settings.
@@ -296,42 +329,97 @@ int main(int argc, char** argv) {
 
     if (command == "fit") {
       auto settings = loadSettings();
-      emi::RunFit(ReadFit(args, settings.fit),
-                  ReadGauge(args, settings.model));
+      emi::RunFit(ReadFit(args, settings.fit), ReadGauge(args, settings.model));
+
+    } else if (command == "mass-fit") {
+      auto settings = loadSettings();
+      args.RequireOnly({"settings", "input", "output", "tree", "epsilon", "starts",
+                        "workers", "seed", "polarization", "k-gauge", "max-calls",
+                        "k-asymmetry"},
+                       {"photo", "electro", "no-hesse", "numerical-gradients", "quiet",
+                        "verbose", "photo-test"});
+      settings.massFit.fit = ReadFit(args, settings.massFit.fit);
+      settings.massFit.maxFunctionCalls =
+          args.Unsigned("max-calls", settings.massFit.maxFunctionCalls);
+      const auto model = ReadGauge(args, settings.model);
+      if (args.Has("photo-test")) {
+        settings.massFit.model = emi::MakePhotoTestMassModel(
+            args.Real("k-asymmetry", 0.0),
+            model.nucleonPolarization != emi::NucleonPolarization::None);
+      } else if (args.Has("k-asymmetry")) {
+        throw std::invalid_argument("--k-asymmetry requires --photo-test for mass-fit");
+      }
+      emi::FitMassModel(settings.massFit, model);
+
+    } else if (command == "generate-mass-model") {
+      auto settings = loadSettings();
+      args.RequireOnly({"settings", "output", "tree", "epsilon", "polarization",
+                        "k-gauge", "k-asymmetry", "mass-bins", "mass-min", "mass-max"},
+                       {"photo-test", "photo", "electro"});
+      auto& generation = settings.massGeneration;
+      if (args.Has("output"))
+        generation.output = args.Get("output");
+      if (args.Has("tree"))
+        generation.tree = args.Get("tree");
+      generation.epsilon = args.Real("epsilon", generation.epsilon);
+      generation.model = ReadGauge(args, generation.model);
+      if (args.Has("photo") && args.Has("electro"))
+        throw std::invalid_argument("Choose either --photo or --electro");
+      if (args.Has("photo"))
+        generation.photoproduction = true;
+      if (args.Has("electro"))
+        generation.photoproduction = false;
+      if (args.Has("photo-test")) {
+        generation.massModel = emi::MakePhotoTestMassModel(
+            args.Real("k-asymmetry", 0.0),
+            generation.model.nucleonPolarization != emi::NucleonPolarization::None);
+      } else if (args.Has("k-asymmetry")) {
+        throw std::invalid_argument(
+            "--k-asymmetry requires --photo-test for mass generation");
+      }
+      if (args.Has("mass-bins") || args.Has("mass-min") || args.Has("mass-max")) {
+        if (generation.massesGeV.size() < 2)
+          throw std::invalid_argument("Mass-grid overrides require an existing grid");
+        const unsigned bins = args.Unsigned("mass-bins", generation.massesGeV.size());
+        const double low = args.Real("mass-min", generation.massesGeV.front());
+        const double high = args.Real("mass-max", generation.massesGeV.back());
+        if (bins < 2 || !(low > 0.0) || !(high > low))
+          throw std::invalid_argument(
+              "Mass grid requires at least two bins and 0 < min < max");
+        generation.massesGeV.clear();
+        for (unsigned i = 0; i < bins; ++i)
+          generation.massesGeV.push_back(low + i * (high - low) / (bins - 1));
+      }
+      emi::GenerateMassModelMoments(generation);
 
     } else if (command == "bootstrap") {
       auto settings = loadSettings();
       emi::BootstrapConfig bootstrap = settings.bootstrap;
       bootstrap.fit = ReadFit(args, bootstrap.fit);
       bootstrap.fit.starts = args.Unsigned("starts-per-toy", bootstrap.startsPerToy);
-      if (args.Has("hesse")) bootstrap.fit.hesse = true;
+      if (args.Has("hesse"))
+        bootstrap.fit.hesse = true;
       bootstrap.toys = args.Unsigned("toys", bootstrap.toys);
       bootstrap.startsPerToy = bootstrap.fit.starts;
       emi::RunBootstrap(bootstrap, ReadGauge(args, settings.model));
 
     } else if (command == "make-lepto") {
-      emi::MakeLeptoproductionMoments(args.Get("dataset", "e_rho"),
-                                      args.Get("output"),
+      emi::MakeLeptoproductionMoments(args.Get("dataset", "e_rho"), args.Get("output"),
                                       args.Get("tree", "expMoments"));
     } else if (command == "make-photo") {
-      emi::MakePhotoproductionMoments(args.Get("dataset", "gluex"),
-                                      args.Get("output"),
+      emi::MakePhotoproductionMoments(args.Get("dataset", "gluex"), args.Get("output"),
                                       args.Get("tree", "expMoments"));
     } else if (command == "generate-fixed") {
-      emi::GenerateFixedMoments(
-          ReadFixedGeneration(args, loadSettings().fixedMoments));
+      emi::GenerateFixedMoments(ReadFixedGeneration(args, loadSettings().fixedMoments));
     } else if (command == "generate-example") {
       const auto settings = loadSettings();
-      emi::GenerateFixedMoments(args.Get("output"),
-                                args.Real("epsilon", 0.8), !args.Has("quiet"),
-                                ReadGauge(args, settings.model),
+      emi::GenerateFixedMoments(args.Get("output"), args.Real("epsilon", 0.8),
+                                !args.Has("quiet"), ReadGauge(args, settings.model),
                                 args.Has("photo"));
     } else if (command == "generate-random") {
       const auto settings = loadSettings();
-      emi::GenerateRandomMoments(args.Get("output"),
-                                 args.Unsigned("events", 1000000),
-                                 args.Real("epsilon", 1.0),
-                                 args.Unsigned("seed", 0),
+      emi::GenerateRandomMoments(args.Get("output"), args.Unsigned("events", 1000000),
+                                 args.Real("epsilon", 1.0), args.Unsigned("seed", 0),
                                  ReadGauge(args, settings.model));
     } else {
       throw std::invalid_argument("Unknown command: " + command);

@@ -19,8 +19,30 @@ cmake-build-*/
 *.csv
 *.data
 *.root
-!tutorials/electroproduction_paper/input/*.root
 
 # Python analysis products
 __pycache__/
 tutorials/**/output/
+
+# Editable Python package metadata
+*.egg-info/
+
+# Other generated images, scientific data and runtime files
+*.svg
+*.webp
+*.bmp
+*.tif
+*.tiff
+*.eps
+*.ps
+*.h5
+*.hdf5
+*.npy
+*.npz
+*.parquet
+*.feather
+*.fits
+*.pkl
+*.pickle
+*.log
+*.pyc

@@ -56,14 +56,93 @@ struct FitConfig {
   // retains the default broad random initialization for all magnitudes.
   std::vector<InitialAmplitude> initialAmplitudes;
 
-  FitConfig& SetStarts(unsigned value) { starts = value; return *this; }
-  FitConfig& SetWorkers(unsigned value) { workers = value; return *this; }
-  FitConfig& SetSeed(std::uint32_t value) { seed = value; return *this; }
-  FitConfig& UseHesse(bool value = true) { hesse = value; return *this; }
+  FitConfig& SetStarts(unsigned value) {
+    starts = value;
+    return *this;
+  }
+  FitConfig& SetWorkers(unsigned value) {
+    workers = value;
+    return *this;
+  }
+  FitConfig& SetSeed(std::uint32_t value) {
+    seed = value;
+    return *this;
+  }
+  FitConfig& UseHesse(bool value = true) {
+    hesse = value;
+    return *this;
+  }
   FitConfig& UseNumericalGradients(bool value = true) {
     useNumericalGradients = value;
     return *this;
   }
+};
+
+// A real minimizer coordinate used by the mass-dependent model.  Bounds are
+// explicit because a pole mass or width must never wander into an unphysical
+// region while Minuit explores a coherent amplitude model.
+struct MassParameter {
+  double initial = 0.0;
+  double lower = -10.0;
+  double upper = 10.0;
+  bool fixed = false;
+};
+
+// Identifies one complex partial wave in a mass model.  The key has the same
+// convention as FixedAmplitude; use k=0 for an unpolarized analysis.
+struct MassWave {
+  char reflectivity = 'a';
+  char orientation = 'T';
+  int l = 0;
+  int m = 0;
+  int k = 0;
+};
+
+// A constant-width relativistic Breit-Wigner contribution, multiplied by a
+// fitted complex production coupling, to one partial wave.
+struct MassResonanceConfig {
+  std::string name;
+  MassWave wave;
+  MassParameter poleMass{1.3, 0.1, 4.0, false};
+  MassParameter width{0.15, 1.e-4, 2.0, false};
+  // Same polar convention as ordinary EMI amplitudes.
+  MassParameter couplingMagnitude{1.0, 0.0, 10.0, false};
+  MassParameter couplingPhase{0.0, -3.141592653589793, 3.141592653589793, false};
+};
+
+// A coherent complex constant term. It is useful for non-resonant production
+// and is evaluated in precisely the same phase convention as the resonances.
+struct MassBackgroundConfig {
+  std::string name;
+  MassWave wave;
+  MassParameter real{0.0, -10.0, 10.0, false};
+  MassParameter imag{0.0, -10.0, 10.0, false};
+};
+
+// Optional phase-reference coupling. Without this override EMI uses the
+// resonance on the highest-(l,m) positive-reflectivity transverse wave.
+// Its phase is held at the configured initial value, preserving relative phases.
+struct MassPhaseGauge {
+  std::string resonance;
+  MassWave wave;
+};
+
+struct MassModelConfig {
+  std::vector<MassResonanceConfig> resonances;
+  std::vector<MassBackgroundConfig> backgrounds;
+  std::optional<MassPhaseGauge> phaseGauge;
+};
+
+// Fits all entries of one moment tree together. `fit.bin` is deliberately not
+// used: every entry is a mass point and `massBranch` supplies its invariant
+// mass in GeV. The usual FitConfig controls Minuit starts and diagnostics.
+struct FitMassModelConfig {
+  FitConfig fit;
+  std::string massBranch = "mass_GeV";
+  // A finite budget makes high-dimensional multistart scans predictable. A
+  // start that reaches this limit is retained with its Minuit status.
+  unsigned maxFunctionCalls = 100000;
+  MassModelConfig model;
 };
 
 struct BootstrapConfig {
@@ -116,7 +195,10 @@ struct ModelConfig {
     waves = std::move(values);
     return *this;
   }
-  ModelConfig& AddWave(int l, int m) { waves.push_back({l, m}); return *this; }
+  ModelConfig& AddWave(int l, int m) {
+    waves.push_back({l, m});
+    return *this;
+  }
   ModelConfig& UseReflectivities(bool positive, bool negative) {
     usePositiveReflectivity = positive;
     useNegativeReflectivity = negative;
@@ -130,11 +212,25 @@ struct ModelConfig {
     nucleonPolarization = value;
     return *this;
   }
-  ModelConfig& SetKMixingGauge(char reflectivity, char orientation,
-                               int l, int m) {
+  ModelConfig& SetKMixingGauge(char reflectivity, char orientation, int l, int m) {
     kMixingGauge = KMixingGauge{reflectivity, orientation, l, m};
     return *this;
   }
+};
+
+// Closure-test generator for a complete mass scan. It writes scalar moment
+// branches per entry, ready to be consumed directly by FitMassModel.
+struct MassMomentGenerationConfig {
+  std::filesystem::path output = "mass_model_moments.root";
+  std::string tree = "massMoments";
+  std::vector<double> massesGeV;
+  double epsilon = 1.0;
+  bool photoproduction = true;
+  ModelConfig model;
+  MassModelConfig massModel;
+  std::string massBranch = "mass_GeV";
+  double relativeUncertainty = 0.02;
+  double absoluteUncertainty = 1.e-5;
 };
 
 // One complex partial-wave amplitude used to make an exact synthetic point.
@@ -204,6 +300,10 @@ struct FixedMomentsConfig {
   double randomMaximum = 1.0;
   double suppression = 0.1;
 
+  // When present, smear every non-normalization generated moment with a
+  // Gaussian of relative width `noise`. An absent value keeps exact moments.
+  std::optional<double> noise;
+
   // Used by deterministic mass-dependent modes such as PhotoTest.
   MassModelGenerationConfig massModel;
 
@@ -216,6 +316,8 @@ struct FixedMomentsConfig {
 struct UserSettingsConfig {
   ModelConfig model;
   FitConfig fit;
+  FitMassModelConfig massFit;
+  MassMomentGenerationConfig massGeneration;
   BootstrapConfig bootstrap;
   FixedMomentsConfig fixedMoments;
 };

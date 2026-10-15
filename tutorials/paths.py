@@ -7,5 +7,4 @@ when a runner is launched from a different working directory.
 
 from pathlib import Path
 
-
 PROJECT_DIR = Path(__file__).resolve().parents[1]

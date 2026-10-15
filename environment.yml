@@ -1,0 +1,19 @@
+# Tested EMI project environment. For general work use your separate phdconda.
+# Create: conda env create -f environment.yml
+# Activate: conda activate emi
+name: emi
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.14.8
+  - root=6.38.02
+  - numpy=2.5.4
+  - matplotlib=3.11.2
+  - scipy=1.18.1
+  - cmake>=3.18
+  - ninja
+  - cxx-compiler
+  - pip
+  - setuptools>=68
+  - wheel

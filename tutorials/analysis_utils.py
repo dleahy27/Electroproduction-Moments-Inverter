@@ -10,12 +10,12 @@ steps explicit while avoiding repeated scans of the same tree.
 """
 
 import re
+from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import ROOT
 
-from .paths import PROJECT_DIR
-
+from .paths import PROJECT_DIR as PROJECT_DIR
 
 MAGNITUDE_PATTERN = re.compile(r"^[ab]_[TL]_\d+_(?:m?\d+)$")
 PHASE_PATTERN = re.compile(r"^[ab]phi_[TL]_\d+_(?:m?\d+)$")
@@ -48,8 +48,10 @@ def read_tree(path, tree_name, columns, definitions=None):
     }
 
 
-def best_index(data, objective="chi2", require_fit_ok=True):
-    """Return the accepted row with the smallest finite objective value.
+def best_indices(data, objective="chi2", require_fit_ok=True, fraction=0.001):
+    """Return the lowest-objective fraction of accepted rows, best first.
+
+    Round the selected count up and retain at least one fit (0.001 = 0.1%).
 
     When ``fit_ok`` is stored, it records the return value of Minuit's
     minimization call and is the authoritative convergence flag.  A non-zero
@@ -57,6 +59,8 @@ def best_index(data, objective="chi2", require_fit_ok=True):
     covariance needed adjustment), so status is used only as a fallback for
     older trees that do not contain ``fit_ok``.
     """
+    if not 0.0 < fraction <= 1.0:
+        raise ValueError("The selected fit fraction must be in (0, 1]")
     good = np.isfinite(data[objective])
     if require_fit_ok and "fit_ok" in data:
         good &= data["fit_ok"].astype(bool)
@@ -65,7 +69,26 @@ def best_index(data, objective="chi2", require_fit_ok=True):
     indices = np.flatnonzero(good)
     if not len(indices):
         raise ValueError(f"No accepted finite rows were found for {objective!r}")
-    return indices[np.argmin(data[objective][indices])]
+    order = np.argsort(data[objective][indices], kind="stable")
+    count = max(1, int(np.ceil(fraction * len(indices))))
+    return indices[order[:count]]
+
+
+def best_index(data, objective="chi2", require_fit_ok=True):
+    """Return the accepted row with the smallest finite objective value."""
+    return best_indices(data, objective, require_fit_ok)[0]
+
+
+def range_errors(centre, samples):
+    """Asymmetric bars spanning sample minima/maxima along the first axis.
+
+    These are minimization ranges, not statistical uncertainties. Phase callers
+    supply their displayed phase convention before calculating the range.
+    """
+    centre = np.asarray(centre)
+    samples = np.asarray(samples)
+    return np.stack((centre - np.min(samples, axis=0),
+                     np.max(samples, axis=0) - centre))
 
 
 def phase_branch(magnitude_branch):
@@ -99,8 +122,7 @@ def wave_label(branch):
     sign = "+" if reflectivity == "a" else "-"
     projection = projection.replace("m", "-")
     return (
-        orbital + "$^" + sign
-        + r"_{\mathrm{" + polarization + "}" + projection + "}$"
+        orbital + "$^" + sign + r"_{\mathrm{" + polarization + "}" + projection + "}$"
     )
 
 
@@ -178,8 +200,64 @@ def save_figure(figure, path, show=False, **kwargs):
     Closing figures matters for scans that produce hundreds of PDFs: otherwise
     Matplotlib retains every artist and memory usage grows throughout the job.
     """
+    path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     figure.savefig(path, bbox_inches="tight", **kwargs)
     if show:
         plt.show()
     plt.close(figure)
+
+
+def truth_parameters(path):
+    """Read injected mass coordinates together, opening the ROOT file once."""
+    source = ROOT.TFile.Open(str(path), "READ")
+    if not source or source.IsZombie():
+        raise OSError(f"Cannot open truth file {path}")
+    try:
+        return {
+            key.GetName(): float(source.Get(key.GetName()).GetVal())
+            for key in source.GetListOfKeys()
+            if key.GetName().startswith(("bw_", "bg_"))
+        }
+    finally:
+        source.Close()
+
+
+def read_best_rows(path, tree_name, columns, group="scan_case", require_fit_ok=True,
+                   fraction=None):
+    """Read quality columns once, then let RDataFrame filter the selected rows.
+
+    Only the small quality table is used to find one minimum per scan case.
+    Amplitudes, moments, and covariance columns are read for those rows alone.
+    Return selected values and all quality rows (useful for start landscapes).
+    With fraction set, read that fraction per case, sorted by case then chi2.
+    """
+    frame = ROOT.RDataFrame(tree_name, str(path)).Define("scan_entry", "rdfentry_")
+    names = {str(name) for name in frame.GetColumnNames()}
+    quality_columns = [group, "scan_entry", "chi2"]
+    quality_columns += [
+        name for name in ("fit_ok", "status", "start", "val") if name in names
+    ]
+    quality = frame.AsNumpy(columns=quality_columns)
+    entries = []
+    for case in np.unique(quality[group]):
+        mask = quality[group] == case
+        rows = {name: values[mask] for name, values in quality.items()}
+        selected_indices = (
+            [best_index(rows, require_fit_ok=require_fit_ok)]
+            if fraction is None
+            else best_indices(rows, require_fit_ok=require_fit_ok, fraction=fraction)
+        )
+        entries.extend(int(rows["scan_entry"][index]) for index in selected_indices)
+    entry_list = ",".join(f"{entry}ULL" for entry in sorted(entries))
+    selection = (
+        "static const std::vector<ULong64_t> entries{" + entry_list + "}; "
+        "return std::binary_search(entries.begin(), entries.end(), rdfentry_);"
+    )
+    selected = frame.Filter(selection).AsNumpy(
+        columns=list(dict.fromkeys([group, *(["chi2"] if fraction is not None else []), *columns]))
+    )
+    if fraction is not None:
+        order = np.lexsort((selected["chi2"], selected[group]))
+        selected = {name: values[order] for name, values in selected.items()}
+    return selected, quality

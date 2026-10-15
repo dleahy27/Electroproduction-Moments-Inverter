@@ -1,16 +1,17 @@
 // Coordinate multi-start amplitude fits.  Starts can run in separate ROOT
-// processes, after which the best finite minimum and its diagnostics are
-// copied to the final ROOT tree in a deterministic order.
+// processes, after which all starts and their diagnostics are merged into
+// the final ROOT tree in deterministic worker order.
 // Multiple starts are essential because the amplitude-to-moment map is
 // nonlinear and can contain discrete ambiguities as well as local minima.
 #include "emi/Runner.h"
 
 #include "Detail.h"
+#include "Progress.h"
+#include "WorkerOutput.h"
 
 #include "ROOT/TProcessExecutor.hxx"
 #include "TBenchmark.h"
 #include "TFile.h"
-#include "TFileMerger.h"
 #include "TRandom3.h"
 #include "TTree.h"
 
@@ -39,35 +40,27 @@ void MakeErrorBranches(TTree* tree, const std::vector<Definition>& definitions,
 }
 
 template <typename Definition>
-void MakeCorrelationBranches(
-    TTree* tree, const std::vector<Definition>& definitions,
-    std::vector<double>& storage) {
+void MakeCorrelationBranches(TTree* tree, const std::vector<Definition>& definitions,
+                             std::vector<double>& storage) {
   const std::size_t count = definitions.size();
-  storage.assign(count * (count - 1) / 2,
-                 std::numeric_limits<double>::quiet_NaN());
+  storage.assign(count * (count - 1) / 2, std::numeric_limits<double>::quiet_NaN());
   std::size_t pairIndex = 0;
   for (std::size_t first = 0; first < count; ++first) {
     for (std::size_t second = first + 1; second < count; ++second) {
       const std::string name =
-          "corr__" + definitions[first].name + "__" +
-          definitions[second].name;
+          "corr__" + definitions[first].name + "__" + definitions[second].name;
       tree->Branch(name.c_str(), &storage[pairIndex++]);
     }
   }
 }
 
-std::filesystem::path PartFile(const std::filesystem::path& output, unsigned worker) {
-  // Each fork writes a complete ROOT file. ROOT's merger combines trees more
-  // safely than several processes attempting to append to one file.
-  const auto stem = output.stem().string() + ".part_" + std::to_string(worker);
-  return output.parent_path() / (stem + output.extension().string());
-}
-
 void RunWorker(const detail::InternalConfig& config,
-               const std::filesystem::path& output) {
+               const std::filesystem::path& output,
+               detail::ProgressCounter progress = {}) {
   auto context = detail::BuildContext(config);
   TRandom3 random(config.seed);
-  if (config.seed == 0) random.SetSeed(0);
+  if (config.seed == 0)
+    random.SetSeed(0);
 
   std::unique_ptr<TFile> file(TFile::Open(output.c_str(), "RECREATE"));
   if (!file || file->IsZombie()) {
@@ -107,22 +100,16 @@ void RunWorker(const detail::InternalConfig& config,
   detail::MakeOutputMomentBranches(&tree, context->outputMoments, outputMoments);
   if (config.runHesse) {
     MakeErrorBranches(&tree, context->fullPars, parameterErrors);
-    MakeCorrelationBranches(
-        &tree, context->fullPars, parameterCorrelations
-    );
+    MakeCorrelationBranches(&tree, context->fullPars, parameterCorrelations);
     MakeErrorBranches(&tree, context->outputMoments, outputMomentErrors);
   }
   tree.Branch("R", &ratio);
-  if (config.runHesse) tree.Branch("err__R", &ratioError);
+  if (config.runHesse)
+    tree.Branch("err__R", &ratioError);
 
   TBenchmark benchmark;
   benchmark.Start("fit");
-  const unsigned progressStep = std::max(1u, config.starts / 10u);
   for (unsigned startIndex = 0; startIndex < config.starts; ++startIndex) {
-    if (config.verbose &&
-        (startIndex % progressStep == 0 || startIndex + 1 == config.starts)) {
-      std::cout << "start " << startIndex + 1 << '/' << config.starts << '\n';
-    }
 
     std::vector<double> start;
     detail::BuildRandomStart(*context, random, start);
@@ -135,8 +122,7 @@ void RunWorker(const detail::InternalConfig& config,
     chi2 = result.chi2;
     value = ndf > 0 ? chi2 / static_cast<double>(ndf)
                     : std::numeric_limits<double>::quiet_NaN();
-    logValue = value > 0.0 ? std::log(value)
-                           : -std::numeric_limits<double>::infinity();
+    logValue = value > 0.0 ? std::log(value) : -std::numeric_limits<double>::infinity();
 
     if (!detail::FillFullParameters(*context, result.freeValues.data(), parameters)) {
       throw std::runtime_error("Minuit result violates amplitude normalisation");
@@ -153,17 +139,18 @@ void RunWorker(const detail::InternalConfig& config,
     if (config.runHesse) {
       // HESSE is meaningful only at the returned minimum. Failed covariance
       // estimates remain NaN rather than being mistaken for zero uncertainty.
-      detail::FillHessianProducts(
-          *context, *result.minimizer, parameters,
-          hesseOk && covarianceStatus >= 1, parameterErrors,
-          parameterCorrelations,
-          outputMomentErrors, ratio, ratioError);
+      detail::FillHessianProducts(*context, *result.minimizer, parameters,
+                                  hesseOk && covarianceStatus >= 1, parameterErrors,
+                                  parameterCorrelations, outputMomentErrors, ratio,
+                                  ratioError);
     }
     tree.Fill();
+    progress.Advance();
   }
 
   benchmark.Stop("fit");
-  if (config.verbose) benchmark.Print("fit");
+  if (config.verbose)
+    benchmark.Print("fit");
   tree.Write();
   file->Close();
 }
@@ -171,12 +158,14 @@ void RunWorker(const detail::InternalConfig& config,
 } // namespace
 
 void RunFit(const FitConfig& config, const ModelConfig& model) {
-  // Build immutable problem data once in the parent process.  Workers explore
-  // disjoint random starts with equivalent contexts, avoiding shared mutable
-  // ROOT and Minuit objects.
-  if (config.input.empty()) throw std::invalid_argument("Fit input is required");
-  if (config.output.empty()) throw std::invalid_argument("Fit output is required");
-  if (config.starts == 0) throw std::invalid_argument("Fit starts must be positive");
+  // Each worker builds its own equivalent context and explores disjoint
+  // random starts, avoiding shared mutable ROOT and Minuit objects.
+  if (config.input.empty())
+    throw std::invalid_argument("Fit input is required");
+  if (config.output.empty())
+    throw std::invalid_argument("Fit output is required");
+  if (config.starts == 0)
+    throw std::invalid_argument("Fit starts must be positive");
   std::filesystem::create_directories(config.output.parent_path().empty()
                                           ? std::filesystem::path(".")
                                           : config.output.parent_path());
@@ -186,34 +175,38 @@ void RunFit(const FitConfig& config, const ModelConfig& model) {
                          : config.workers;
   workers = std::min(workers, config.starts);
   if (workers == 1) {
-    RunWorker(detail::MakeInternalConfig(config, model), config.output);
+    detail::ProgressMonitor progress(config.verbose, config.starts, workers, "fit");
+    RunWorker(detail::MakeInternalConfig(config, model), config.output,
+              progress.Counter());
     return;
   }
 
   std::vector<unsigned> ids(workers);
-  for (unsigned i = 0; i < workers; ++i) ids[i] = i;
+  for (unsigned i = 0; i < workers; ++i)
+    ids[i] = i;
   ROOT::TProcessExecutor pool(workers);
+  detail::ProgressMonitor progress(config.verbose, config.starts, workers, "fit");
+  const auto counter = progress.Counter();
   // Large, separated seed offsets prevent workers from replaying the same
   // random starts. Seed zero still remains nondeterministic from the user's
   // perspective, while each worker receives a distinct concrete seed.
-  const auto parts = pool.Map([=](unsigned worker) {
-    FitConfig workerConfig = config;
-    workerConfig.starts = config.starts / workers + (worker < config.starts % workers);
-    workerConfig.seed = config.seed == 0 ? 0x9e3779b9u + 100003u * worker
-                                         : config.seed + 100003u * worker;
-    workerConfig.verbose = config.verbose && worker == 0;
-    const auto part = PartFile(config.output, worker);
-    RunWorker(detail::MakeInternalConfig(workerConfig, model), part);
-    return part.string();
-  }, ids);
+  const auto parts = pool.Map(
+      [=](unsigned worker) {
+        FitConfig workerConfig = config;
+        workerConfig.starts =
+            config.starts / workers + (worker < config.starts % workers);
+        workerConfig.seed = config.seed == 0 ? 0x9e3779b9u + 100003u * worker
+                                             : config.seed + 100003u * worker;
+        workerConfig.verbose = false;
+        const auto part = detail::WorkerPartFile(config.output, worker);
+        RunWorker(detail::MakeInternalConfig(workerConfig, model), part, counter);
+        return part.string();
+      },
+      ids);
 
-  TFileMerger merger(true, false);
-  // Merge only after every worker succeeds; part files are retained if an
-  // exception occurs, which helps diagnose interrupted batch jobs.
-  merger.OutputFile(config.output.c_str(), "RECREATE");
-  for (const auto& part : parts) merger.AddFile(part.c_str());
-  if (!merger.Merge()) throw std::runtime_error("Could not merge worker output files");
-  for (const auto& part : parts) std::filesystem::remove(part);
+  detail::MergeWorkerFiles(config.output, parts);
+  for (const auto& part : parts)
+    std::filesystem::remove(part);
   if (config.verbose) {
     std::cout << "Saved " << config.output << " (" << workers << " workers)\n";
   }

@@ -15,7 +15,6 @@ from pathlib import Path
 
 from tutorials.paths import PROJECT_DIR
 
-
 INPUT_DIR = PROJECT_DIR / "tutorials/electroproduction_paper/input"
 
 
@@ -39,27 +38,47 @@ class Channel:
 
 CHANNELS = {
     "e_rho": Channel(
-        "e_rho", r"$e^-\rho^0$", (0.82, 1.19, 1.66, 3.06), 4.8, 0.8,
+        "e_rho",
+        r"$e^-\rho^0$",
+        (0.82, 1.19, 1.66, 3.06),
+        4.8,
+        0.8,
         ((0.649, 0.188), (0.671, 0.065), (0.794, 0.083), (1.068, 0.087)),
         "Published HERMES",
     ),
     "mu_rho": Channel(
-        "mu_rho", r"$\mu^-\rho^0$", (1.14, 1.60, 2.80, 6.02), 9.9, 0.9,
+        "mu_rho",
+        r"$\mu^-\rho^0$",
+        (1.14, 1.60, 2.80, 6.02),
+        9.9,
+        0.9,
         ((0.724, 0.078), (0.930, 0.081), (1.227, 0.122), (1.200, 0.729)),
         "Published COMPASS",
     ),
     "e_omega": Channel(
-        "e_omega", r"$e^-\omega$", (1.28, 2.00, 4.00), 4.8, 0.8,
+        "e_omega",
+        r"$e^-\omega$",
+        (1.28, 2.00, 4.00),
+        4.8,
+        0.8,
         ((0.226, 0.066), (0.237, 0.091), (0.283, 0.091)),
         "Published HERMES",
     ),
     "mu_omega": Channel(
-        "mu_omega", r"$\mu^-\omega$", (1.16, 1.64, 3.58), 7.6, 0.96,
+        "mu_omega",
+        r"$\mu^-\omega$",
+        (1.16, 1.64, 3.58),
+        7.6,
+        0.96,
         ((0.475, 0.085), (0.495, 0.124), (0.739, 0.197)),
         "Published COMPASS",
     ),
     "e_phi": Channel(
-        "e_phi", r"$e^-\phi$", (1.2, 1.7, 4.5), 21.89 ** 0.5, 0.8,
+        "e_phi",
+        r"$e^-\phi$",
+        (1.2, 1.7, 4.5),
+        21.89**0.5,
+        0.8,
     ),
 }
 

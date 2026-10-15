@@ -23,8 +23,7 @@ namespace emi {
 namespace {
 using namespace detail;
 
-void FillRandomAmplitudes(const EvaluationContext& ctx,
-                          std::vector<double>& fullVals,
+void FillRandomAmplitudes(const EvaluationContext& ctx, std::vector<double>& fullVals,
                           TRandom3& random) {
   std::vector<double> freeValues;
   BuildRandomStart(ctx, random, freeValues);
@@ -43,20 +42,17 @@ void PrintProgress(unsigned completed, unsigned total) {
   for (int j = 0; j < barWidth; ++j) {
     std::cout << (j < position ? '=' : j == position ? '>' : ' ');
   }
-  std::cout << "] " << std::setw(3)
-            << static_cast<int>(progress * 100.0) << '%' << std::flush;
+  std::cout << "] " << std::setw(3) << static_cast<int>(progress * 100.0) << '%'
+            << std::flush;
 }
 
 } // namespace
 
-void GenerateRandomMoments(const std::filesystem::path& output,
-                           unsigned nEvents,
-                           double epsilon,
-                           std::uint32_t seed,
+void GenerateRandomMoments(const std::filesystem::path& output, unsigned nEvents,
+                           double epsilon, std::uint32_t seed,
                            const ModelConfig& model) {
-  const std::filesystem::path outPath = output.empty()
-      ? std::filesystem::path("random_input_moments.root")
-      : output;
+  const std::filesystem::path outPath =
+      output.empty() ? std::filesystem::path("random_input_moments.root") : output;
   if (!outPath.parent_path().empty()) {
     std::filesystem::create_directories(outPath.parent_path());
   }
@@ -79,11 +75,13 @@ void GenerateRandomMoments(const std::filesystem::path& output,
     throw std::runtime_error("Failed to open output file: " + outPath.string());
   }
 
-  TTree* t = new TTree(treeName.c_str(), "Generated moments built from random amplitudes");
+  TTree* t =
+      new TTree(treeName.c_str(), "Generated moments built from random amplitudes");
   t->SetDirectory(fout.get());
   int i = 0;
   TRandom3 random(seed);
-  if (seed == 0) random.SetSeed(0);
+  if (seed == 0)
+    random.SetSeed(0);
 
   t->Branch("Event", &i, "Event/I");
   std::vector<double> parStorage, obsStorage, errStorage;
@@ -122,7 +120,8 @@ void GenerateRandomMoments(const std::filesystem::path& output,
   fout->Write();
   fout->Close();
 
-  if (nEvents > 0) std::cout << '\n';
+  if (nEvents > 0)
+    std::cout << '\n';
   std::cout << "Saved generated moments to " << outPath << '\n';
 }
 

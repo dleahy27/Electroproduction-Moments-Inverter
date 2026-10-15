@@ -24,6 +24,7 @@ inline UserSettingsConfig Settings() {
       NucleonPolarization::Both);
   settings.fixedMoments.photoproduction = true;
   settings.fixedMoments.mode = FixedGenerationMode::PhotoTest;
+  // settings.fixedMoments.noise = 0.05;
   settings.fixedMoments.massModel.massGeV = 1.3;
   settings.fixedMoments.massModel.backgroundEnabled = false;
   settings.fixedMoments.massModel.kAsymmetry = 0.0;

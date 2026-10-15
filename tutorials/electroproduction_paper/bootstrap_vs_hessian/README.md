@@ -21,7 +21,7 @@ Matching files are discovered in `../main/output/root`. Figures are written to
 `output/plots/<channel>/bin_<n>/`, with the `R` summary stored in the channel
 directory.
 
-Interpret agreement as a numerical diagnostic rather than an identity: the
-Hessian linearizes the objective near one solution, while the bootstrap can
+The estimates need not agree: the Hessian uses a local quadratic approximation,
+while the bootstrap can
 show skewness, wrapping phases, and migration between ambiguous minima. Both
 inputs must use the same model, bin, and branch convention.

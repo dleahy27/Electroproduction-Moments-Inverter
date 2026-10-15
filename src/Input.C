@@ -25,10 +25,8 @@ namespace emi::detail {
 
 namespace {
 
-bool TryReadArrayBranchElement(TTree* t,
-                                      const char* branchName,
-                                      int bin,
-                                      double& value) {
+bool TryReadArrayBranchElement(TTree* t, const char* branchName, int bin,
+                               double& value) {
   // Historical inputs may store all kinematic bins in one C-style array branch.
   // Absence returns false so optional moments can be skipped; an out-of-range
   // requested element is rejected once the actual leaf length is known.
@@ -39,7 +37,8 @@ bool TryReadArrayBranchElement(TTree* t,
   }
 
   TLeaf* leaf = branch->GetLeaf(branchName);
-  if (!leaf && branch->GetListOfLeaves() && branch->GetListOfLeaves()->GetEntries() > 0) {
+  if (!leaf && branch->GetListOfLeaves() &&
+      branch->GetListOfLeaves()->GetEntries() > 0) {
     leaf = static_cast<TLeaf*>(branch->GetListOfLeaves()->At(0));
   }
   if (!leaf) {
@@ -47,7 +46,6 @@ bool TryReadArrayBranchElement(TTree* t,
     return false;
   }
 
-  t->GetEntry(0);
   const int nData = leaf->GetNdata();
   // Published inputs store all kinematic bins in one array branch, whereas
   // generated closure files use scalar branches. Supporting both shapes lets
@@ -93,7 +91,8 @@ bool ParseMomentBranch(const std::string& name, const InternalConfig& cfg,
   static const std::regex rawTensorPattern(
       R"(^(R?H)_([0-9]+)_([0-3])_([0-3])_([0-9]+)_([0-9]+)$)");
   std::smatch match;
-  const bool explicitPolarization = cfg.nucleonPolarization != NucleonPolarization::None;
+  const bool explicitPolarization =
+      cfg.nucleonPolarization != NucleonPolarization::None;
   const bool initial = cfg.nucleonPolarization == NucleonPolarization::Initial ||
                        cfg.nucleonPolarization == NucleonPolarization::Both;
   const bool recoil = cfg.nucleonPolarization == NucleonPolarization::Recoil ||
@@ -102,21 +101,18 @@ bool ParseMomentBranch(const std::string& name, const InternalConfig& cfg,
     return (initial || beta == 0) && (recoil || delta == 0);
   };
 
-  if (!cfg.photoproduction &&
-      std::regex_match(name, match, mixedTensorPattern)) {
+  if (!cfg.photoproduction && std::regex_match(name, match, mixedTensorPattern)) {
     const int beta = std::stoi(match[2]);
     const int delta = std::stoi(match[3]);
-    if (explicitPolarization ? !allowed(beta, delta)
-                             : (beta != 0 || delta != 0)) {
+    if (explicitPolarization ? !allowed(beta, delta) : (beta != 0 || delta != 0)) {
       return false;
     }
-    moment = {0, beta, delta, std::stoi(match[4]), std::stoi(match[5]),
+    moment = {0,    beta, delta, std::stoi(match[4]), std::stoi(match[5]),
               true, true, name};
     return true;
   }
   if (!cfg.photoproduction && std::regex_match(name, match, mixedPattern)) {
-    moment = {0, 0, 0, std::stoi(match[2]), std::stoi(match[3]),
-              true, false, name};
+    moment = {0, 0, 0, std::stoi(match[2]), std::stoi(match[3]), true, false, name};
     return true;
   }
 
@@ -124,8 +120,7 @@ bool ParseMomentBranch(const std::string& name, const InternalConfig& cfg,
     const int alpha = std::stoi(match[2]);
     const int beta = std::stoi(match[3]);
     const int delta = std::stoi(match[4]);
-    if ((explicitPolarization ? !allowed(beta, delta)
-                              : (beta != 0 || delta != 0)) ||
+    if ((explicitPolarization ? !allowed(beta, delta) : (beta != 0 || delta != 0)) ||
         (cfg.photoproduction ? alpha > 3 : (alpha == 0 || alpha == 4 || alpha > 8))) {
       return false;
     }
@@ -133,14 +128,14 @@ bool ParseMomentBranch(const std::string& name, const InternalConfig& cfg,
               false, true, name};
     return true;
   }
-  if (!std::regex_match(name, match, rawPattern)) return false;
+  if (!std::regex_match(name, match, rawPattern))
+    return false;
 
   const int alpha = std::stoi(match[2]);
   if (cfg.photoproduction ? alpha > 3 : (alpha == 0 || alpha == 4 || alpha > 8)) {
     return false;
   }
-  moment = {alpha, 0, 0, std::stoi(match[3]), std::stoi(match[4]),
-            false, false, name};
+  moment = {alpha, 0, 0, std::stoi(match[3]), std::stoi(match[4]), false, false, name};
   return true;
 }
 
@@ -151,13 +146,16 @@ std::vector<ObservedMoment> ReadObservedMoments(const InternalConfig& cfg) {
   // experimental tables are therefore valid, provided every moment used in
   // chi-square has a finite uncertainty and a constructible model expression.
   std::unique_ptr<TFile> fin(TFile::Open(cfg.momentsFile.c_str(), "READ"));
-  if (!fin || fin->IsZombie()) throw std::runtime_error("Failed to open file " + cfg.momentsFile);
+  if (!fin || fin->IsZombie())
+    throw std::runtime_error("Failed to open file " + cfg.momentsFile);
   TTree* t = dynamic_cast<TTree*>(fin->Get(cfg.momentsTree.c_str()));
-  if (!t) throw std::runtime_error("Could not find tree '" + cfg.momentsTree + "'");
+  if (!t)
+    throw std::runtime_error("Could not find tree '" + cfg.momentsTree + "'");
   if (t->GetEntries() < 1) {
     throw std::runtime_error("Tree '" + cfg.momentsTree + "' is empty");
   }
-  if (cfg.bin < 0) throw std::runtime_error("Bin index must be nonnegative");
+  if (cfg.bin < 0)
+    throw std::runtime_error("Bin index must be nonnegative");
 
   std::map<std::tuple<int, int, int, int, int, bool>, MomentBranch> branches;
   // The map key is physical rather than textual. It collapses equivalent H/RH
@@ -166,7 +164,8 @@ std::vector<ObservedMoment> ReadObservedMoments(const InternalConfig& cfg) {
   for (int index = 0; branchList && index < branchList->GetEntries(); ++index) {
     const std::string name = branchList->At(index)->GetName();
     MomentBranch candidate;
-    if (!ParseMomentBranch(name, cfg, candidate)) continue;
+    if (!ParseMomentBranch(name, cfg, candidate))
+      continue;
     const auto key = std::make_tuple(candidate.alpha, candidate.beta, candidate.delta,
                                      candidate.L, candidate.M, candidate.mixed04);
     auto found = branches.find(key);
@@ -174,14 +173,16 @@ std::vector<ObservedMoment> ReadObservedMoments(const InternalConfig& cfg) {
       // Prefer experimental RH names over internal H names. For an
       // unpolarized fit, prefer alpha,L,M branches when both spellings exist,
       // but accept alpha,0,0,L,M from a polarized file as a fallback.
-      return (branch.valueName.rfind("RH", 0) == 0 ? 2 : 0) +
-             (branch.tensor ? 0 : 1);
+      return (branch.valueName.rfind("RH", 0) == 0 ? 2 : 0) + (branch.tensor ? 0 : 1);
     };
     if (found == branches.end() || priority(candidate) > priority(found->second)) {
       branches[key] = std::move(candidate);
     }
   }
 
+  // All branches refer to the same entry. Load it once; the leaf helper
+  // selects the requested bin within each scalar or array-valued branch.
+  t->GetEntry(0);
   std::vector<ObservedMoment> obs;
   obs.reserve(branches.size());
   for (const auto& entry : branches) {
@@ -193,14 +194,13 @@ std::vector<ObservedMoment> ReadObservedMoments(const InternalConfig& cfg) {
     double sig = 0.0;
     if (!TryReadArrayBranchElement(t, branch.valueName.c_str(), cfg.bin, val)) {
       if (cfg.verbose) {
-        std::cout << "Skipping " << branch.valueName
-                  << " because bin " << cfg.bin
+        std::cout << "Skipping " << branch.valueName << " because bin " << cfg.bin
                   << " is not present in that branch." << std::endl;
       }
       continue;
     }
-    if (!TryReadArrayBranchElement(t, errName.c_str(), cfg.bin, sig) ||
-        !(sig > 0.0) || !std::isfinite(sig)) {
+    if (!TryReadArrayBranchElement(t, errName.c_str(), cfg.bin, sig) || !(sig > 0.0) ||
+        !std::isfinite(sig)) {
       if (cfg.verbose) {
         std::cout << "Skipping " << branch.valueName
                   << " because its uncertainty is not positive\n";

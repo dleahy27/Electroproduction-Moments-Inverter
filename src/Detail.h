@@ -33,11 +33,8 @@ namespace emi::detail {
 // Mathematical constants are kept here to avoid platform-dependent macros in
 // the angular-momentum and phase calculations.
 inline constexpr double kPi = 3.1415926535897932384626433832795;
-inline constexpr double kTwoPi = 2.0 * kPi;
 inline constexpr double kSqrt2 = 1.4142135623730950488016887242097;
 inline constexpr double kInvSqrt2 = 1.0 / kSqrt2;
-inline constexpr double kSqrt6Over5 = 0.48989794855663561963945681494118;
-inline constexpr double kSqrt12Over5 = 0.69282032302755092063339055356909;
 
 // One measured response selected from the input tree. `isMixed04` denotes the
 // experimentally inseparable H0 + epsilon H4 electroproduction combination.
@@ -177,7 +174,6 @@ struct EvaluationContext {
   // Aligned with freeToFull. This remains empty unless the public
   // initial-amplitude list supplies every independent magnitude.
   std::vector<std::optional<StartDistribution>> magnitudeStarts;
-  mutable unsigned callCount = 0;
 };
 
 // Numerical result and retained Minuit object. The latter remains alive long
@@ -199,31 +195,36 @@ InternalConfig MakeInternalConfig(const FitConfig& fit, const ModelConfig& model
 
 std::vector<ObservedMoment> ReadObservedMoments(const InternalConfig& config);
 
+// Shared angular convention and ROOT branch spelling. Generation and both
+// angular model builders must use the same definitions.
+double ClebschGordan(int l1, int l2, int l3, int m1, int m2, int m3);
+std::string MakeAmplitudeName(char reflectivity, char orientation, int l, int m, int k,
+                              bool phase);
+
 ParameterLabel ParseParameterLabel(const std::string& name);
 
-long long MakeParameterKey(char reflectivity, char orientation, int k,
-                           int l, int m, bool phase);
+long long MakeParameterKey(char reflectivity, char orientation, int k, int l, int m,
+                           bool phase);
 
-std::string MakeMomentName(const InternalConfig& config, int alpha, int beta,
-                           int delta, int L, int M);
+std::string MakeMomentName(const InternalConfig& config, int alpha, int beta, int delta,
+                           int L, int M);
 
 std::vector<Parameter> BuildParameters(const InternalConfig& config);
 
-std::vector<MomentModel> BuildMomentModels(
-    const InternalConfig& config,
-    const std::unordered_map<long long, int>& parameterIndex,
-    const std::unordered_set<std::string>& neededMoments,
-    std::vector<PhasePair>& phasePairs);
+std::vector<MomentModel>
+BuildMomentModels(const InternalConfig& config,
+                  const std::unordered_map<long long, int>& parameterIndex,
+                  const std::unordered_set<std::string>& neededMoments,
+                  std::vector<PhasePair>& phasePairs);
 
-std::vector<MomentModel> BuildPolarizedMomentModels(
-    const InternalConfig& config,
-    const std::unordered_map<long long, int>& parameterIndex,
-    const std::unordered_set<std::string>& neededMoments,
-    std::vector<PhasePair>& phasePairs);
+std::vector<MomentModel>
+BuildPolarizedMomentModels(const InternalConfig& config,
+                           const std::unordered_map<long long, int>& parameterIndex,
+                           const std::unordered_set<std::string>& neededMoments,
+                           std::vector<PhasePair>& phasePairs);
 std::shared_ptr<EvaluationContext> BuildContext(const InternalConfig& config);
 
-std::shared_ptr<EvaluationContext> BuildSyntheticContext(
-    const InternalConfig& config);
+std::shared_ptr<EvaluationContext> BuildSyntheticContext(const InternalConfig& config);
 
 void MarkAmplitudeNormalisationParameter(EvaluationContext& context);
 
@@ -284,12 +285,8 @@ MakeNumericalChi2(std::shared_ptr<EvaluationContext> context);
 std::unique_ptr<ROOT::Math::IMultiGradFunction>
 MakeAnalyticChi2(std::shared_ptr<EvaluationContext> context);
 
-double EvaluateChi2(const ROOT::Math::IBaseFunctionMultiDim& function,
-                    const std::vector<double>& point);
-
 MinimizerResult Minimize(const std::shared_ptr<EvaluationContext>& context,
-                         const std::vector<double>& start,
-                         bool runHesse);
+                         const std::vector<double>& start, bool runHesse);
 
 void MakeParameterBranches(TTree* tree, const std::vector<Parameter>& parameters,
                            std::vector<double>& storage);
@@ -297,16 +294,15 @@ void MakeParameterBranches(TTree* tree, const std::vector<Parameter>& parameters
 void MakeNamedBranches(TTree* tree, const std::vector<std::string>& names,
                        std::vector<double>& storage);
 
-void MakeOutputMomentBranches(TTree* tree,
-                              const std::vector<OutputMoment>& moments,
+void MakeOutputMomentBranches(TTree* tree, const std::vector<OutputMoment>& moments,
                               std::vector<double>& storage);
 
-void FillHessianProducts(
-    const EvaluationContext& context, const ROOT::Math::Minimizer& minimizer,
-    const std::vector<double>& fullValues, bool covarianceIsUsable,
-    std::vector<double>& parameterErrors,
-    std::vector<double>& parameterCorrelations,
-    std::vector<double>& momentErrors,
-    double& ratio, double& ratioError);
+void FillHessianProducts(const EvaluationContext& context,
+                         const ROOT::Math::Minimizer& minimizer,
+                         const std::vector<double>& fullValues, bool covarianceIsUsable,
+                         std::vector<double>& parameterErrors,
+                         std::vector<double>& parameterCorrelations,
+                         std::vector<double>& momentErrors, double& ratio,
+                         double& ratioError);
 
 } // namespace emi::detail

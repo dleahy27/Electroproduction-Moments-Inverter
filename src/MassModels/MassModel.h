@@ -1,12 +1,8 @@
 #pragma once
 
-// Basic value types and line-shape functions for mass-dependent amplitudes.
-// A model returns complex partial waves before the global phase convention and
-// moment normalization are applied by the fixed-moment generator.
-
-// Private value types and line-shape declarations for generated truth models.
-// They live below src/ because downstream applications do not need to depend
-// on a particular resonance parameterization.
+// Private line-shape types shared by deterministic truth generators.
+// Models return complex partial waves before fit-gauge rotation and moment
+// normalization. Public steering types belong in include/emi/Config.h.
 
 #include <complex>
 #include <string_view>
@@ -38,7 +34,7 @@ struct ComplexAmplitude {
 
 using AmplitudeSet = std::vector<ComplexAmplitude>;
 
-[[nodiscard]] std::complex<double> ConstantWidthBreitWigner(
-    const Resonance& resonance, double massGeV);
+[[nodiscard]] std::complex<double> ConstantWidthBreitWigner(const Resonance& resonance,
+                                                            double massGeV);
 
 } // namespace emi::MassModels

@@ -10,7 +10,6 @@ import subprocess
 from tutorials.electroproduction_paper.datasets import CHANNELS
 from tutorials.paths import PROJECT_DIR
 
-
 # Settings: edit these values to choose the data and fit.
 CHANNEL = CHANNELS["e_rho"]
 INPUT_FILE = CHANNEL.input_file
@@ -26,26 +25,45 @@ USE_HESSE = True
 
 
 # Build the EMI command from the settings above.
-output_path = PROJECT_DIR / OUTPUT_FILE
-output_path.parent.mkdir(parents=True, exist_ok=True)
-settings_file = PROJECT_DIR / "tutorials/electroproduction_paper/main/experimental_settings.h"
-command = [
-    str(PROJECT_DIR / "build" / "emi"),
-    "fit",
-    "--settings", str(settings_file),
-    "--input", str(INPUT_FILE),
-    "--tree", TREE_NAME,
-    "--bin", str(BIN),
-    "--epsilon", str(EPSILON),
-    "--output", str(output_path),
-    "--starts", str(STARTS),
-    "--workers", str(WORKERS),
-    "--seed", str(SEED),
-]
-if ELECTROPRODUCTION:
-    command.append("--electro")
-if not USE_HESSE:
-    command.append("--no-hesse")
 
-# Run the fit and stop if EMI reports an error.
-subprocess.run(command, cwd=PROJECT_DIR, check=True)
+
+def main():
+    """Run the configured study when invoked as a Python module."""
+    output_path = PROJECT_DIR / OUTPUT_FILE
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    settings_file = (
+        PROJECT_DIR / "tutorials/electroproduction_paper/main/experimental_settings.h"
+    )
+    command = [
+        str(PROJECT_DIR / "build" / "emi"),
+        "fit",
+        "--settings",
+        str(settings_file),
+        "--input",
+        str(INPUT_FILE),
+        "--tree",
+        TREE_NAME,
+        "--bin",
+        str(BIN),
+        "--epsilon",
+        str(EPSILON),
+        "--output",
+        str(output_path),
+        "--starts",
+        str(STARTS),
+        "--workers",
+        str(WORKERS),
+        "--seed",
+        str(SEED),
+    ]
+    if ELECTROPRODUCTION:
+        command.append("--electro")
+    if not USE_HESSE:
+        command.append("--no-hesse")
+
+    # Run the fit and stop if EMI reports an error.
+    subprocess.run(command, cwd=PROJECT_DIR, check=True)
+
+
+if __name__ == "__main__":
+    main()

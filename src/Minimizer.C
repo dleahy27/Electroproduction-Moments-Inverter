@@ -1,5 +1,5 @@
 // Adapt the project's objective to ROOT Minuit2 and return parameters,
-// covariance, and status in a ROOT-independent value type.  Free parameters
+// covariance, and status together with the retained Minuit object. Free parameters
 // are expanded to the full amplitude convention by EvaluationContext.
 // Minuit sees only independent coordinates; fixed phases, parity-related
 // amplitudes, and the magnitude eliminated by normalization are reconstructed
@@ -14,24 +14,23 @@
 namespace emi::detail {
 
 MinimizerResult Minimize(const std::shared_ptr<EvaluationContext>& context,
-                         const std::vector<double>& start,
-                         bool runHesse) {
+                         const std::vector<double>& start, bool runHesse) {
   // Create a fresh Minuit instance for every start so convergence state and
   // covariance information cannot leak between independent trials.
-  if (!context) throw std::invalid_argument("Minimize received a null context");
+  if (!context)
+    throw std::invalid_argument("Minimize received a null context");
   if (start.size() != context->freeToFull.size()) {
     throw std::invalid_argument("Start point has the wrong dimension");
   }
 
-  auto analyticObjective = context->cfg.useNumericalGradients
-                               ? nullptr
-                               : MakeAnalyticChi2(context);
-  auto numericalObjective = context->cfg.useNumericalGradients
-                                ? MakeNumericalChi2(context)
-                                : nullptr;
+  auto analyticObjective =
+      context->cfg.useNumericalGradients ? nullptr : MakeAnalyticChi2(context);
+  auto numericalObjective =
+      context->cfg.useNumericalGradients ? MakeNumericalChi2(context) : nullptr;
   std::unique_ptr<ROOT::Math::Minimizer> minimizer(
       ROOT::Math::Factory::CreateMinimizer("Minuit2", "Migrad"));
-  if (!minimizer) throw std::runtime_error("Could not create Minuit2/Migrad");
+  if (!minimizer)
+    throw std::runtime_error("Could not create Minuit2/Migrad");
 
   minimizer->SetMaxFunctionCalls(context->cfg.maxCalls);
   minimizer->SetMaxIterations(context->cfg.maxIterations);
@@ -51,8 +50,8 @@ MinimizerResult Minimize(const std::shared_ptr<EvaluationContext>& context,
     // Fixed and derived parameters are absent from this loop. They are rebuilt
     // by FillFullParameters whenever the objective is evaluated.
     const auto& parameter = context->fullPars[context->freeToFull[i]];
-    minimizer->SetLimitedVariable(i, parameter.name.c_str(), start[i],
-                                  parameter.step, parameter.low, parameter.high);
+    minimizer->SetLimitedVariable(i, parameter.name.c_str(), start[i], parameter.step,
+                                  parameter.low, parameter.high);
   }
 
   MinimizerResult result;

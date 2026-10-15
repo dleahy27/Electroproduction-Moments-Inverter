@@ -7,7 +7,7 @@ its own `output` directory and owns the settings header used by its runner.
 Build EMI before running a case:
 
 ```bash
-python build.py --test
+python build.py
 ```
 
 The cases are:
@@ -31,3 +31,9 @@ These are closure tests: moments are generated from known complex amplitudes
 and then refitted. Agreement must be judged modulo the explicitly fixed phase
 or spin-basis gauge. Each runner records its seed and keeps truth and fit ROOT
 files separate beneath its local `output/` directory.
+
+The `unpolarized_k` runner merges each batch into
+`output/root/<batch>/scan.root` and writes a CSV mapping its repetitions to the
+original point files. `python -m tutorials.polarized_moments.unpolarized_k.run
+--merge-only` rebuilds the default batch without repeating its fits. Analysis
+reads this merged file and preserves the original finite-minimum selection.

@@ -35,11 +35,12 @@ int SelectNormalisationIndex(const EvaluationContext& ctx) {
   // Choosing the highest (l,m) in the preferred reflectivity makes the
   // convention deterministic for any explicit wave list.
   const auto& pars = ctx.fullPars;
-  const bool hasPositive = std::any_of(pars.begin(), pars.end(), [](const Parameter& p) {
-    const auto label = ParseParameterLabel(p.name);
-    return !p.phase && !p.fixed && label.valid &&
-           label.reflectivity == 'a' && label.orientation == 'T';
-  });
+  const bool hasPositive =
+      std::any_of(pars.begin(), pars.end(), [](const Parameter& p) {
+        const auto label = ParseParameterLabel(p.name);
+        return !p.phase && !p.fixed && label.valid && label.reflectivity == 'a' &&
+               label.orientation == 'T';
+      });
   const char selectedReflectivity = hasPositive ? 'a' : 'b';
   const int selectedK =
       ctx.cfg.nucleonPolarization == NucleonPolarization::None ? 0 : 1;
@@ -49,12 +50,15 @@ int SelectNormalisationIndex(const EvaluationContext& ctx) {
 
   for (int i = 0; i < static_cast<int>(pars.size()); ++i) {
     const auto& p = pars[static_cast<size_t>(i)];
-    if (p.phase || p.fixed) continue;
+    if (p.phase || p.fixed)
+      continue;
 
     const auto label = ParseParameterLabel(p.name);
-    if (!label.valid) continue;
-    if (label.reflectivity != selectedReflectivity ||
-        label.orientation != 'T' || label.k != selectedK) continue;
+    if (!label.valid)
+      continue;
+    if (label.reflectivity != selectedReflectivity || label.orientation != 'T' ||
+        label.k != selectedK)
+      continue;
 
     if (label.l > bestL || (label.l == bestL && label.m > bestM)) {
       bestIdx = i;
@@ -71,7 +75,8 @@ void ApplyPolarizationGauge(EvaluationContext& ctx) {
   // Amplitudes contain conventions that moments cannot determine. Both modes
   // need one overall phase; a single-polarization mode also needs one signed
   // real coordinate to fix the unobserved SO(2) spin-basis rotation.
-  if (ctx.cfg.nucleonPolarization == NucleonPolarization::None) return;
+  if (ctx.cfg.nucleonPolarization == NucleonPolarization::None)
+    return;
 
   auto select = [&](char reflectivity, char orientation, int l, int m,
                     bool chooseHighest) {
@@ -83,17 +88,20 @@ void ApplyPolarizationGauge(EvaluationContext& ctx) {
       const auto label = ParseParameterLabel(ctx.fullPars[static_cast<size_t>(i)].name);
       if (!label.valid || label.k != 1 || label.reflectivity != reflectivity ||
           label.orientation != orientation ||
-          (!chooseHighest && (label.l != l || label.m != m))) continue;
-      if (chooseHighest &&
-          (label.l < bestL || (label.l == bestL && label.m < bestM))) continue;
+          (!chooseHighest && (label.l != l || label.m != m)))
+        continue;
+      if (chooseHighest && (label.l < bestL || (label.l == bestL && label.m < bestM)))
+        continue;
       if (chooseHighest && (label.l > bestL || label.m > bestM)) {
         magnitude = -1;
         phase = -1;
         bestL = label.l;
         bestM = label.m;
       }
-      if (ctx.fullPars[static_cast<size_t>(i)].phase) phase = i;
-      else magnitude = i;
+      if (ctx.fullPars[static_cast<size_t>(i)].phase)
+        phase = i;
+      else
+        magnitude = i;
     }
     return std::pair{magnitude, phase};
   };
@@ -115,18 +123,18 @@ void ApplyPolarizationGauge(EvaluationContext& ctx) {
   fixPhase(natural.second);
   ctx.phaseReferenceMagFullIdx = natural.first;
 
-  if (ctx.cfg.nucleonPolarization == NucleonPolarization::Both) return;
+  if (ctx.cfg.nucleonPolarization == NucleonPolarization::Both)
+    return;
 
   std::pair<int, int> rotation;
   if (ctx.cfg.kMixingGauge) {
     const auto& gauge = *ctx.cfg.kMixingGauge;
     if ((gauge.reflectivity != 'a' && gauge.reflectivity != 'b') ||
-        (gauge.orientation != 'T' && gauge.orientation != 'L') ||
-        gauge.l < 0 || std::abs(gauge.m) > gauge.l) {
+        (gauge.orientation != 'T' && gauge.orientation != 'L') || gauge.l < 0 ||
+        std::abs(gauge.m) > gauge.l) {
       throw std::invalid_argument("Invalid k-mixing gauge reference");
     }
-    rotation = select(gauge.reflectivity, gauge.orientation,
-                      gauge.l, gauge.m, false);
+    rotation = select(gauge.reflectivity, gauge.orientation, gauge.l, gauge.m, false);
   } else {
     rotation = select('b', 'T', 0, 0, true);
   }
@@ -151,7 +159,8 @@ void ApplyPolarizationGauge(EvaluationContext& ctx) {
 void MarkAmplitudeNormalisationParameter(EvaluationContext& ctx) {
   const int idx = SelectNormalisationIndex(ctx);
   if (idx < 0) {
-    throw std::runtime_error("Could not find a transverse magnitude for amplitude normalisation");
+    throw std::runtime_error(
+        "Could not find a transverse magnitude for amplitude normalisation");
   }
 
   auto& p = ctx.fullPars[static_cast<size_t>(idx)];
@@ -166,9 +175,9 @@ void MarkAmplitudeNormalisationParameter(EvaluationContext& ctx) {
 void SetAmplitudeNormalisationWeights(EvaluationContext& ctx) {
   ctx.normalisationWeights.assign(ctx.fullPars.size(), 0.0);
   auto addMoment = [&](int momentIndex, double scale) {
-    if (momentIndex < 0) return;
-    for (const auto& term :
-         ctx.modelsRec[static_cast<size_t>(momentIndex)].terms) {
+    if (momentIndex < 0)
+      return;
+    for (const auto& term : ctx.modelsRec[static_cast<size_t>(momentIndex)].terms) {
       if (term.idxMag1 == term.idxMag2 && term.trig == TrigKind::kCos) {
         ctx.normalisationWeights[static_cast<size_t>(term.idxMag1)] +=
             scale * term.coeff;
@@ -182,8 +191,8 @@ void SetAmplitudeNormalisationWeights(EvaluationContext& ctx) {
   addMoment(ctx.idxH0_00, 0.5);
   addMoment(ctx.idxH4_00, 0.5 * ctx.cfg.epsilon);
   if (ctx.normalisedMagFullIdx < 0 ||
-      !(ctx.normalisationWeights[
-          static_cast<size_t>(ctx.normalisedMagFullIdx)] > 0.0)) {
+      !(ctx.normalisationWeights[static_cast<size_t>(ctx.normalisedMagFullIdx)] >
+        0.0)) {
     throw std::runtime_error(
         "The normalization amplitude does not contribute to H04_00");
   }
@@ -193,29 +202,36 @@ static double RawNormalisationWeight(const EvaluationContext& ctx, int fullIdx) 
   return ctx.normalisationWeights[static_cast<size_t>(fullIdx)];
 }
 
-double EvalNormalisationSum(const EvaluationContext& ctx, const std::vector<double>& fullVals) {
+double EvalNormalisationSum(const EvaluationContext& ctx,
+                            const std::vector<double>& fullVals) {
   double sum = 0.0;
   for (int i = 0; i < static_cast<int>(ctx.fullPars.size()); ++i) {
-    if (i == ctx.normalisedMagFullIdx) continue;
+    if (i == ctx.normalisedMagFullIdx)
+      continue;
     const double w = RawNormalisationWeight(ctx, i);
-    if (w == 0.0) continue;
+    if (w == 0.0)
+      continue;
     const double v = fullVals[static_cast<size_t>(i)];
     sum += w * v * v;
   }
   return sum;
 }
 
-bool ApplyAmplitudeNormalisation(const EvaluationContext& ctx, std::vector<double>& fullVals) {
+bool ApplyAmplitudeNormalisation(const EvaluationContext& ctx,
+                                 std::vector<double>& fullVals) {
   // Solve the quadratic normalization equation for the eliminated magnitude.
   // A negative radicand marks a point outside the physical parameter region.
-  if (ctx.normalisedMagFullIdx < 0) return true;
+  if (ctx.normalisedMagFullIdx < 0)
+    return true;
 
   const double base = 0.5 * ctx.cfg.normalisationMomentTarget;
   const double rest = EvalNormalisationSum(ctx, fullVals);
   const double normWeight = RawNormalisationWeight(ctx, ctx.normalisedMagFullIdx);
-  if (!(normWeight > 0.0) || !std::isfinite(normWeight)) return false;
+  if (!(normWeight > 0.0) || !std::isfinite(normWeight))
+    return false;
   const double norm2 = (base - rest) / normWeight;
-  if (!(norm2 >= 0.0) || !std::isfinite(norm2)) return false;
+  if (!(norm2 >= 0.0) || !std::isfinite(norm2))
+    return false;
 
   const double magnitude = std::sqrt(norm2);
   fullVals[static_cast<size_t>(ctx.normalisedMagFullIdx)] = magnitude;
@@ -223,29 +239,32 @@ bool ApplyAmplitudeNormalisation(const EvaluationContext& ctx, std::vector<doubl
 }
 
 double NormalisedMagnitudeDerivative(const EvaluationContext& ctx,
-                                            const std::vector<double>& fullVals,
-                                            int wrtFullIdx) {
-  if (ctx.normalisedMagFullIdx < 0) return 0.0;
-  if (wrtFullIdx == ctx.normalisedMagFullIdx) return 0.0;
+                                     const std::vector<double>& fullVals,
+                                     int wrtFullIdx) {
+  if (ctx.normalisedMagFullIdx < 0)
+    return 0.0;
+  if (wrtFullIdx == ctx.normalisedMagFullIdx)
+    return 0.0;
 
   const double w = RawNormalisationWeight(ctx, wrtFullIdx);
-  if (w == 0.0) return 0.0;
+  if (w == 0.0)
+    return 0.0;
 
   const double normMag = fullVals[static_cast<size_t>(ctx.normalisedMagFullIdx)];
-  if (!(normMag > 0.0) || !std::isfinite(normMag)) return 0.0;
+  if (!(normMag > 0.0) || !std::isfinite(normMag))
+    return 0.0;
 
   const double normWeight = RawNormalisationWeight(ctx, ctx.normalisedMagFullIdx);
-  if (!(normWeight > 0.0) || !std::isfinite(normWeight)) return 0.0;
+  if (!(normWeight > 0.0) || !std::isfinite(normWeight))
+    return 0.0;
   // Differentiate sqrt((base-rest)/weight) for Hessian propagation and the
   // analytic objective gradient.
-  return -w * fullVals[static_cast<size_t>(wrtFullIdx)] /
-         (normWeight * normMag);
+  return -w * fullVals[static_cast<size_t>(wrtFullIdx)] / (normWeight * normMag);
 }
 
 double ApplyNormalisationChainRule(const EvaluationContext& ctx,
-                                          const std::vector<double>& fullVals,
-                                          const std::vector<double>& dHdFull,
-                                          int wrtFullIdx) {
+                                   const std::vector<double>& fullVals,
+                                   const std::vector<double>& dHdFull, int wrtFullIdx) {
   double dH = dHdFull[static_cast<size_t>(wrtFullIdx)];
   if (ctx.normalisedMagFullIdx >= 0) {
     const int normIdx = ctx.normalisedMagFullIdx;
@@ -278,39 +297,42 @@ void EvaluateObservedMoments(const EvaluationContext& ctx,
   }
 }
 
-
-bool FillFullParametersRaw(const EvaluationContext& ctx,
-                                const double* x,
-                                std::vector<double>& fullVals) {
-  if (fullVals.size() != ctx.fullPars.size()) fullVals.resize(ctx.fullPars.size());
-  for (size_t i = 0; i < ctx.fullPars.size(); ++i) fullVals[i] = ctx.fullPars[i].init;
+bool FillFullParametersRaw(const EvaluationContext& ctx, const double* x,
+                           std::vector<double>& fullVals) {
+  if (fullVals.size() != ctx.fullPars.size())
+    fullVals.resize(ctx.fullPars.size());
+  for (size_t i = 0; i < ctx.fullPars.size(); ++i)
+    fullVals[i] = ctx.fullPars[i].init;
 
   for (size_t i = 0; i < ctx.freeToFull.size(); ++i) {
     const int fullIdx = ctx.freeToFull[i];
     const auto& p = ctx.fullPars[static_cast<size_t>(fullIdx)];
     const double value = x[i];
-    if (!std::isfinite(value)) return false;
-    if (!p.phase && (value < p.low || value > p.high)) return false;
+    if (!std::isfinite(value))
+      return false;
+    if (!p.phase && (value < p.low || value > p.high))
+      return false;
     fullVals[static_cast<size_t>(fullIdx)] = value;
   }
   return true;
 }
 
-bool FillFullParameters(const EvaluationContext& ctx,
-                             const double* x,
-                             std::vector<double>& fullVals) {
-  if (!FillFullParametersRaw(ctx, x, fullVals)) return false;
+bool FillFullParameters(const EvaluationContext& ctx, const double* x,
+                        std::vector<double>& fullVals) {
+  if (!FillFullParametersRaw(ctx, x, fullVals))
+    return false;
   return ApplyAmplitudeNormalisation(ctx, fullVals);
 }
 
 static inline void EnsureSize(std::vector<double>& v, size_t n, double fill = 0.0) {
-  if (v.size() != n) v.assign(n, fill);
+  if (v.size() != n)
+    v.assign(n, fill);
 }
 
 void BuildPhasePairTrigCache(const EvaluationContext& ctx,
-                                    const std::vector<double>& fullVals,
-                                    std::vector<double>& pairSin,
-                                    std::vector<double>& pairCos) {
+                             const std::vector<double>& fullVals,
+                             std::vector<double>& pairSin,
+                             std::vector<double>& pairCos) {
   EnsureSize(pairSin, ctx.phasePairs.size());
   EnsureSize(pairCos, ctx.phasePairs.size());
   for (size_t i = 0; i < ctx.phasePairs.size(); ++i) {
@@ -320,28 +342,25 @@ void BuildPhasePairTrigCache(const EvaluationContext& ctx,
   }
 }
 
-static double EvalMomentOnly(const MomentModel& mm,
-                             const std::vector<double>& fullVals,
+static double EvalMomentOnly(const MomentModel& mm, const std::vector<double>& fullVals,
                              const std::vector<double>& pairSin,
                              const std::vector<double>& pairCos) {
   double H = 0.0;
   for (const auto& t : mm.terms) {
     const double trig = t.ignorePhase
                             ? (t.trig == TrigKind::kCos ? 1.0 : 0.0)
-                            : (t.trig == TrigKind::kCos
-                                   ? pairCos[t.phasePairIdx]
-                                   : pairSin[t.phasePairIdx]);
+                            : (t.trig == TrigKind::kCos ? pairCos[t.phasePairIdx]
+                                                        : pairSin[t.phasePairIdx]);
     H += t.coeff * fullVals[t.idxMag1] * fullVals[t.idxMag2] * trig;
   }
   return H;
 }
 
-double EvaluateMomentAndDerivative(const EvaluationContext& ctx,
-                                     const MomentModel& mm,
-                                     const std::vector<double>& fullVals,
-                                     const std::vector<double>& pairSin,
-                                     const std::vector<double>& pairCos,
-                                     std::vector<double>& dHdFull) {
+double EvaluateMomentAndDerivative(const EvaluationContext& ctx, const MomentModel& mm,
+                                   const std::vector<double>& fullVals,
+                                   const std::vector<double>& pairSin,
+                                   const std::vector<double>& pairCos,
+                                   std::vector<double>& dHdFull) {
   EnsureSize(dHdFull, ctx.fullPars.size());
   std::fill(dHdFull.begin(), dHdFull.end(), 0.0);
   double H = 0.0;
@@ -356,10 +375,10 @@ double EvaluateMomentAndDerivative(const EvaluationContext& ctx,
       trig = t.trig == TrigKind::kCos ? 1.0 : 0.0;
       dtrig = 0.0;
     } else {
-      trig = t.trig == TrigKind::kCos ? pairCos[t.phasePairIdx]
-                                      : pairSin[t.phasePairIdx];
-      dtrig = t.trig == TrigKind::kCos ? -pairSin[t.phasePairIdx]
-                                       : pairCos[t.phasePairIdx];
+      trig =
+          t.trig == TrigKind::kCos ? pairCos[t.phasePairIdx] : pairSin[t.phasePairIdx];
+      dtrig =
+          t.trig == TrigKind::kCos ? -pairSin[t.phasePairIdx] : pairCos[t.phasePairIdx];
     }
     const double val = t.coeff * m1 * m2 * trig;
     H += val;
@@ -373,42 +392,51 @@ double EvaluateMomentAndDerivative(const EvaluationContext& ctx,
 }
 
 void EvaluateAllMoments(const EvaluationContext& ctx,
-                           const std::vector<double>& fullVals,
-                           std::vector<double>& values) {
+                        const std::vector<double>& fullVals,
+                        std::vector<double>& values) {
   EnsureSize(values, ctx.modelsRec.size());
   std::vector<double> pairSin, pairCos;
   BuildPhasePairTrigCache(ctx, fullVals, pairSin, pairCos);
-  for (size_t i = 0; i < ctx.modelsRec.size(); ++i) values[i] = EvalMomentOnly(ctx.modelsRec[i], fullVals, pairSin, pairCos);
+  for (size_t i = 0; i < ctx.modelsRec.size(); ++i)
+    values[i] = EvalMomentOnly(ctx.modelsRec[i], fullVals, pairSin, pairCos);
 }
 
 class Chi2Function final : public ROOT::Math::IMultiGradFunction {
 public:
   explicit Chi2Function(std::shared_ptr<EvaluationContext> ctx) : ctx_(std::move(ctx)) {
-    if (!ctx_) throw std::runtime_error("Chi2Function: null context");
+    if (!ctx_)
+      throw std::runtime_error("Chi2Function: null context");
   }
 
-  unsigned int NDim() const override { return static_cast<unsigned>(ctx_->freeToFull.size()); }
-  ROOT::Math::IBaseFunctionMultiDim* Clone() const override { return new Chi2Function(ctx_); }
+  unsigned int NDim() const override {
+    return static_cast<unsigned>(ctx_->freeToFull.size());
+  }
+  ROOT::Math::IBaseFunctionMultiDim* Clone() const override {
+    return new Chi2Function(ctx_);
+  }
 
   double DoEval(const double* x) const override {
     // Returning a huge finite value, rather than NaN, lets Migrad step back
     // from proposals that violate the normalization constraint.
-    if (!FillFullParameters(*ctx_, x, fullVals_)) return 1e300;
+    if (!FillFullParameters(*ctx_, x, fullVals_))
+      return 1e300;
     BuildPhasePairTrigCache(*ctx_, fullVals_, pairSin_, pairCos_);
-    ++ctx_->callCount;
 
     EnsureSize(buf_momRec_, ctx_->modelsRec.size());
-    if (buf_momSeen_.size() != ctx_->modelsRec.size()) buf_momSeen_.assign(ctx_->modelsRec.size(), 0);
+    if (buf_momSeen_.size() != ctx_->modelsRec.size())
+      buf_momSeen_.assign(ctx_->modelsRec.size(), 0);
     std::fill(buf_momSeen_.begin(), buf_momSeen_.end(), static_cast<unsigned char>(0));
 
     auto getMomentRaw = [&](int idx) -> double {
       // Only moments present in the data contribute to chi-square. Cache them
       // lazily because constructing every allowed (alpha,L,M) would waste most
       // of the objective time for sparse experimental inputs.
-      if (idx < 0) throw std::runtime_error("Observed moment is not mapped to a model moment");
+      if (idx < 0)
+        throw std::runtime_error("Observed moment is not mapped to a model moment");
       const size_t uidx = static_cast<size_t>(idx);
       if (!buf_momSeen_[uidx]) {
-        buf_momRec_[uidx] = EvalMomentOnly(ctx_->modelsRec[uidx], fullVals_, pairSin_, pairCos_);
+        buf_momRec_[uidx] =
+            EvalMomentOnly(ctx_->modelsRec[uidx], fullVals_, pairSin_, pairCos_);
         buf_momSeen_[uidx] = 1;
       }
       return buf_momRec_[uidx];
@@ -439,7 +467,8 @@ public:
     // -2 r/sigma times the model derivative. The normalization chain rule is
     // applied after differentiating the raw amplitude bilinears.
     std::fill(grad, grad + NDim(), 0.0);
-    if (!FillFullParameters(*ctx_, x, fullVals_)) return;
+    if (!FillFullParameters(*ctx_, x, fullVals_))
+      return;
     BuildPhasePairTrigCache(*ctx_, fullVals_, pairSin_, pairCos_);
 
     const size_t nFull = ctx_->fullPars.size();
@@ -454,30 +483,38 @@ public:
       if (ob.isMixed04) {
         const int idx0 = ctx_->observedModelIdx0[iobs];
         const int idx4 = ctx_->observedModelIdx4[iobs];
-        if (idx0 < 0 || idx4 < 0) throw std::runtime_error("RH04 moment is not mapped to H0/H4 model moments");
+        if (idx0 < 0 || idx4 < 0)
+          throw std::runtime_error("RH04 moment is not mapped to H0/H4 model moments");
 
-        const double H0 = EvaluateMomentAndDerivative(*ctx_, ctx_->modelsRec[idx0], fullVals_, pairSin_, pairCos_, buf_fullA_);
-        const double H4 = EvaluateMomentAndDerivative(*ctx_, ctx_->modelsRec[idx4], fullVals_, pairSin_, pairCos_, buf_fullB_);
+        const double H0 = EvaluateMomentAndDerivative(
+            *ctx_, ctx_->modelsRec[idx0], fullVals_, pairSin_, pairCos_, buf_fullA_);
+        const double H4 = EvaluateMomentAndDerivative(
+            *ctx_, ctx_->modelsRec[idx4], fullVals_, pairSin_, pairCos_, buf_fullB_);
         model = H0 + ctx_->cfg.epsilon * H4;
         const double pull = (ob.value - model) / sigma;
 
         for (unsigned i = 0; i < NDim(); ++i) {
           const int fullIdx = ctx_->freeToFull[i];
-          const double dH0 = ApplyNormalisationChainRule(*ctx_, fullVals_, buf_fullA_, fullIdx);
-          const double dH4 = ApplyNormalisationChainRule(*ctx_, fullVals_, buf_fullB_, fullIdx);
+          const double dH0 =
+              ApplyNormalisationChainRule(*ctx_, fullVals_, buf_fullA_, fullIdx);
+          const double dH4 =
+              ApplyNormalisationChainRule(*ctx_, fullVals_, buf_fullB_, fullIdx);
           const double dModel = dH0 + ctx_->cfg.epsilon * dH4;
           grad[i] += -2.0 * pull * dModel / sigma;
         }
       } else {
         const int midx = ctx_->observedModelIdx[iobs];
-        if (midx < 0) throw std::runtime_error("Observed moment is not mapped to a model moment");
+        if (midx < 0)
+          throw std::runtime_error("Observed moment is not mapped to a model moment");
 
-        model = EvaluateMomentAndDerivative(*ctx_, ctx_->modelsRec[midx], fullVals_, pairSin_, pairCos_, buf_fullA_);
+        model = EvaluateMomentAndDerivative(*ctx_, ctx_->modelsRec[midx], fullVals_,
+                                            pairSin_, pairCos_, buf_fullA_);
         const double pull = (ob.value - model) / sigma;
 
         for (unsigned i = 0; i < NDim(); ++i) {
           const int fullIdx = ctx_->freeToFull[i];
-          const double dModel = ApplyNormalisationChainRule(*ctx_, fullVals_, buf_fullA_, fullIdx);
+          const double dModel =
+              ApplyNormalisationChainRule(*ctx_, fullVals_, buf_fullA_, fullIdx);
           grad[i] += -2.0 * pull * dModel / sigma;
         }
       }
@@ -503,11 +540,18 @@ private:
 
 class Chi2FunctionNoGrad final : public ROOT::Math::IBaseFunctionMultiDim {
 public:
-  explicit Chi2FunctionNoGrad(std::shared_ptr<EvaluationContext> ctx) : fcn_(std::move(ctx)) {}
+  explicit Chi2FunctionNoGrad(std::shared_ptr<EvaluationContext> ctx)
+      : fcn_(std::move(ctx)) {}
 
-  unsigned int NDim() const override { return fcn_.NDim(); }
-  ROOT::Math::IBaseFunctionMultiDim* Clone() const override { return new Chi2FunctionNoGrad(*this); }
-  double DoEval(const double* x) const override { return fcn_.DoEval(x); }
+  unsigned int NDim() const override {
+    return fcn_.NDim();
+  }
+  ROOT::Math::IBaseFunctionMultiDim* Clone() const override {
+    return new Chi2FunctionNoGrad(*this);
+  }
+  double DoEval(const double* x) const override {
+    return fcn_.DoEval(x);
+  }
 
 private:
   Chi2Function fcn_;
@@ -521,13 +565,6 @@ MakeNumericalChi2(std::shared_ptr<EvaluationContext> context) {
 std::unique_ptr<ROOT::Math::IMultiGradFunction>
 MakeAnalyticChi2(std::shared_ptr<EvaluationContext> context) {
   return std::make_unique<Chi2Function>(std::move(context));
-}
-
-double EvaluateChi2(const ROOT::Math::IBaseFunctionMultiDim& function,
-                    const std::vector<double>& point) {
-  if (point.empty()) return 1e300;
-  const double chi2 = function(point.data());
-  return std::isfinite(chi2) ? chi2 : 1e300;
 }
 
 } // namespace emi::detail

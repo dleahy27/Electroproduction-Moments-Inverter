@@ -3,16 +3,17 @@
 // combines those files into one sample without sharing mutable ROOT objects.
 //
 // This is a parametric bootstrap: each pseudo-experiment is sampled from the
-// measured central values and covariance model rather than by resampling raw
-// events.  Repeating the complete nonlinear fit propagates both measurement
+// measured central values and independent Gaussian errors rather than raw
+// event resampling. Repeating the complete nonlinear fit propagates measurement
 // fluctuations and the possibility of distinct local minima.
 #include "emi/Runner.h"
 
 #include "Detail.h"
+#include "Progress.h"
+#include "WorkerOutput.h"
 
 #include "ROOT/TProcessExecutor.hxx"
 #include "TFile.h"
-#include "TFileMerger.h"
 #include "TRandom3.h"
 #include "TTree.h"
 
@@ -36,58 +37,24 @@ struct BestFit {
   std::vector<double> outputMoments;
 };
 
-void RebuildObservedMap(detail::EvaluationContext& context) {
-  // Copying an EvaluationContext preserves its models but invalidates no
-  // indices. Rebuilding explicitly keeps this invariant visible and protects
-  // future changes that reorder sampled observations.
-  context.observedModelIdx.assign(context.observed.size(), -1);
-  context.observedModelIdx0.assign(context.observed.size(), -1);
-  context.observedModelIdx4.assign(context.observed.size(), -1);
-  for (std::size_t i = 0; i < context.observed.size(); ++i) {
-    const auto& observed = context.observed[i];
-    if (observed.isMixed04) {
-      const auto h0 = context.modelIndexByName.find(
-          detail::MakeMomentName(context.cfg, 0, observed.beta, observed.delta,
-                                 observed.L, observed.M));
-      const auto h4 = context.modelIndexByName.find(
-          detail::MakeMomentName(context.cfg, 4, observed.beta, observed.delta,
-                                 observed.L, observed.M));
-      if (h0 == context.modelIndexByName.end() || h4 == context.modelIndexByName.end()) {
-        throw std::runtime_error("Could not map bootstrap moment " + observed.name);
-      }
-      context.observedModelIdx0[i] = static_cast<int>(h0->second);
-      context.observedModelIdx4[i] = static_cast<int>(h4->second);
-    } else {
-      const std::string name = detail::MakeMomentName(
-          context.cfg, observed.alpha, observed.beta, observed.delta,
-          observed.L, observed.M);
-      const auto model = context.modelIndexByName.find(name);
-      if (model == context.modelIndexByName.end()) {
-        throw std::runtime_error("Could not map bootstrap moment " + observed.name);
-      }
-      context.observedModelIdx[i] = static_cast<int>(model->second);
-    }
-  }
-}
-
-std::shared_ptr<detail::EvaluationContext> SampleContext(
-    const detail::EvaluationContext& nominal, TRandom3& random) {
+std::shared_ptr<detail::EvaluationContext>
+SampleContext(const detail::EvaluationContext& nominal, TRandom3& random) {
   // This is a parametric bootstrap: each measurement is sampled independently
   // from the Gaussian defined by its published central value and uncertainty.
   auto sampled = std::make_shared<detail::EvaluationContext>(nominal);
   for (auto& moment : sampled->observed) {
-    if (std::isfinite(moment.value) && std::isfinite(moment.sigma) && moment.sigma > 0.0) {
+    if (std::isfinite(moment.value) && std::isfinite(moment.sigma) &&
+        moment.sigma > 0.0) {
       moment.value = random.Gaus(moment.value, std::abs(moment.sigma));
     }
   }
-  RebuildObservedMap(*sampled);
-  sampled->callCount = 0;
+  // Only values change: the copied model/observation index maps stay valid.
   return sampled;
 }
 
 BestFit FitToy(const detail::InternalConfig& config,
                const std::shared_ptr<detail::EvaluationContext>& context,
-               TRandom3& random) {
+               TRandom3& random, detail::ProgressCounter progress) {
   BestFit best;
   best.parameters.assign(context->fullPars.size(),
                          std::numeric_limits<double>::quiet_NaN());
@@ -100,12 +67,16 @@ BestFit FitToy(const detail::InternalConfig& config,
     std::vector<double> start;
     detail::BuildRandomStart(*context, random, start);
     auto result = detail::Minimize(context, start, config.runHesse);
-    if (!result.valid) continue;
+    progress.Advance();
+    if (!result.valid)
+      continue;
     ++best.validStarts;
-    if (result.chi2 >= best.chi2) continue;
+    if (result.chi2 >= best.chi2)
+      continue;
 
     std::vector<double> full;
-    if (!detail::FillFullParameters(*context, result.freeValues.data(), full)) continue;
+    if (!detail::FillFullParameters(*context, result.freeValues.data(), full))
+      continue;
     best.valid = true;
     best.status = result.status;
     best.chi2 = result.chi2;
@@ -117,17 +88,13 @@ BestFit FitToy(const detail::InternalConfig& config,
   return best;
 }
 
-std::filesystem::path PartFile(const std::filesystem::path& output, unsigned worker) {
-  return output.parent_path() /
-         (output.stem().string() + ".part_" + std::to_string(worker) +
-          output.extension().string());
-}
-
 void RunBootstrapWorker(const detail::InternalConfig& config, unsigned toys,
-                        const std::filesystem::path& output) {
+                        const std::filesystem::path& output,
+                        detail::ProgressCounter progress = {}) {
   auto nominal = detail::BuildContext(config);
   TRandom3 random(config.seed);
-  if (config.seed == 0) random.SetSeed(0);
+  if (config.seed == 0)
+    random.SetSeed(0);
   std::unique_ptr<TFile> file(TFile::Open(output.c_str(), "RECREATE"));
   if (!file || file->IsZombie()) {
     throw std::runtime_error("Could not create output file " + output.string());
@@ -160,15 +127,9 @@ void RunBootstrapWorker(const detail::InternalConfig& config, unsigned toys,
   detail::MakeParameterBranches(&tree, nominal->fullPars, parameters);
   detail::MakeOutputMomentBranches(&tree, nominal->outputMoments, outputMoments);
 
-  const unsigned progressStep = std::max(1u, toys / 10u);
   for (toy = 0; toy < static_cast<int>(toys); ++toy) {
-    if (config.verbose &&
-        (static_cast<unsigned>(toy) % progressStep == 0 ||
-         static_cast<unsigned>(toy) + 1 == toys)) {
-      std::cout << "toy " << toy + 1 << '/' << toys << '\n';
-    }
     auto sampled = SampleContext(*nominal, random);
-    const BestFit best = FitToy(config, sampled, random);
+    const BestFit best = FitToy(config, sampled, random, progress);
     valid = best.valid;
     status = best.status;
     validStarts = best.validStarts;
@@ -197,10 +158,13 @@ void RunBootstrapWorker(const detail::InternalConfig& config, unsigned toys,
 void RunBootstrap(const BootstrapConfig& config, const ModelConfig& model) {
   // Every toy starts from the same measured covariance model but receives an
   // independent pseudo-data draw and set of minimizer starts.  Only the best
-  // accepted fit contributes to the final ensemble.
-  if (config.fit.input.empty()) throw std::invalid_argument("Bootstrap input is required");
-  if (config.fit.output.empty()) throw std::invalid_argument("Bootstrap output is required");
-  if (config.toys == 0) throw std::invalid_argument("Bootstrap toys must be positive");
+  // finite fit contributes to the final ensemble, preserving the toy selection rule.
+  if (config.fit.input.empty())
+    throw std::invalid_argument("Bootstrap input is required");
+  if (config.fit.output.empty())
+    throw std::invalid_argument("Bootstrap output is required");
+  if (config.toys == 0)
+    throw std::invalid_argument("Bootstrap toys must be positive");
   if (config.startsPerToy == 0) {
     throw std::invalid_argument("Bootstrap starts per toy must be positive");
   }
@@ -215,34 +179,44 @@ void RunBootstrap(const BootstrapConfig& config, const ModelConfig& model) {
   FitConfig fit = config.fit;
   fit.starts = config.startsPerToy;
   if (workers == 1) {
-    RunBootstrapWorker(detail::MakeInternalConfig(fit, model), config.toys,
-                       fit.output);
+    detail::ProgressMonitor progress(
+        fit.verbose, static_cast<std::uint64_t>(config.toys) * config.startsPerToy,
+        workers, "bootstrap");
+    RunBootstrapWorker(detail::MakeInternalConfig(fit, model), config.toys, fit.output,
+                       progress.Counter());
     return;
   }
 
   std::vector<unsigned> ids(workers);
-  for (unsigned i = 0; i < workers; ++i) ids[i] = i;
+  for (unsigned i = 0; i < workers; ++i)
+    ids[i] = i;
   ROOT::TProcessExecutor pool(workers);
+  detail::ProgressMonitor progress(
+      fit.verbose, static_cast<std::uint64_t>(config.toys) * config.startsPerToy,
+      workers, "bootstrap");
+  const auto counter = progress.Counter();
   // Divide toys exactly: the first `toys % workers` processes receive one
   // additional sample. Each process owns its ROOT state and output file.
-  const auto parts = pool.Map([=](unsigned worker) {
-    FitConfig workerFit = fit;
-    workerFit.seed = fit.seed == 0 ? 0x9e3779b9u + 100003u * worker
-                                   : fit.seed + 100003u * worker;
-    workerFit.verbose = fit.verbose && worker == 0;
-    const unsigned workerToys = config.toys / workers +
-                                (worker < config.toys % workers);
-    const auto part = PartFile(fit.output, worker);
-    RunBootstrapWorker(detail::MakeInternalConfig(workerFit, model), workerToys, part);
-    return part.string();
-  }, ids);
+  const auto parts = pool.Map(
+      [=](unsigned worker) {
+        FitConfig workerFit = fit;
+        workerFit.seed = fit.seed == 0 ? 0x9e3779b9u + 100003u * worker
+                                       : fit.seed + 100003u * worker;
+        workerFit.verbose = false;
+        const unsigned workerToys =
+            config.toys / workers + (worker < config.toys % workers);
+        const auto part = detail::WorkerPartFile(fit.output, worker);
+        RunBootstrapWorker(detail::MakeInternalConfig(workerFit, model), workerToys,
+                           part, counter);
+        return part.string();
+      },
+      ids);
 
-  TFileMerger merger(true, false);
-  merger.OutputFile(fit.output.c_str(), "RECREATE");
-  for (const auto& part : parts) merger.AddFile(part.c_str());
-  if (!merger.Merge()) throw std::runtime_error("Could not merge bootstrap output files");
-  for (const auto& part : parts) std::filesystem::remove(part);
-  if (fit.verbose) std::cout << "Saved " << fit.output << '\n';
+  detail::MergeWorkerFiles(fit.output, parts);
+  for (const auto& part : parts)
+    std::filesystem::remove(part);
+  if (fit.verbose)
+    std::cout << "Saved " << fit.output << '\n';
 }
 
 } // namespace emi

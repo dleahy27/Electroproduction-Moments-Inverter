@@ -13,6 +13,7 @@ find_package(ROOT 6.26 REQUIRED COMPONENTS Core RIO Tree MathCore MathMore Minui
 add_library(emi_core
   src/Bootstrap.C
   src/Context.C
+  src/Uncertainties.C
   src/Evaluation.C
   src/FixedMoments.C
   src/FitRunner.C
@@ -21,6 +22,7 @@ add_library(emi_core
   src/Minimizer.C
   src/Model.C
   src/MassModels/MassModel.C
+  src/MassFit.C
   src/MassModels/PhotoTest.C
   src/PhotoMoments.C
   src/PolarizedModel.C
@@ -48,6 +50,7 @@ add_executable(emi app/main.C app/RuntimeSettings.C)
 target_include_directories(emi PRIVATE app)
 target_compile_definitions(emi PRIVATE EMI_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(emi PRIVATE emi_core)
+target_link_options(emi PRIVATE -rdynamic)
 
 install(TARGETS emi emi_core
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
