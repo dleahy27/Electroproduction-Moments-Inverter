@@ -16,12 +16,14 @@
 
 namespace emi::detail {
 
+std::string IndexString(int value) {
+  // ROOT branch identifiers avoid a literal minus sign: m1 means -1.
+  return value < 0 ? "m" + std::to_string(-static_cast<long long>(value))
+                   : std::to_string(value);
+}
+
 namespace {
 
-static std::string IndexString(int value) {
-  // ROOT branch identifiers avoid a literal minus sign: m1 means -1.
-  return value < 0 ? "m" + std::to_string(-value) : std::to_string(value);
-}
 static int ParseIndex(const std::string& value) {
   return (!value.empty() && value[0] == 'm') ? -std::stoi(value.substr(1))
                                              : std::stoi(value);

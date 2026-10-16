@@ -105,6 +105,8 @@ struct InternalConfig {
   double normalisationMomentTarget = 2.0;
   std::string momentsFile;
   std::string momentsTree;
+  // Scalar entry used for mass-fit schema discovery; ordinary fits use entry zero.
+  std::int64_t momentEntry = 0;
   int bin = 0;
 };
 
@@ -197,6 +199,8 @@ std::vector<ObservedMoment> ReadObservedMoments(const InternalConfig& config);
 
 // Shared angular convention and ROOT branch spelling. Generation and both
 // angular model builders must use the same definitions.
+// Encode signed quantum numbers for ROOT identifiers: -1 becomes m1.
+std::string IndexString(int value);
 double ClebschGordan(int l1, int l2, int l3, int m1, int m2, int m3);
 std::string MakeAmplitudeName(char reflectivity, char orientation, int l, int m, int k,
                               bool phase);

@@ -208,6 +208,15 @@ def save_figure(figure, path, show=False, **kwargs):
     plt.close(figure)
 
 
+def is_mass_parameter(name):
+    """Recognize concise mass parameters and names from older ROOT files."""
+    if name.startswith("err__"):
+        return False
+    return name.startswith(("bw_", "bg_")) or bool(re.fullmatch(
+        r".+_(?:mass|width)|.+_[ab](?:_L)?_\d+_m?\d+(?:_km?\d+)?_(?:mag|phase)", name
+    ))
+
+
 def truth_parameters(path):
     """Read injected mass coordinates together, opening the ROOT file once."""
     source = ROOT.TFile.Open(str(path), "READ")
@@ -217,7 +226,7 @@ def truth_parameters(path):
         return {
             key.GetName(): float(source.Get(key.GetName()).GetVal())
             for key in source.GetListOfKeys()
-            if key.GetName().startswith(("bw_", "bg_"))
+            if is_mass_parameter(key.GetName())
         }
     finally:
         source.Close()

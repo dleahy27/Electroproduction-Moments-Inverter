@@ -25,6 +25,7 @@
 #include <stdexcept>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace emi {
@@ -86,8 +87,53 @@ double LeafValue(TTree& tree, const std::string& name) {
   return leaf->GetValue(0);
 }
 
+// Resolve selection before discovering moments so excluded rows cannot affect
+// the fitted branch set. Preserve tree order even for an unordered index list.
+std::vector<Long64_t> SelectMassRows(const FitMassModelConfig& config) {
+  if (config.yieldBranch &&
+      (config.yieldBranch->empty() || !std::isfinite(config.normalisation) ||
+       config.normalisation <= 0.0))
+    throw std::invalid_argument("Yield scaling requires a branch and positive finite normalisation");
+  if ((config.minMassGeV && !std::isfinite(*config.minMassGeV)) ||
+      (config.maxMassGeV && !std::isfinite(*config.maxMassGeV)) ||
+      (config.minMassGeV && config.maxMassGeV &&
+       *config.minMassGeV > *config.maxMassGeV))
+    throw std::invalid_argument("Mass selection requires finite, ordered bounds");
+  std::unique_ptr<TFile> file(TFile::Open(config.fit.input.c_str(), "READ"));
+  if (!file || file->IsZombie())
+    throw std::runtime_error("Failed to open " + config.fit.input.string());
+  auto* tree = dynamic_cast<TTree*>(file->Get(config.fit.tree.c_str()));
+  if (!tree || tree->GetEntries() == 0)
+    throw std::runtime_error("Mass input tree is missing or empty");
+  std::unordered_set<Long64_t> indices;
+  for (auto bin : config.bins) {
+    if (bin < 0 || bin >= tree->GetEntries())
+      throw std::invalid_argument("Mass bin index is outside the input tree: " +
+                                  std::to_string(bin));
+    indices.insert(bin);
+  }
+  std::vector<Long64_t> rows;
+  for (Long64_t row = 0; row < tree->GetEntries(); ++row) {
+    if (!indices.empty() && indices.count(row) == 0)
+      continue;
+    tree->GetEntry(row);
+    const double mass = LeafValue(*tree, config.massBranch);
+    if (!std::isfinite(mass) || mass <= 0.0)
+      throw std::runtime_error("Mass branch contains an invalid value at entry " +
+                               std::to_string(row));
+    if ((config.minMassGeV && mass < *config.minMassGeV) ||
+        (config.maxMassGeV && mass > *config.maxMassGeV))
+      continue;
+    rows.push_back(row);
+  }
+  if (rows.empty())
+    throw std::invalid_argument("Mass selection contains no input entries");
+  return rows;
+}
+
 std::vector<DataPoint> ReadMassData(const FitMassModelConfig& config,
-                                    const detail::EvaluationContext& angular) {
+                                    const detail::EvaluationContext& angular,
+                                    const std::vector<Long64_t>& rows) {
   std::unique_ptr<TFile> file(TFile::Open(config.fit.input.c_str(), "READ"));
   if (!file || file->IsZombie())
     throw std::runtime_error("Failed to open " + config.fit.input.string());
@@ -95,17 +141,26 @@ std::vector<DataPoint> ReadMassData(const FitMassModelConfig& config,
   if (!tree || tree->GetEntries() == 0)
     throw std::runtime_error("Mass input tree is missing or empty");
   std::vector<DataPoint> result;
-  result.reserve(static_cast<size_t>(tree->GetEntries()));
-  for (Long64_t row = 0; row < tree->GetEntries(); ++row) {
+  result.reserve(rows.size());
+  for (Long64_t row : rows) {
     // Read each ROOT entry once. All leaves below refer to this loaded row.
     tree->GetEntry(row);
     DataPoint point;
     point.mass = LeafValue(*tree, config.massBranch);
     if (!std::isfinite(point.mass) || point.mass <= 0.0)
       throw std::runtime_error("Mass branch contains an invalid value");
+    double scale = 1.0;
+    if (config.yieldBranch) {
+      const double yield = LeafValue(*tree, *config.yieldBranch);
+      scale = yield / config.normalisation;
+      if (!std::isfinite(yield) || yield <= 0.0 ||
+          !std::isfinite(scale) || scale <= 0.0)
+        throw std::runtime_error("Yield must be positive and finite at entry " +
+                                 std::to_string(row));
+    }
     for (const auto& moment : angular.observed) {
-      const double value = LeafValue(*tree, moment.name);
-      const double error = LeafValue(*tree, moment.name + "_err");
+      const double value = scale * LeafValue(*tree, moment.name);
+      const double error = scale * LeafValue(*tree, moment.name + "_err");
       if (!std::isfinite(value) || !std::isfinite(error) || error <= 0.0) {
         throw std::runtime_error("Moment '" + moment.name +
                                  "' has an invalid value or uncertainty");
@@ -179,12 +234,13 @@ Problem BuildAmplitudeProblem(const MassModelConfig& massModel,
         resonance.couplingMagnitude.lower < 0.0)
       throw std::invalid_argument(
           "Mass/width bounds must be positive and magnitudes nonnegative");
-    const std::string prefix = "bw_" + resonance.name;
+    const std::string prefix = resonance.name;
     const std::string couplingPrefix = prefix + "_" + resonance.wave.reflectivity +
                                        (resonance.wave.orientation == 'L' ? "_L" : "") +
                                        "_" + std::to_string(resonance.wave.l) + "_" +
-                                       std::to_string(resonance.wave.m) + "_k" +
-                                       std::to_string(resonance.wave.k);
+                                       detail::IndexString(resonance.wave.m) +
+                                       (resonance.wave.k == 0 ? "" :
+                                        "_k" + detail::IndexString(resonance.wave.k));
     problem.resonances.push_back(
         {addWave(resonance.wave), addShared(prefix + "_mass", resonance.poleMass),
          addShared(prefix + "_width", resonance.width),
@@ -209,11 +265,14 @@ Problem BuildProblem(const FitMassModelConfig& config, const ModelConfig& model)
   if (config.fit.starts == 0)
     throw std::invalid_argument("Mass fit starts must be positive");
   FitConfig angularFit = config.fit;
-  angularFit.bin = 0; // BuildContext discovers the schema from entry zero.
+  angularFit.bin = 0; // Mass-fit inputs have scalar leaves.
   angularFit.verbose = false;
-  auto angular = detail::BuildContext(detail::MakeInternalConfig(angularFit, model));
+  const auto rows = SelectMassRows(config);
+  auto internal = detail::MakeInternalConfig(angularFit, model);
+  internal.momentEntry = rows.front();
+  auto angular = detail::BuildContext(internal);
   auto problem = BuildAmplitudeProblem(config.model, std::move(angular));
-  problem.data = ReadMassData(config, *problem.angular);
+  problem.data = ReadMassData(config, *problem.angular, rows);
   return problem;
 }
 

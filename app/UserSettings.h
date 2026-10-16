@@ -104,6 +104,14 @@ inline FitMassModelConfig MassFit() {
   massFit.fit.photoproduction = true;
   massFit.fit.SetStarts(1).SetWorkers(1).UseHesse(true);
   massFit.massBranch = "mass_GeV";
+  // For moments normalised to 2, restore the yield scale before fitting:
+  // massFit.yieldBranch = "yield"; // Scalar unnormalised zeroth moment per entry.
+  // massFit.normalisation = 2.0;   // Multiplies moments AND errors by yield / 2.
+  // Select original zero-based entries and/or inclusive mass bounds (GeV).
+  // Empty/unset selections include all bins; combined selections intersect.
+  // massFit.bins = {0, 2, 5};
+  // massFit.minMassGeV = 1.1;
+  // massFit.maxMassGeV = 1.5;
   massFit.model.resonances = {
       {"D2",
        {'a', 'T', 2, 1, 0},

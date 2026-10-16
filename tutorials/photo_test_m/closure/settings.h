@@ -46,6 +46,12 @@ inline FitMassModelConfig MassFit() {
   config.fit.seed = 1441;
   config.fit.hesse = true;
   config.fit.verbose = false;
+  // Optional experimental input controls (leave unset for this closure test):
+  // config.yieldBranch = "yield";
+  // config.normalisation = 2.0; // Scale every moment/error by yield / 2.
+  // config.bins = {0, 2, 5};    // Original zero-based TTree entry indices.
+  // config.minMassGeV = 1.1;   // Inclusive; combines with bins by intersection.
+  // config.maxMassGeV = 1.5;
   config.model = TruthModel();
   auto &resonance = config.model.resonances.front();
   // Deliberately displaced starts check recovery, not just truth evaluation.

@@ -1,5 +1,6 @@
 """Load mass-fit data once, keeping ROOT I/O separate from Matplotlib plots."""
 
+import re
 import numpy as np
 from tutorials.analysis_utils import (
     branches,
@@ -8,67 +9,75 @@ from tutorials.analysis_utils import (
     read_tree,
     read_best_rows,
     truth_parameters,
+    is_mass_parameter,
 )
 
 
+def resonance_label(name):
+    """Matplotlib label for a named resonance, including custom channels."""
+    match = re.fullmatch(r"(pi|[af])(\d+)_(\d+)", name)
+    if match:
+        family, spin, mass = match.groups()
+        family = r"\pi" if family == "pi" else family
+        return family + "_{" + spin + "}(" + mass + ")"
+    return r"\mathrm{" + name.replace("_", r"\_") + "}"
+
+
 def pole_names(names):
-    # names of form:
-    # bw_meson_massvalue_mass/width
-    plot_names = []
-    for i,name in enumerate(names):
-        strings = name.split("_")
-        mass = strings[2]
-        if strings[1] == "a0":
-            meson = r"a_{0}("+mass+")"
-        elif strings[1] == "pi1":
-            meson = r"\pi_{1}("+mass+")"
-        elif strings[1] == "a2":
-            meson = r"a_{2}("+mass+")"
-        else:
-            raise ValueError("Meson not recognised for what was in the photo model.")
+    labels = []
+    for name in names:
+        resonance, parameter = mass_coordinate_name(name).rsplit("_", 1)
+        if parameter not in ("mass", "width"):
+            raise ValueError(f"Not a pole mass or width: {name}")
+        symbol = "m" if parameter == "mass" else r"\Gamma"
+        labels.append("$" + symbol + "_{" + resonance_label(resonance) + "}$")
+    return labels
 
-        if strings[-1]=="width":
-            plot_names.append(r"$\Gamma_{"+meson+"}$")
-        elif strings[-1]=="mass":
-            plot_names.append(r"$m_{"+meson+"}$")
-
-        else:
-            raise ValueError("The string does not end with mass or width as expected.")
-    return plot_names
 
 def coupling_name(names):
-    # names of form:
-    # bw_meson_massvalue_a/b_l_m_k_phase/mag
-    plot_names = []
+    labels = []
+    for name in names:
+        match = re.fullmatch(
+            r"(.+)_([ab])(?:_L)?_\d+_(m?\d+)(?:_km?\d+)?_(?:mag|phase)",
+            mass_coordinate_name(name),
+        )
+        if not match:
+            raise ValueError(f"Not a mass coupling: {name}")
+        resonance, reflectivity, projection = match.groups()
+        sign = "+" if reflectivity == "a" else "-"
+        projection = projection.replace("m", "-")
+        labels.append("$" + resonance_label(resonance) + "^{" + sign + "}_{" + projection + "}$")
+    return labels
 
-    for i,name in enumerate(names):
-        strings = name.split("_")
-        mass = strings[2]
-        refl_val = strings[3]
-        m = strings[5]
 
-        if refl_val == "a":
-            refl = r"+"
-        elif refl_val == "b":
-            refl = r"-"
-        else:
-            raise ValueError("Reflectivity not recognised.")
+def coupling_sector_name(name, sector):
+    """Add an explicit k sector to a single-k coupling name."""
+    base, parameter = mass_coordinate_name(name).rsplit("_", 1)
+    index = "m" + str(-sector) if sector < 0 else str(sector)
+    return base + ("_k" + index if sector else "") + "_" + parameter
 
-        if strings[1] == "a0":
-            meson = r"a_{0"
-        elif strings[1] == "pi1":
-            meson = r"\pi_{1"
-        elif strings[1] == "a2":
-            meson = r"a_{2"
-        else:
-            raise ValueError("Meson not recognised for what was in the photo model.")
 
-        plot_names.append(r"$"+meson+m+"}^{"+refl+"}"+"("+mass+")$")
+def mass_coordinate_name(name):
+    """Normalize old bw/k0/minus spellings to concise mass coordinates."""
+    name = name.removeprefix("bw_")
+    name = re.sub(r"(^|_)(k?)-(\d+)(?=_|$)", r"\1\2m\3", name)
+    return name.replace("_k0_", "_")
 
-    return plot_names
+
+def mass_coordinate_table(table):
+    """Normalize coordinate keys after reading the original ROOT branches."""
+    normalized = {}
+    for name, values in table.items():
+        canonical = mass_coordinate_name(name)
+        if canonical in normalized:
+            raise ValueError(f"Duplicate mass coordinate alias: {canonical}")
+        normalized[canonical] = values
+    return normalized
+
+
 def mass_coordinates(names):
-    """Select physical BW coordinates, excluding status and uncertainty columns."""
-    return [name for name in names if name.startswith("bw_")]
+    """Select resonance parameters, excluding background and error columns."""
+    return [name for name in names if is_mass_parameter(name) and not name.startswith("bg_")]
 
 
 def load_closure(case):
@@ -79,6 +88,8 @@ def load_closure(case):
     results = read_tree(
         fit_file, "massFitResults", ["chi2", "ndf", "fit_ok", "start", *coordinates]
     )
+    results = mass_coordinate_table(results)
+    coordinates = [mass_coordinate_name(name) for name in coordinates]
     predictions = set(branches(fit_file, "massFitPredictions"))
     spectra = [
         name
@@ -92,7 +103,7 @@ def load_closure(case):
         "results": results,
         "best": best_index(results),
         "top": best_indices(results),
-        "truth": truth_parameters(truth_file),
+        "truth": mass_coordinate_table(truth_parameters(truth_file)),
         "spectra": spectra,
         "moments": read_tree(
             truth_file,
@@ -122,6 +133,9 @@ def load_mass_scan(output):
     fits, quality = read_best_rows(path, "massFitResults", coordinates, fraction=0.05)
     truth_names = branches(path, "massModelTruth")
     truth = read_tree(path, "massModelTruth", truth_names)
+    fits = mass_coordinate_table(fits)
+    truth = mass_coordinate_table(truth)
+    coordinates = [mass_coordinate_name(name) for name in coordinates]
     moment_names = branches(path, "massMoments")
     intensity = "RH_0_0_0" if "RH_0_0_0" in moment_names else "RH_0_0_0_0_0"
     moments = read_tree(path, "massMoments", ["scan_case", "mass_GeV", intensity])

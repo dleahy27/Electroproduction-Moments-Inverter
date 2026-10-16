@@ -12,6 +12,32 @@ mass entry in the input tree. Pole masses, widths, and production couplings
 use analytic moment derivatives. See the runnable
 [single-BW tutorial](tutorials/photo_test_m/closure/README.md).
 
+For experimental `mass-fit` inputs, the settings header can restore normalised
+moments and select the fitted mass bins:
+
+```cpp
+auto& config = settings.massFit;
+config.yieldBranch = "yield"; // Scalar unnormalised zeroth moment per entry.
+config.normalisation = 2.0;   // Input zeroth-moment normalisation.
+config.bins = {0, 2, 5};      // Optional original zero-based TTree entry indices.
+config.minMassGeV = 1.1;      // Optional inclusive lower mass bound.
+config.maxMassGeV = 1.5;      // Optional inclusive upper mass bound.
+```
+
+Setting `yieldBranch` multiplies every input moment and its error by
+`yield / normalisation` before chi-square evaluation. Supply the unnormalised
+zeroth moment in the same convention as the model; convert experimental event
+yields to that convention first. Yield values and the denominator must be
+positive and finite. Yield uncertainty and induced correlations are not
+propagated. With no yield branch, moments/errors are read unchanged.
+
+Empty `bins` and unset mass bounds select all entries. Index and mass selections
+intersect, bounds include their endpoints, and duplicate indices do not repeat
+observations. Either mass bound can be used alone. For a contiguous index range,
+populate `bins` with a loop. Invalid indices/bounds and empty selections are
+rejected. Moment discovery uses the first selected entry; predictions and `ndf`
+use only selected entries. These controls apply only to `mass-fit`.
+
 The application is C++17 and ROOT based. CMake compiles the physics and fitting
 code into a reusable library and links the small command-line program against
 it.
@@ -41,7 +67,7 @@ For the exact Linux x86-64 package builds used here, create the environment
 from the lock file instead:
 
 ```bash
-conda create -n emi --file environment-linux-64.lock
+conda create -n emi --file environment_linux_64.lock
 conda activate emi
 ```
 
@@ -728,6 +754,13 @@ fit.SetStarts(100).SetWorkers(1).SetSeed(123);
 
 emi::RunFit(fit, model);
 ```
+
+Mass-fit parameter names omit `bw_` and omit the k index for single-k fits.
+For example, `f2_1270_mass`, `f2_1270_width`, and `f2_1270_a_2_m1_mag` name a
+pole and a coupling. Polarized fits retain `_k1` or `_km1` to distinguish the
+spin sectors. Negative indices use `m1`, `m2`, etc. Generation and fitting use
+the same names; the mass-analysis loaders also read older `bw_`, `_k0` and
+minus-sign spellings. Regenerate files to obtain the concise names on disk.
 
 ## Reproducibility
 

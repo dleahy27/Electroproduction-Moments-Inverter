@@ -123,7 +123,7 @@ unmeasurable. Leaving it free would give Minuit an exact flat direction and a
 singular covariance matrix.
 
 EMI fixes the phase of the resonance on the highest-(l,m),
-positive-reflectivity transverse wave. Here that is `bw_D2_a_2_1_k0_phase`, held at its configured initial
+positive-reflectivity transverse wave. Here that is `D2_a_2_1_phase`, held at its configured initial
 value. The reference phase defines the convention; its magnitude remains free.
 In this one-wave test there are no other coupling phases. Set
 `MassModelConfig::phaseGauge` to a named resonance/wave pair to override the

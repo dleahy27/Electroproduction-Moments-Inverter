@@ -133,12 +133,25 @@ struct MassModelConfig {
   std::optional<MassPhaseGauge> phaseGauge;
 };
 
-// Fits all entries of one moment tree together. `fit.bin` is deliberately not
-// used: every entry is a mass point and `massBranch` supplies its invariant
-// mass in GeV. The usual FitConfig controls Minuit starts and diagnostics.
+// Fits selected entries of one moment tree together. `fit.bin` is deliberately
+// not used: every entry is a mass point and `massBranch` supplies its invariant
+// mass in GeV. Empty selections use all entries. The usual FitConfig controls
+// Minuit starts and diagnostics.
 struct FitMassModelConfig {
   FitConfig fit;
   std::string massBranch = "mass_GeV";
+  // Optional scalar branch containing the unnormalised zeroth moment (yield).
+  // When set, multiply every measured moment and error by yield / normalisation.
+  // The yield is treated as exact; its uncertainty/correlations are not propagated.
+  std::optional<std::string> yieldBranch;
+  double normalisation = 2.0;
+  // Zero-based original TTree entry indices, independent of mass ordering.
+  // Entries are fitted once in tree order; duplicates do not repeat observations.
+  std::vector<std::int64_t> bins;
+  // Inclusive mass bounds in GeV; either bound may be omitted. When combined
+  // with `bins`, an entry must satisfy both the index and mass selections.
+  std::optional<double> minMassGeV;
+  std::optional<double> maxMassGeV;
   // A finite budget makes high-dimensional multistart scans predictable. A
   // start that reaches this limit is retained with its Minuit status.
   unsigned maxFunctionCalls = 100000;

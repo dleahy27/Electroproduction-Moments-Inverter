@@ -182,7 +182,9 @@ std::vector<ObservedMoment> ReadObservedMoments(const InternalConfig& cfg) {
 
   // All branches refer to the same entry. Load it once; the leaf helper
   // selects the requested bin within each scalar or array-valued branch.
-  t->GetEntry(0);
+  if (cfg.momentEntry < 0 || cfg.momentEntry >= t->GetEntries())
+    throw std::runtime_error("Moment discovery entry is outside the input tree");
+  t->GetEntry(cfg.momentEntry);
   std::vector<ObservedMoment> obs;
   obs.reserve(branches.size());
   for (const auto& entry : branches) {

@@ -4,7 +4,7 @@
 import matplotlib.pyplot as plt
 import numpy as np
 from tutorials.analysis_utils import save_figure, style_axis, range_errors
-from tutorials.photo_test_m.analysis import load_mass_scan, pole_names, coupling_name
+from tutorials.photo_test_m.analysis import load_mass_scan, pole_names, coupling_name, coupling_sector_name
 from tutorials.paths import PROJECT_DIR
 
 CASE = PROJECT_DIR / "tutorials/photo_test_m/single_k_test/output"
@@ -83,8 +83,8 @@ def coupling_plot(case):
     ):
         selected = [name for name in coupling_names if name.endswith(suffix)]
         x = np.arange(len(selected))
-        plus = [case["truth"][name.replace("_k0_", "_k1_")] for name in selected]
-        minus = [case["truth"][name.replace("_k0_", "_k-1_")] for name in selected]
+        plus = [case["truth"][coupling_sector_name(name, 1)] for name in selected]
+        minus = [case["truth"][coupling_sector_name(name, -1)] for name in selected]
         fitted = [values[name][best] for name in selected]
         axis.scatter(x, plus, marker="^", s=26, label=r"input $k=+1$")
         axis.scatter(x, minus, marker="v", s=26, label=r"input $k=-1$")
