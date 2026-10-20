@@ -45,7 +45,12 @@ asks ROOT to choose a seed.
 - [Polarized moments](polarized_moments/README.md): spin-resolved closure tests
   and the PhotoTest mass/asymmetry scan.
 - [Mass-dependent fits](photo_test_m/README.md): a single-resonance closure,
-  the full PhotoTest closure and an effective single-k fit to two-k truth.
+  the full PhotoTest closure, an effective single-k fit to two-k truth, and a
+  Flatté/Breit–Wigner shape test.
+
+The [configuration reference](configuration.md) covers settings, phase
+conventions, input formats and worked examples. Each study keeps its own
+physics discussion and numerical assumptions.
 
 ## Analysis and output files
 

@@ -6,7 +6,8 @@ namespace emi {
 
 // Build the mass-fit representation of the deterministic PhotoTest truth.
 // `bothKSectors` retains explicit k=+/-1 amplitudes; false creates the
-// single-k effective model used to study an unpolarized inversion.
+// unsplit k=0 model for either mass-moment generation or effective single-k
+// fitting. kAsymmetry affects only the explicit-k model.
 MassModelConfig MakePhotoTestMassModel(double kAsymmetry, bool bothKSectors = true);
 
 } // namespace emi

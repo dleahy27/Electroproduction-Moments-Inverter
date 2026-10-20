@@ -210,10 +210,10 @@ def save_figure(figure, path, show=False, **kwargs):
 
 def is_mass_parameter(name):
     """Recognize concise mass parameters and names from older ROOT files."""
-    if name.startswith("err__"):
+    if name.startswith(("err__", "ordered__", "positive__")):
         return False
     return name.startswith(("bw_", "bg_")) or bool(re.fullmatch(
-        r".+_(?:mass|width)|.+_[ab](?:_L)?_\d+_m?\d+(?:_km?\d+)?_(?:mag|phase)", name
+        r".+_(?:mass|width|g2)|.+_[ab](?:_L)?_\d+_m?\d+(?:_km?\d+)?_(?:mag|phase)", name
     ))
 
 

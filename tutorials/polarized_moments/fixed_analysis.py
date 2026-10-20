@@ -95,38 +95,43 @@ def _amplitude_schema(truth_file, truth_tree, fit_file, fit_tree):
 
 
 def _add_legend(axis, waves, colours):
-    """Explain wave colours independently of the three marker meanings."""
-    wave_handles = [
+    """Keep wave labels outside the complex-amplitude data area."""
+    handles = [
         Line2D([], [], color=colours[wave], linewidth=3, label=wave_label(wave))
         for wave in waves
     ]
-    marker_handles = [
-        Line2D(
-            [],
-            [],
-            marker="^",
-            color="black",
-            linestyle="none",
-            label=r"Generated $k=+1$",
-        ),
-        Line2D(
-            [],
-            [],
-            marker="v",
-            color="black",
-            linestyle="none",
-            label=r"Generated $k=-1$",
-        ),
-        Line2D(
-            [],
-            [],
-            marker="o",
-            color="black",
-            linestyle="none",
-            label="Truth-closest equivalent minimum",
-        ),
+    axis.legend(handles=handles, frameon=False, loc="upper left",
+                bbox_to_anchor=(1.03, 1.0), borderaxespad=0)
+
+
+def _finish_figure(figure, axes, title, reference, rotation):
+    """Explain marker and gauge conventions without covering any amplitudes."""
+    handles = [
+        Line2D([], [], marker=marker, color="black", linestyle="none",
+               markersize=9, label=label)
+        for marker, label in [
+            ("^", r"Generated $k=+1$"),
+            ("v", r"Generated $k=-1$"),
+            ("o", "Fit (truth-closest minimum)"),
+        ]
     ]
-    axis.legend(handles=wave_handles + marker_handles, frameon=False, ncol=3)
+    figure.legend(handles=handles, loc="lower center", ncol=3,
+                  bbox_to_anchor=(0.5, 0.0), frameon=False, fontsize=14)
+    figure.suptitle(title, fontsize=22)
+    box = dict(boxstyle="round,pad=0.5", facecolor="white",
+               edgecolor="0.7", linewidth=0.8)
+    # Reserve a footer for the common marker key; panel legends and gauge boxes
+    # are included in constrained layout and in the tight PDF bounding box.
+    figure.get_layout_engine().set(rect=(0, 0.035, 1, 0.965))
+
+
+def _reference_wave(base_waves, reflectivity):
+    """Mirror EMI's highest-l, highest-m transverse non-flip reference."""
+    candidates = [wave for wave in base_waves
+                  if wave.startswith(f"{reflectivity}_T_")]
+    return max(candidates, key=lambda wave: (
+        int(wave.split("_")[2]), int(wave.split("_")[3].replace("m", "-"))
+    ))
 
 
 def analyse_fixed_closure(
@@ -137,11 +142,34 @@ def analyse_fixed_closure(
     truth_tree="genMoments",
     fit_tree="fitResults",
     show_plot=False,
+    polarization="both",
+    k_gauge=None,
 ):
     """Compare generated and fitted amplitudes in Cartesian and polar form."""
+    if polarization not in ("both", "initial", "recoil"):
+        raise ValueError(f"Unknown nucleon polarization: {polarization}")
+    plt.rcParams.update({
+        "font.family": "serif", "mathtext.fontset": "stix",
+        "font.size": 18, "axes.titlesize": 18, "axes.labelsize": 24,
+        "xtick.labelsize": 17, "ytick.labelsize": 17,
+        "legend.fontsize": 16, "axes.linewidth": 1.8,
+        "lines.linewidth": 2.2,
+    })
     magnitudes, base_waves, truth_names, fit_names = _amplitude_schema(
         truth_file, truth_tree, fit_file, fit_tree
     )
+    reference = _reference_wave(base_waves, "a")
+    rotation = None
+    if polarization != "both":
+        rotation = (k_gauge.replace(":", "_").replace("_-", "_m")
+                    if k_gauge else _reference_wave(base_waves, "b"))
+        if rotation not in base_waves:
+            raise ValueError(f"Spin gauge wave absent from input: {rotation}")
+    study_title = {
+        "both": "Initial and recoil polarization",
+        "initial": "Initial nucleon polarization",
+        "recoil": "Recoil nucleon polarization",
+    }[polarization]
     phases = [phase_branch(name) for name in magnitudes]
     # Generated observable branches carry a leading R, while reconstructed fit
     # moments omit it. These pairs test physical closure independently of which
@@ -259,14 +287,19 @@ def analyse_fixed_closure(
         for key, title in GROUPS
         if any(tuple(wave.split("_")[:2]) == key for wave in plotted_waves)
     ]
-    colours = {wave: f"C{index % 10}" for index, wave in enumerate(plotted_waves)}
+    # Reuse the same wave colours in transverse/longitudinal and natural/
+    # unnatural panels, as in the other fixed-amplitude Argands.
+    projections = sorted({tuple(wave.split("_")[2:]) for wave in plotted_waves},
+                         key=lambda pair: (int(pair[0]), int(pair[1].replace("m", "-"))))
+    colours = {wave: f"C{projections.index(tuple(wave.split('_')[2:])) % 10}"
+               for wave in plotted_waves}
 
     # Cartesian Argand representation. Draw the fit circle larger and first so
     # its rim remains visible behind the triangle when closure is exact.
     figure, axes = plt.subplots(
         len(groups),
         1,
-        figsize=(9, 6 * len(groups)),
+        figsize=(11, 6 * len(groups)),
         constrained_layout=True,
         squeeze=False,
     )
@@ -288,8 +321,8 @@ def analyse_fixed_closure(
                     fitted.imag,
                     "o",
                     color=colours[wave],
-                    markeredgecolor="black",
-                    markersize=12,
+                    markeredgewidth=1.8,
+                    markersize=13,
                     zorder=3,
                 )
                 axis.plot(
@@ -308,8 +341,11 @@ def analyse_fixed_closure(
                     abs(fitted.real),
                     abs(fitted.imag),
                 )
-        axis.set_title(title)
+        axis.set_title(title.title(), pad=12)
+        axis.set_xlabel("Re")
         axis.set_ylabel("Im")
+        axis.axhline(0, color="0.5", linewidth=0.8, zorder=0)
+        axis.axvline(0, color="0.5", linewidth=0.8, zorder=0)
         axis.set_aspect("equal", adjustable="box")
         style_axis(axis, grid=True)
         _add_legend(axis, selected, colours)
@@ -319,7 +355,7 @@ def analyse_fixed_closure(
         axis.set_xlim(-limit, limit)
         axis.set_ylim(-limit, limit)
     axes[-1].set_xlabel("Re")
-    figure.suptitle("Polarized fixed-amplitude closure")
+    _finish_figure(figure, axes, study_title, reference, rotation)
     save_figure(
         figure,
         output_dir / f"{fit_file.stem}_argand.pdf",
@@ -333,7 +369,7 @@ def analyse_fixed_closure(
     figure, axes = plt.subplots(
         len(groups),
         1,
-        figsize=(9, 6 * len(groups)),
+        figsize=(11, 6 * len(groups)),
         constrained_layout=True,
         squeeze=False,
     )
@@ -369,7 +405,7 @@ def analyse_fixed_closure(
                         markersize=9,
                         zorder=4,
                     )
-        axis.set_title(title)
+        axis.set_title(title.title(), pad=12)
         axis.set_xlim(-np.pi, np.pi)
         axis.set_ylabel("Magnitude")
         axis.set_xticks(
@@ -380,7 +416,7 @@ def analyse_fixed_closure(
         _add_legend(axis, selected, colours)
 
     axes[-1].set_xlabel("Phase (rad)")
-    figure.suptitle("Polarized fixed-amplitude closure")
+    _finish_figure(figure, axes, study_title, reference, rotation)
     save_figure(
         figure,
         output_dir / f"{fit_file.stem}_magnitude_phase.pdf",

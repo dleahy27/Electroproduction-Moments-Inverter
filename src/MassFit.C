@@ -1,9 +1,11 @@
 // Simultaneous mass-dependent moment fit.  The angular algebra is shared with
 // the ordinary inversion; this layer replaces its free bin-by-bin complex
-// amplitudes with coherent Breit-Wigner and constant-background functions.
+// amplitudes with coherent Breit-Wigner, Flatte, and background functions.
 #include "emi/Runner.h"
 
 #include "Detail.h"
+#include "MassModels/MassModel.h"
+#include "MassModels/OrderedMasses.h"
 #include "Progress.h"
 #include "WorkerOutput.h"
 
@@ -12,6 +14,7 @@
 #include "TFile.h"
 #include "TLeaf.h"
 #include "TParameter.h"
+#include "TObjString.h"
 #include "TRandom3.h"
 #include "TTree.h"
 
@@ -39,13 +42,13 @@ struct DataPoint {
   std::vector<double> values, errors;
 };
 // One shared pole, coupling, or background coordinate supplied to Minuit.
-struct Coordinate {
-  std::string name;
-  MassParameter control;
-};
+using Coordinate = MassModels::FitCoordinate;
 // Indices into the wave and coordinate tables, built once before fitting.
 struct ResonanceTerm {
   int wave = -1, mass = -1, width = -1, magnitude = -1, phase = -1;
+  MassLineShape lineShape = MassLineShape::ConstantWidthBreitWigner;
+  std::vector<MassModels::FlatteChannel> channels;
+  std::vector<int> channelCoordinates;
 };
 struct BackgroundTerm {
   int wave = -1, re = -1, im = -1;
@@ -57,7 +60,8 @@ struct Problem {
   std::shared_ptr<detail::EvaluationContext> angular;
   std::vector<DataPoint> data;
   std::vector<int> amplitudeForMagnitude;
-  std::vector<Coordinate> coordinates;
+  std::vector<Coordinate> coordinates; // Independent MINUIT coordinates.
+  MassModels::OrderedMasses massMapping;
   std::vector<ResonanceTerm> resonances;
   std::vector<BackgroundTerm> backgrounds;
   std::unordered_map<long long, int> waveIndex;
@@ -175,9 +179,9 @@ std::vector<DataPoint> ReadMassData(const FitMassModelConfig& config,
 
 int AddCoordinate(Problem& problem, const std::string& name,
                   const MassParameter& value) {
-  if (!std::isfinite(value.initial) || !std::isfinite(value.lower) ||
-      !std::isfinite(value.upper) || value.lower > value.upper ||
-      value.initial < value.lower || value.initial > value.upper) {
+  if (!std::isfinite(value.initial) || (value.bounded &&
+      (!std::isfinite(value.lower) || !std::isfinite(value.upper) || value.lower > value.upper ||
+       value.initial < value.lower || value.initial > value.upper))) {
     throw std::invalid_argument("Invalid limits for mass-model coordinate " + name);
   }
   for (const auto& existing : problem.coordinates)
@@ -218,8 +222,9 @@ Problem BuildAmplitudeProblem(const MassModelConfig& massModel,
     const auto found = sharedPoleCoordinates.find(name);
     if (found != sharedPoleCoordinates.end()) {
       const auto& previous = problem.coordinates[found->second].control;
-      if (previous.initial != control.initial || previous.lower != control.lower ||
-          previous.upper != control.upper || previous.fixed != control.fixed)
+      if (previous.initial != control.initial || previous.bounded != control.bounded ||
+          (control.bounded && (previous.lower != control.lower || previous.upper != control.upper)) ||
+          previous.fixed != control.fixed)
         throw std::invalid_argument("Inconsistent shared pole control " + name);
       return found->second;
     }
@@ -227,11 +232,15 @@ Problem BuildAmplitudeProblem(const MassModelConfig& massModel,
     sharedPoleCoordinates.emplace(name, index);
     return index;
   };
+  std::unordered_map<std::string, const MassResonanceConfig*> sharedShapes;
   for (const auto& resonance : massModel.resonances) {
     if (resonance.name.empty())
       throw std::invalid_argument("Every mass resonance needs a name");
-    if (resonance.poleMass.lower <= 0.0 || resonance.width.lower <= 0.0 ||
-        resonance.couplingMagnitude.lower < 0.0)
+    if (resonance.poleMass.initial <= 0.0 ||
+        (resonance.poleMass.bounded && resonance.poleMass.lower <= 0.0) ||
+        (resonance.lineShape == MassLineShape::ConstantWidthBreitWigner &&
+         (resonance.width.initial <= 0.0 || (resonance.width.bounded && resonance.width.lower <= 0.0))) ||
+        (resonance.couplingMagnitude.bounded && resonance.couplingMagnitude.lower < 0.0))
       throw std::invalid_argument(
           "Mass/width bounds must be positive and magnitudes nonnegative");
     const std::string prefix = resonance.name;
@@ -241,11 +250,51 @@ Problem BuildAmplitudeProblem(const MassModelConfig& massModel,
                                        detail::IndexString(resonance.wave.m) +
                                        (resonance.wave.k == 0 ? "" :
                                         "_k" + detail::IndexString(resonance.wave.k));
-    problem.resonances.push_back(
-        {addWave(resonance.wave), addShared(prefix + "_mass", resonance.poleMass),
-         addShared(prefix + "_width", resonance.width),
-         AddCoordinate(problem, couplingPrefix + "_mag", resonance.couplingMagnitude),
-         AddCoordinate(problem, couplingPrefix + "_phase", resonance.couplingPhase)});
+    const auto shared = sharedShapes.emplace(prefix, &resonance);
+    if (!shared.second) {
+      const auto& previous = *shared.first->second;
+      if (previous.lineShape != resonance.lineShape ||
+          previous.channels.size() != resonance.channels.size())
+        throw std::invalid_argument("Inconsistent shared line shape " + prefix);
+      for (size_t i = 0; i < resonance.channels.size(); ++i) {
+        const auto& first = previous.channels[i];
+        const auto& second = resonance.channels[i];
+        if (first.name != second.name || first.firstMassGeV != second.firstMassGeV ||
+            first.secondMassGeV != second.secondMassGeV)
+          throw std::invalid_argument("Inconsistent shared channel definition " + prefix);
+      }
+    }
+    ResonanceTerm term;
+    term.wave = addWave(resonance.wave);
+    term.mass = addShared(prefix + "_mass", resonance.poleMass);
+    term.lineShape = resonance.lineShape;
+    switch (resonance.lineShape) {
+    case MassLineShape::ConstantWidthBreitWigner:
+      term.width = addShared(prefix + "_width", resonance.width);
+      break;
+    case MassLineShape::Flatte: {
+      if (resonance.channels.size() < 2)
+        throw std::invalid_argument("Flatte requires at least two decay channels");
+      std::unordered_set<std::string> channelNames;
+      for (const auto& channel : resonance.channels) {
+        if (channel.name.empty() || !channelNames.insert(channel.name).second ||
+            !std::isfinite(channel.firstMassGeV) || channel.firstMassGeV < 0.0 ||
+            !std::isfinite(channel.secondMassGeV) || channel.secondMassGeV < 0.0 ||
+            channel.couplingSquared.lower < 0.0)
+          throw std::invalid_argument("Invalid Flatte channel definition for " + prefix);
+        term.channels.push_back({channel.firstMassGeV, channel.secondMassGeV,
+                                 channel.couplingSquared.initial});
+        term.channelCoordinates.push_back(
+            addShared(prefix + "_" + channel.name + "_g2", channel.couplingSquared));
+      }
+      break;
+    }
+    default:
+      throw std::invalid_argument("Unknown mass line shape");
+    }
+    term.magnitude = AddCoordinate(problem, couplingPrefix + "_mag", resonance.couplingMagnitude);
+    term.phase = AddCoordinate(problem, couplingPrefix + "_phase", resonance.couplingPhase);
+    problem.resonances.push_back(std::move(term));
   }
   for (const auto& background : massModel.backgrounds) {
     if (background.name.empty())
@@ -256,6 +305,8 @@ Problem BuildAmplitudeProblem(const MassModelConfig& massModel,
          AddCoordinate(problem, prefix + "_re", background.real),
          AddCoordinate(problem, prefix + "_im", background.imag)});
   }
+  problem.massMapping = MassModels::OrderedMasses(massModel, problem.coordinates);
+  problem.coordinates = problem.massMapping.fitCoordinates;
   return problem;
 }
 
@@ -278,32 +329,65 @@ Problem BuildProblem(const FitMassModelConfig& config, const ModelConfig& model)
 
 void AmplitudesAndDerivatives(const Problem& problem, double mass, const double* x,
                               std::vector<Complex>& amplitude,
-                              std::vector<std::vector<Complex>>& derivative) {
+                              std::vector<std::vector<Complex>>& derivative,
+                              bool computeDerivatives = true,
+                              const MassModels::PhysicalPoint* mapped = nullptr) {
+  const auto storage = mapped ? MassModels::PhysicalPoint{} : problem.massMapping.Evaluate(x);
+  const auto& point = mapped ? *mapped : storage;
+  const auto* physical = point.values.data();
   amplitude.assign(problem.waveIndex.size(), {});
-  derivative.assign(problem.coordinates.size(),
-                    std::vector<Complex>(problem.waveIndex.size(), Complex{}));
+  if (computeDerivatives)
+    derivative.assign(point.values.size(),
+                      std::vector<Complex>(problem.waveIndex.size(), Complex{}));
   for (const auto& term : problem.resonances) {
-    const double pole = x[term.mass], width = x[term.width];
-    const double numerator = pole * width;
-    const Complex denominator{pole * pole - mass * mass, -pole * width};
-    const Complex bw = numerator / denominator;
-    const Complex coupling = std::polar(x[term.magnitude], x[term.phase]);
-    amplitude[term.wave] += coupling * bw;
-    const Complex dPole =
-        (width * denominator - numerator * Complex{2.0 * pole, -width}) /
-        (denominator * denominator);
-    const Complex dWidth = (pole * denominator - numerator * Complex{0.0, -pole}) /
-                           (denominator * denominator);
+    const double pole = physical[term.mass];
+    Complex shape, dPole, dWidth;
+    std::vector<Complex> dChannels;
+    if (term.lineShape == MassLineShape::Flatte) {
+      auto channels = term.channels;
+      for (size_t i = 0; i < channels.size(); ++i)
+        channels[i].couplingSquaredGeV2 = physical[term.channelCoordinates[i]];
+      const auto evaluated = MassModels::Flatte(pole, mass, channels);
+      shape = evaluated.value;
+      dPole = evaluated.poleMassDerivative;
+      dChannels = evaluated.couplingSquaredDerivatives;
+    } else {
+      const double width = physical[term.width];
+      const double numerator = pole * width;
+      const Complex denominator{pole * pole - mass * mass, -pole * width};
+      shape = numerator / denominator;
+      if (computeDerivatives) {
+        dPole = (width * denominator - numerator * Complex{2.0 * pole, -width}) /
+                (denominator * denominator);
+        dWidth = (pole * denominator - numerator * Complex{0.0, -pole}) /
+                 (denominator * denominator);
+      }
+    }
+    const Complex coupling = std::polar(physical[term.magnitude], physical[term.phase]);
+    amplitude[term.wave] += coupling * shape;
+    if (!computeDerivatives) continue;
     derivative[term.mass][term.wave] += coupling * dPole;
-    derivative[term.width][term.wave] += coupling * dWidth;
-    derivative[term.magnitude][term.wave] += std::polar(1.0, x[term.phase]) * bw;
-    derivative[term.phase][term.wave] += Complex{0.0, 1.0} * coupling * bw;
+    if (term.width >= 0)
+      derivative[term.width][term.wave] += coupling * dWidth;
+    for (size_t i = 0; i < term.channelCoordinates.size(); ++i)
+      derivative[term.channelCoordinates[i]][term.wave] += coupling * dChannels[i];
+    derivative[term.magnitude][term.wave] += std::polar(1.0, physical[term.phase]) * shape;
+    derivative[term.phase][term.wave] += Complex{0.0, 1.0} * coupling * shape;
   }
   for (const auto& term : problem.backgrounds) {
-    amplitude[term.wave] += Complex{x[term.re], x[term.im]};
+    amplitude[term.wave] += Complex{physical[term.re], physical[term.im]};
+    if (!computeDerivatives) continue;
     derivative[term.re][term.wave] += 1.0;
     derivative[term.im][term.wave] += Complex{0.0, 1.0};
   }
+  if (!computeDerivatives) return;
+  std::vector<std::vector<Complex>> fitDerivative(
+      problem.coordinates.size(), std::vector<Complex>(amplitude.size(), Complex{}));
+  for (size_t p = 0; p < point.jacobian.size(); ++p)
+    for (const auto& entry : point.jacobian[p])
+      for (size_t wave = 0; wave < amplitude.size(); ++wave)
+        fitDerivative[entry.first][wave] += entry.second * derivative[p][wave];
+  derivative.swap(fitDerivative);
 }
 
 double MomentValue(const Problem& problem, const detail::MomentModel& moment,
@@ -319,24 +403,6 @@ double MomentValue(const Problem& problem, const detail::MomentModel& moment,
              (term.trig == detail::TrigKind::kCos ? product.real() : product.imag());
   }
   return value;
-}
-
-double MomentDerivative(const Problem& problem, const detail::MomentModel& moment,
-                        const std::vector<Complex>& amplitudes,
-                        const std::vector<std::vector<Complex>>& dAmplitude,
-                        size_t coordinate) {
-  double derivative = 0.0;
-  for (const auto& term : moment.terms) {
-    const int first = problem.amplitudeForMagnitude[term.idxMag1];
-    const int second = problem.amplitudeForMagnitude[term.idxMag2];
-    if (first < 0 || second < 0)
-      continue;
-    const Complex dp = dAmplitude[coordinate][first] * std::conj(amplitudes[second]) +
-                       amplitudes[first] * std::conj(dAmplitude[coordinate][second]);
-    derivative +=
-        term.coeff * (term.trig == detail::TrigKind::kCos ? dp.real() : dp.imag());
-  }
-  return derivative;
 }
 
 // Accumulate derivatives with respect to complex wave amplitudes first,
@@ -410,9 +476,11 @@ public:
     return new MassChi2(problem_);
   }
   double DoEval(const double* x) const {
+    const auto mapped = problem_->massMapping.Evaluate(x);
+    if (!problem_->massMapping.Valid(mapped)) return 1.e300;
     double chi2 = 0.0;
     for (const auto& point : problem_->data) {
-      AmplitudesAndDerivatives(*problem_, point.mass, x, amplitude_, derivative_);
+      AmplitudesAndDerivatives(*problem_, point.mass, x, amplitude_, derivative_, false, &mapped);
       for (size_t i = 0; i < problem_->angular->observed.size(); ++i) {
         const auto& observed = problem_->angular->observed[i];
         double model = MomentValue(
@@ -436,55 +504,65 @@ public:
   }
   void Gradient(const double* x, double* output) const override {
     std::fill(output, output + NDim(), 0.0);
+    const auto mapped = problem_->massMapping.Evaluate(x);
+    if (!problem_->massMapping.Valid(mapped)) return;
+    const auto& angular = *problem_->angular;
     for (const auto& point : problem_->data) {
-      AmplitudesAndDerivatives(*problem_, point.mass, x, amplitude_, derivative_);
-      for (size_t i = 0; i < problem_->angular->observed.size(); ++i) {
-        double model = 0.0;
-        ObservedMomentAndGradient(*problem_, i, amplitude_, derivative_, model,
-                                  momentGradient_, momentGradient2_);
-        const double factor =
-            -2.0 * (point.values[i] - model) / (point.errors[i] * point.errors[i]);
-        for (size_t p = 0; p < momentGradient_.size(); ++p)
-          output[p] += factor * momentGradient_[p];
+      AmplitudesAndDerivatives(*problem_, point.mass, x, amplitude_, derivative_, true, &mapped);
+      std::vector<Complex> waveGradient(amplitude_.size(), Complex{});
+      // Sum the chi-square derivative in wave space before applying the
+      // line-shape chain rule. This avoids repeating the full coordinate-by-
+      // wave contraction independently for every observed moment.
+      auto accumulate = [&](const detail::MomentModel& moment, double weight) {
+        for (const auto& term : moment.terms) {
+          const int first = problem_->amplitudeForMagnitude[term.idxMag1];
+          const int second = problem_->amplitudeForMagnitude[term.idxMag2];
+          if (first < 0 || second < 0) continue;
+          const double coefficient = weight * term.coeff;
+          if (term.trig == detail::TrigKind::kCos) {
+            waveGradient[first] += coefficient * std::conj(amplitude_[second]);
+            waveGradient[second] += coefficient * std::conj(amplitude_[first]);
+          } else {
+            waveGradient[first] += Complex{0.0, -coefficient} * std::conj(amplitude_[second]);
+            waveGradient[second] += Complex{0.0, coefficient} * std::conj(amplitude_[first]);
+          }
+        }
+      };
+      for (size_t i = 0; i < angular.observed.size(); ++i) {
+        const bool mixed = angular.observed[i].isMixed04;
+        const auto& primary = angular.modelsRec[mixed ? angular.observedModelIdx0[i]
+                                                     : angular.observedModelIdx[i]];
+        double model = MomentValue(*problem_, primary, amplitude_);
+        if (mixed)
+          model += angular.cfg.epsilon * MomentValue(*problem_, angular.modelsRec[angular.observedModelIdx4[i]], amplitude_);
+        const double factor = -2.0 * (point.values[i] - model) / (point.errors[i] * point.errors[i]);
+        accumulate(primary, factor);
+        if (mixed) accumulate(angular.modelsRec[angular.observedModelIdx4[i]], angular.cfg.epsilon * factor);
       }
+      for (size_t p = 0; p < derivative_.size(); ++p)
+        for (size_t wave = 0; wave < waveGradient.size(); ++wave)
+          output[p] += (derivative_[p][wave] * waveGradient[wave]).real();
     }
   }
   double DoDerivative(const double* x, unsigned int coordinate) const override {
-    if (coordinate >= NDim())
-      return 0.0;
-    double output = 0.0;
-    for (const auto& point : problem_->data) {
-      AmplitudesAndDerivatives(*problem_, point.mass, x, amplitude_, derivative_);
-      for (size_t i = 0; i < problem_->angular->observed.size(); ++i) {
-        const auto& observed = problem_->angular->observed[i];
-        const auto& primary =
-            problem_->angular->modelsRec[observed.isMixed04
-                                             ? problem_->angular->observedModelIdx0[i]
-                                             : problem_->angular->observedModelIdx[i]];
-        double model = MomentValue(*problem_, primary, amplitude_);
-        double derivative =
-            MomentDerivative(*problem_, primary, amplitude_, derivative_, coordinate);
-        if (observed.isMixed04) {
-          const auto& secondary =
-              problem_->angular->modelsRec[problem_->angular->observedModelIdx4[i]];
-          model += problem_->angular->cfg.epsilon *
-                   MomentValue(*problem_, secondary, amplitude_);
-          derivative += problem_->angular->cfg.epsilon *
-                        MomentDerivative(*problem_, secondary, amplitude_, derivative_,
-                                         coordinate);
-        }
-        output += -2.0 * (point.values[i] - model) * derivative /
-                  (point.errors[i] * point.errors[i]);
-      }
+    if (coordinate >= NDim()) return 0.0;
+    // Some ROOT adapters request components separately. Reuse the complete
+    // gradient for an unchanged point instead of rebuilding all wave and
+    // line-shape derivatives for each coordinate.
+    if (derivativePoint_.size() != NDim() ||
+        !std::equal(derivativePoint_.begin(), derivativePoint_.end(), x)) {
+      derivativePoint_.assign(x, x + NDim());
+      derivativeCache_.resize(NDim());
+      Gradient(x, derivativeCache_.data());
     }
-    return output;
+    return derivativeCache_[coordinate];
   }
 
 private:
   std::shared_ptr<Problem> problem_;
   mutable std::vector<Complex> amplitude_;
   mutable std::vector<std::vector<Complex>> derivative_;
-  mutable std::vector<double> momentGradient_, momentGradient2_;
+  mutable std::vector<double> derivativePoint_, derivativeCache_;
 };
 
 class MassChi2NoGrad final : public ROOT::Math::IBaseFunctionMultiDim {
@@ -506,58 +584,119 @@ private:
 };
 
 void WritePredictions(const Problem& problem, const std::vector<double>& x,
-                      const std::string& massBranch) {
-  TTree predictions("massFitPredictions",
-                    "Moment-model predictions at each mass point");
+                      const std::string& massBranch, const char* treeName,
+                      const std::vector<double>& masses) {
+  TTree predictions(treeName, "Best-fit model evaluated from resonance parameters");
   double mass = 0.0;
   predictions.Branch(massBranch.c_str(), &mass);
   std::vector<double> values(problem.angular->observed.size());
   for (size_t i = 0; i < values.size(); ++i)
-    predictions.Branch(("model__" + problem.angular->observed[i].name).c_str(),
-                       &values[i]);
+    predictions.Branch(("model__" + problem.angular->observed[i].name).c_str(), &values[i]);
   std::vector<Complex> amplitudes;
   std::vector<std::vector<Complex>> derivatives;
-  std::vector<double> gradient, secondaryGradient;
-  for (const auto& point : problem.data) {
-    mass = point.mass;
-    AmplitudesAndDerivatives(problem, mass, x.data(), amplitudes, derivatives);
+  for (double pointMass : masses) {
+    mass = pointMass;
+    AmplitudesAndDerivatives(problem, mass, x.data(), amplitudes, derivatives, false);
     for (size_t i = 0; i < values.size(); ++i) {
-      ObservedMomentAndGradient(problem, i, amplitudes, derivatives, values[i],
-                                gradient, secondaryGradient);
+      const auto& angular = *problem.angular;
+      const auto& observed = angular.observed[i];
+      values[i] = MomentValue(problem, angular.modelsRec[observed.isMixed04
+          ? angular.observedModelIdx0[i] : angular.observedModelIdx[i]], amplitudes);
+      if (observed.isMixed04)
+        values[i] += angular.cfg.epsilon * MomentValue(
+            problem, angular.modelsRec[angular.observedModelIdx4[i]], amplitudes);
     }
     predictions.Fill();
   }
   predictions.Write();
 }
 
-// An explicit gauge wins. Otherwise use the positive-reflectivity transverse
-// resonance with the largest (l,m), preserving its configured phase value.
-int FindPhaseGauge(const MassModelConfig& massModel, const Problem& problem) {
-  int phaseGauge = -1;
-  auto matchesGauge = [&](const MassResonanceConfig& resonance) {
-    if (massModel.phaseGauge) {
-      const auto& gauge = *massModel.phaseGauge;
-      return resonance.name == gauge.resonance &&
-             WaveKey(resonance.wave) == WaveKey(gauge.wave);
-    }
-    return resonance.wave.reflectivity == 'a' && resonance.wave.orientation == 'T';
-  };
-  int bestL = -1, bestM = -999999;
-  for (size_t i = 0; i < massModel.resonances.size(); ++i) {
-    const auto& resonance = massModel.resonances[i];
-    if (!matchesGauge(resonance))
-      continue;
-    if (massModel.phaseGauge || resonance.wave.l > bestL ||
-        (resonance.wave.l == bestL && resonance.wave.m > bestM)) {
-      phaseGauge = problem.resonances[i].phase;
-      bestL = resonance.wave.l;
-      bestM = resonance.wave.m;
-    }
+// Single-k reflectivities do not interfere, so each populated sector needs
+// its own reference. Explicit-k polarized models retain one overall phase.
+std::vector<int> FindPhaseGauges(const MassModelConfig& massModel,
+                                  const Problem& problem) {
+  std::vector<MassPhaseGauge> overrides = massModel.phaseGauges;
+  if (massModel.phaseGauge &&
+      std::none_of(overrides.begin(), overrides.end(), [&](const auto& gauge) {
+        return gauge.wave.reflectivity == massModel.phaseGauge->wave.reflectivity;
+      }))
+    overrides.push_back(*massModel.phaseGauge);
+  std::unordered_set<char> overriddenSectors;
+  for (const auto& gauge : overrides) {
+    ValidateWave(gauge.wave);
+    if (!overriddenSectors.insert(gauge.wave.reflectivity).second)
+      throw std::invalid_argument("Duplicate mass phase gauge for a reflectivity");
+    const auto found = std::find_if(
+        massModel.resonances.begin(), massModel.resonances.end(),
+        [&](const auto& resonance) {
+          return resonance.name == gauge.resonance &&
+                 WaveKey(resonance.wave) == WaveKey(gauge.wave);
+        });
+    if (found == massModel.resonances.end())
+      throw std::invalid_argument("Requested mass phase gauge resonance is absent");
   }
-  if (phaseGauge < 0)
-    throw std::invalid_argument("Mass phase gauge needs a positive-reflectivity "
-                                "transverse resonance or an explicit override");
-  return phaseGauge;
+  const bool singleK =
+      problem.angular->cfg.nucleonPolarization == NucleonPolarization::None;
+  if (!singleK && overrides.size() > 1)
+    throw std::invalid_argument("Explicit-k mass fits accept one overall phase gauge");
+
+  auto select = [&](char reflectivity, const MassPhaseGauge* gauge) {
+    int selected = -1, bestL = -1, bestM = -999999;
+    for (size_t i = 0; i < massModel.resonances.size(); ++i) {
+      const auto& resonance = massModel.resonances[i];
+      const bool matches = gauge
+          ? resonance.name == gauge->resonance &&
+                WaveKey(resonance.wave) == WaveKey(gauge->wave)
+          : resonance.wave.reflectivity == reflectivity &&
+                resonance.wave.orientation == 'T';
+      if (matches && (gauge || resonance.wave.l > bestL ||
+                      (resonance.wave.l == bestL && resonance.wave.m > bestM))) {
+        selected = problem.massMapping.DirectFitIndex(problem.resonances[i].phase);
+        bestL = resonance.wave.l;
+        bestM = resonance.wave.m;
+      }
+    }
+    if (selected < 0)
+      throw std::invalid_argument(
+          std::string("Mass phase gauge needs a transverse resonance in sector ") +
+          reflectivity + " or an explicit override");
+    return selected;
+  };
+  if (!singleK)
+    return {select('a', overrides.empty() ? nullptr : &overrides.front())};
+
+  std::vector<int> result;
+  for (char reflectivity : {'a', 'b'}) {
+    const bool populated = std::any_of(
+        massModel.resonances.begin(), massModel.resonances.end(),
+        [&](const auto& r) { return r.wave.reflectivity == reflectivity; }) ||
+        std::any_of(massModel.backgrounds.begin(), massModel.backgrounds.end(),
+        [&](const auto& b) { return b.wave.reflectivity == reflectivity; });
+    if (!populated)
+      continue;
+    const auto override = std::find_if(overrides.begin(), overrides.end(),
+        [&](const auto& gauge) { return gauge.wave.reflectivity == reflectivity; });
+    result.push_back(select(reflectivity,
+                           override == overrides.end() ? nullptr : &*override));
+  }
+  return result;
+}
+
+void WriteMassMetadata(const Problem& problem) {
+  std::string physicalNames, fitNames, ordering;
+  for (const auto& coordinate : problem.massMapping.physicalCoordinates)
+    physicalNames += coordinate.name + "\n";
+  for (const auto& coordinate : problem.coordinates)
+    fitNames += coordinate.name + "\n";
+  for (const auto& node : problem.massMapping.nodes)
+    ordering += node.group + " " + node.resonance + " " +
+                std::to_string(node.physical) + " " + std::to_string(node.previous) +
+                " " + std::to_string(node.fit) + " " +
+                std::to_string(static_cast<int>(node.kind)) + "\n";
+  TObjString(physicalNames.c_str()).Write("mass_fit_physical_coordinate_names");
+  TObjString(fitNames.c_str()).Write("mass_fit_coordinate_names");
+  TObjString(ordering.c_str()).Write("mass_fit_ordering_map");
+  TParameter<double>("mass_fit_minimum_gap_GeV", problem.massMapping.minimumGap, 'f').Write();
 }
 
 void RunMassWorker(const FitMassModelConfig& config, const ModelConfig& model,
@@ -565,10 +704,14 @@ void RunMassWorker(const FitMassModelConfig& config, const ModelConfig& model,
                    unsigned firstStart, detail::ProgressCounter progress = {}) {
   auto problem = std::make_shared<Problem>(BuildProblem(config, model));
   MassChi2 objective(problem);
-  const int phaseGauge = FindPhaseGauge(config.model, *problem);
+  const auto phaseGauges = FindPhaseGauges(config.model, *problem);
+  auto isPhaseGauge = [&](size_t i) {
+    return std::find(phaseGauges.begin(), phaseGauges.end(), static_cast<int>(i)) !=
+           phaseGauges.end();
+  };
   unsigned freeCoordinates = 0;
   for (size_t i = 0; i < problem->coordinates.size(); ++i)
-    if (!problem->coordinates[i].control.fixed && static_cast<int>(i) != phaseGauge)
+    if (!problem->coordinates[i].control.fixed && !isPhaseGauge(i))
       ++freeCoordinates;
   if (freeCoordinates == 0)
     throw std::invalid_argument("Mass model has no free fit coordinates");
@@ -597,11 +740,37 @@ void RunMassWorker(const FitMassModelConfig& config, const ModelConfig& model,
   summary.Branch("initial_chi2", &initialChi2);
   summary.Branch("chi2", &chi2);
   summary.Branch("ndf", &ndf);
-  std::vector<double> errors(problem->coordinates.size());
-  std::vector<double> result(problem->coordinates.size());
-  for (size_t i = 0; i < result.size(); ++i) {
-    summary.Branch(problem->coordinates[i].name.c_str(), &result[i]);
-    summary.Branch(("err__" + problem->coordinates[i].name).c_str(), &errors[i]);
+  const size_t physicalSize = problem->massMapping.physicalCoordinates.size();
+  const size_t fitSize = problem->coordinates.size();
+  std::vector<double> errors(physicalSize), result(physicalSize);
+  std::vector<double> fitResult(fitSize), fitErrors(fitSize);
+  std::vector<double> fitCovariance, physicalCovariance, massJacobian;
+  bool covarianceOk = false;
+  summary.Branch("covariance_ok", &covarianceOk);
+  summary.Branch("fit_covariance", &fitCovariance);
+  summary.Branch("physical_covariance", &physicalCovariance);
+  summary.Branch("mass_jacobian", &massJacobian);
+  for (size_t i = 0; i < physicalSize; ++i) {
+    const auto& name = problem->massMapping.physicalCoordinates[i].name;
+    summary.Branch(name.c_str(), &result[i]);
+    summary.Branch(("err__" + name).c_str(), &errors[i]);
+  }
+  // Non-mass fit coordinates already have their physical branches above.
+  for (size_t i = 0; i < fitSize; ++i) {
+    const auto& name = problem->coordinates[i].name;
+    if (name.rfind("ordered__", 0) != 0 && name.rfind("positive__", 0) != 0)
+      continue;
+    summary.Branch(name.c_str(), &fitResult[i]);
+    summary.Branch(("err__" + name).c_str(), &fitErrors[i]);
+  }
+  std::vector<double> orderedMasses(problem->massMapping.nodes.size());
+  std::vector<double> orderedErrors(orderedMasses.size());
+  for (size_t i = 0; i < orderedMasses.size(); ++i) {
+    const auto& node = problem->massMapping.nodes[i];
+    const std::string name = "ordered__" + node.group + "__" +
+        (node.previous < 0 ? "base_GeV" : "gap_" + node.resonance + "_GeV");
+    summary.Branch(name.c_str(), &orderedMasses[i]);
+    summary.Branch(("err__" + name).c_str(), &orderedErrors[i]);
   }
   for (unsigned localStart = 0; localStart < config.fit.starts; ++localStart) {
     // Each trial owns fresh minimizer and covariance state.
@@ -625,11 +794,16 @@ void RunMassWorker(const FitMassModelConfig& config, const ModelConfig& model,
     minimizer->SetPrintLevel(-1); // The parent progress monitor owns terminal output.
     for (size_t i = 0; i < problem->coordinates.size(); ++i) {
       const auto& coordinate = problem->coordinates[i];
-      minimizer->SetLimitedVariable(i, coordinate.name, coordinate.control.initial,
-                                    1.e-3, coordinate.control.lower,
-                                    coordinate.control.upper);
-      if (coordinate.control.fixed || static_cast<int>(i) == phaseGauge)
-        minimizer->FixVariable(i);
+      if (coordinate.control.fixed || isPhaseGauge(i)) {
+        minimizer->SetFixedVariable(i, coordinate.name, coordinate.control.initial);
+      } else if (!coordinate.control.bounded) {
+        minimizer->SetVariable(i, coordinate.name, coordinate.control.initial, 1.e-3);
+      } else {
+        const double step = std::min(1.e-3,
+            0.01 * (coordinate.control.upper - coordinate.control.lower));
+        minimizer->SetLimitedVariable(i, coordinate.name, coordinate.control.initial,
+                                      step, coordinate.control.lower, coordinate.control.upper);
+      }
     }
     std::vector<double> startValues(problem->coordinates.size());
     for (size_t i = 0; i < problem->coordinates.size(); ++i) {
@@ -643,8 +817,10 @@ void RunMassWorker(const FitMassModelConfig& config, const ModelConfig& model,
       // Start zero uses the steering card exactly. Only subsequent global
       // starts explore random couplings; pole starts remain configured.
       if (firstStart + localStart > 0 && coupling && !coordinate.control.fixed &&
-          static_cast<int>(i) != phaseGauge)
-        value = random.Uniform(coordinate.control.lower, coordinate.control.upper);
+          !isPhaseGauge(i))
+        value = coordinate.control.bounded
+            ? random.Uniform(coordinate.control.lower, coordinate.control.upper)
+            : random.Gaus(coordinate.control.initial, 1.0);
       // Fix the reference at its supplied phase. Setting it to zero alone
       // would alter relative phases and spoil an otherwise exact truth start.
       startValues[i] = value;
@@ -657,22 +833,64 @@ void RunMassWorker(const FitMassModelConfig& config, const ModelConfig& model,
     chi2 = minimizer->MinValue();
     startIndex = static_cast<int>(firstStart + localStart);
     const double* values = minimizer->X();
-    result.assign(values, values + problem->coordinates.size());
-    errors.assign(problem->coordinates.size(),
-                  std::numeric_limits<double>::quiet_NaN());
+    ok = ok && problem->massMapping.Valid(values) && std::isfinite(chi2) && chi2 < 1.e299;
+    std::copy(values, values + fitSize, fitResult.begin());
+    const auto physical = problem->massMapping.Evaluate(values);
+    std::copy(physical.values.begin(), physical.values.end(), result.begin());
+    const double missing = std::numeric_limits<double>::quiet_NaN();
+    std::fill(errors.begin(), errors.end(), missing);
+    std::fill(fitErrors.begin(), fitErrors.end(), missing);
+    fitCovariance.clear();
+    physicalCovariance.clear();
+    massJacobian.clear();
+    covarianceOk = false;
     if (hesse) {
-      const double* fitErrors = minimizer->Errors();
-      errors.assign(fitErrors, fitErrors + problem->coordinates.size());
+      fitCovariance.resize(fitSize * fitSize);
+      covarianceOk = minimizer->GetCovMatrix(fitCovariance.data());
+      if (covarianceOk) {
+        physicalCovariance = MassModels::OrderedMasses::Propagate(physical, fitCovariance, fitSize);
+        massJacobian.assign(physicalSize * fitSize, 0.0);
+        for (size_t i = 0; i < physicalSize; ++i) {
+          errors[i] = std::sqrt(std::max(0.0, physicalCovariance[i * physicalSize + i]));
+          for (const auto& entry : physical.jacobian[i])
+            massJacobian[i * fitSize + entry.first] = entry.second;
+        }
+        for (size_t i = 0; i < fitSize; ++i)
+          fitErrors[i] = std::sqrt(std::max(0.0, fitCovariance[i * fitSize + i]));
+      } else {
+        fitCovariance.clear();
+      }
+    }
+    for (size_t i = 0; i < orderedMasses.size(); ++i) {
+      const auto& node = problem->massMapping.nodes[i];
+      const int p = node.physical, q = node.previous;
+      orderedMasses[i] = result[p] - (q < 0 ? 0.0 : result[q]);
+      orderedErrors[i] = missing;
+      if (covarianceOk) {
+        double variance = physicalCovariance[p * physicalSize + p];
+        if (q >= 0)
+          variance += physicalCovariance[q * physicalSize + q] -
+                      2.0 * physicalCovariance[p * physicalSize + q];
+        orderedErrors[i] = std::sqrt(std::max(0.0, variance));
+      }
     }
     summary.Fill();
     progress.Advance();
   }
   summary.Write();
+  WriteMassMetadata(*problem);
   TParameter<int>("mass_fit_analytic_gradient",
-                  config.fit.useNumericalGradients ? 0 : 1)
+                  config.fit.useNumericalGradients ? 0 : 1, 'f')
       .Write();
-  TParameter<int>("mass_fit_phase_gauge_coordinate", phaseGauge).Write();
-  TParameter<int>("mass_fit_points", static_cast<int>(problem->data.size())).Write();
+  // Gauge metadata is identical across workers; preserve it when merging.
+  // Keep the original metadata key for consumers expecting the first gauge.
+  TParameter<int>("mass_fit_phase_gauge_coordinate", phaseGauges.front(), 'f').Write();
+  TParameter<int>("mass_fit_phase_gauge_count", static_cast<int>(phaseGauges.size()), 'f')
+      .Write();
+  for (size_t i = 0; i < phaseGauges.size(); ++i)
+    TParameter<int>(("mass_fit_phase_gauge_coordinate_" + std::to_string(i)).c_str(),
+                    phaseGauges[i], 'f').Write();
+  TParameter<int>("mass_fit_points", static_cast<int>(problem->data.size()), 'f').Write();
   file->Close();
 }
 
@@ -705,7 +923,17 @@ void WriteGlobalBestPrediction(const FitMassModelConfig& config,
   if (best.empty())
     throw std::runtime_error("No successful finite mass-fit minimum was recorded");
   file->cd();
-  WritePredictions(problem, best, config.massBranch);
+  std::vector<double> masses;
+  for (const auto& point : problem.data) masses.push_back(point.mass);
+  WritePredictions(problem, best, config.massBranch, "massFitPredictions", masses);
+  if (config.curvePoints > 0) {
+    const auto bounds = std::minmax_element(masses.begin(), masses.end());
+    std::vector<double> curveMasses(config.curvePoints);
+    for (size_t i = 0; i < curveMasses.size(); ++i)
+      curveMasses[i] = *bounds.first + (*bounds.second - *bounds.first) *
+          (curveMasses.size() > 1 ? static_cast<double>(i) / (curveMasses.size() - 1) : 0.0);
+    WritePredictions(problem, best, config.massBranch, "massFitCurves", curveMasses);
+  }
   TParameter<double>("mass_fit_best_chi2", bestChi2).Write();
   TParameter<Long64_t>("mass_fit_recorded_starts", summary->GetEntries()).Write();
   file->Close();
@@ -817,8 +1045,15 @@ void GenerateMassModelMoments(const MassMomentGenerationConfig& config) {
     tree.Fill();
   }
   tree.Write();
+  const auto physical = problem.massMapping.Evaluate(truth.data());
+  for (size_t i = 0; i < physical.values.size(); ++i)
+    TParameter<double>(problem.massMapping.physicalCoordinates[i].name.c_str(),
+                       physical.values[i]).Write();
   for (size_t i = 0; i < truth.size(); ++i)
-    TParameter<double>(problem.coordinates[i].name.c_str(), truth[i]).Write();
+    if (problem.coordinates[i].name.rfind("ordered__", 0) == 0 ||
+        problem.coordinates[i].name.rfind("positive__", 0) == 0)
+      TParameter<double>(problem.coordinates[i].name.c_str(), truth[i]).Write();
+  WriteMassMetadata(problem);
   output->Close();
 }
 

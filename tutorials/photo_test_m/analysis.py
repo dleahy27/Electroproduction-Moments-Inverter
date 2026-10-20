@@ -118,16 +118,32 @@ def load_closure(case):
     }
 
 
+def moment_indices(name):
+    """Return (alpha,L,M) for an unpolarized photo moment in either schema."""
+    if not name.startswith("RH_") or name.endswith("_err"):
+        return None
+    try:
+        indices = tuple(int(part) for part in name[3:].split("_"))
+    except ValueError:
+        return None
+    if len(indices) == 5:
+        alpha, beta, delta, l, m = indices
+        return (alpha, l, m) if beta == delta == 0 and alpha <= 3 else None
+    if len(indices) == 3 and indices[0] <= 3:
+        return indices
+    return None
+
+
 def load_mass_scan(output):
     """Read merged scan trees once and return one small record per case.
 
     Start quality is retained for the landscape plots; physical fit coordinates
-    are loaded for the best 0.1% of accepted fits per case by RDataFrame.
+    are loaded for the best 5% of accepted fits per case by RDataFrame.
     """
     path = output / "scan.root"
     if not path.is_file():
         raise FileNotFoundError(
-            "Run python -m tutorials.photo_test_m.single_k_test.run first"
+            f"Missing {path}; run the scan generator first"
         )
     coordinates = mass_coordinates(branches(path, "massFitResults"))
     fits, quality = read_best_rows(path, "massFitResults", coordinates, fraction=0.05)
@@ -138,10 +154,14 @@ def load_mass_scan(output):
     coordinates = [mass_coordinate_name(name) for name in coordinates]
     moment_names = branches(path, "massMoments")
     intensity = "RH_0_0_0" if "RH_0_0_0" in moment_names else "RH_0_0_0_0_0"
-    moments = read_tree(path, "massMoments", ["scan_case", "mass_GeV", intensity])
-    predictions = read_tree(
-        path, "massFitPredictions", ["scan_case", "mass_GeV", "model__" + intensity]
-    )
+    prediction_names = set(branches(path, "massFitPredictions"))
+    spectra = sorted(
+        (name for name in moment_names if moment_indices(name) is not None
+         and "model__" + name in prediction_names), key=moment_indices)
+    moments = read_tree(path, "massMoments", ["scan_case", "mass_GeV", *spectra])
+    model_columns = ["scan_case", "mass_GeV", *["model__" + name for name in spectra]]
+    predictions = read_tree(path, "massFitPredictions", model_columns)
+    curves = read_tree(path, "massFitCurves", model_columns)
     cases = []
     for index in np.unique(truth["scan_case"]):
 
@@ -161,6 +181,8 @@ def load_mass_scan(output):
                 "truth": {name: values[0] for name, values in injected.items()},
                 "moments": rows(moments),
                 "predictions": rows(predictions),
+                "curves": rows(curves),
+                "moment_names": spectra,
             }
         )
     return cases

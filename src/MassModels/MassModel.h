@@ -34,6 +34,27 @@ struct ComplexAmplitude {
 
 using AmplitudeSet = std::vector<ComplexAmplitude>;
 
+// Physical-sheet two-body phase space, continued below threshold.
+[[nodiscard]] std::complex<double> TwoBodyPhaseSpace(double massGeV,
+                                                     double firstMassGeV,
+                                                     double secondMassGeV);
+
+struct FlatteChannel {
+  double firstMassGeV;
+  double secondMassGeV;
+  double couplingSquaredGeV2;
+};
+
+struct FlatteValue {
+  std::complex<double> value;
+  std::complex<double> poleMassDerivative;
+  std::vector<std::complex<double>> couplingSquaredDerivatives;
+};
+
+// Fixed 1 GeV^2 numerator; production magnitude supplies the amplitude scale.
+[[nodiscard]] FlatteValue Flatte(double poleMassGeV, double massGeV,
+                                const std::vector<FlatteChannel>& channels);
+
 [[nodiscard]] std::complex<double> ConstantWidthBreitWigner(const Resonance& resonance,
                                                             double massGeV);
 

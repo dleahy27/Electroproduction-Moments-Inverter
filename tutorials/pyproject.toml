@@ -29,6 +29,7 @@ packages = [
   "tutorials.photo_test_m",
   "tutorials.photo_test_m.closure",
   "tutorials.photo_test_m.full_closure",
+  "tutorials.photo_test_m.flatte",
   "tutorials.photo_test_m.single_k_test",
 ]
 

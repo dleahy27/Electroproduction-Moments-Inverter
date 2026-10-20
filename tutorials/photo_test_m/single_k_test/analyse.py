@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """Validate the effective single-k PhotoTest mass-dependent fits."""
 
+import argparse
+from pathlib import Path
+
 import matplotlib.pyplot as plt
 import numpy as np
 from tutorials.analysis_utils import save_figure, style_axis, range_errors
-from tutorials.photo_test_m.analysis import load_mass_scan, pole_names, coupling_name, coupling_sector_name
+from tutorials.photo_test_m.analysis import load_mass_scan, pole_names, coupling_name, coupling_sector_name, moment_indices
 from tutorials.paths import PROJECT_DIR
 
 CASE = PROJECT_DIR / "tutorials/photo_test_m/single_k_test/output"
@@ -25,9 +28,11 @@ def intensity_plot(cases):
         if not np.array_equal(prediction["mass_GeV"], truth["mass_GeV"]):
             raise RuntimeError(f"Prediction mass grid does not match truth for {tag}")
         model = prediction["model__" + intensity]
+        curve = case["curves"]
         top.plot(truth["mass_GeV"], truth[intensity], "x", ms=4, label=f"{label} truth")
         colour = top.lines[-1].get_color()
-        top.plot(truth["mass_GeV"], model, "-", color=colour, lw=1.4, label=f"{label} model")
+        top.plot(curve["mass_GeV"], curve["model__" + intensity], "-",
+                 color=colour, lw=1.4, label=f"{label} model")
         residual.plot(truth["mass_GeV"], model - truth[intensity], "-", color=colour, lw=1.2)
     top.set_ylabel(r"$H^{0}(00)$")
     residual.set(xlabel="mass [GeV]", ylabel="model − input")
@@ -37,8 +42,36 @@ def intensity_plot(cases):
     save_figure(figure, PLOTS / "intensity_and_residuals.pdf")
 
 
+def moment_plots(case):
+    """One file per (L,M), showing exact points and densely evaluated BWs."""
+    groups = {}
+    for name in case["moment_names"]:
+        alpha, l, m = moment_indices(name)
+        groups.setdefault((l, m), {})[alpha] = name
+    truth, curves = case["moments"], case["curves"]
+    order = np.argsort(curves["mass_GeV"])
+    for (l, m), moments in sorted(groups.items()):
+        alphas = (0, 1) if m == 0 else (0, 1, 2, 3)
+        missing = set(alphas) - moments.keys()
+        if missing:
+            raise RuntimeError(f"Missing alpha={sorted(missing)} for L={l}, M={m}")
+        figure, axes = plt.subplots(1 if m == 0 else 2, 2, figsize=(10, 3.8 if m == 0 else 7),
+                                    constrained_layout=True, squeeze=False)
+        for axis, alpha in zip(axes.flat, alphas):
+            name = moments[alpha]
+            axis.plot(truth["mass_GeV"], truth[name], "o", ms=4, color="C0",
+                      linestyle="none", label="generated points", zorder=3)
+            axis.plot(curves["mass_GeV"][order], curves["model__" + name][order],
+                      color="C1", lw=1.5, label="best-fit mass model")
+            axis.set(xlabel="mass [GeV]", ylabel=rf"$H^{{{alpha}}}({l}{m})$")
+            style_axis(axis)
+        axes.flat[0].legend(fontsize=8)
+        figure.suptitle(f"s={case['asymmetry']:+.2f}; L={l}, M={m}")
+        save_figure(figure, PLOTS / "moments" / f"{case['tag']}_moments_L{l}_M{m}.pdf")
+
+
 def pole_plot(case):
-    """Compare the accepted global minimum with the injected resonance poles."""
+    """Compare the best accepted start with the injected resonance parameters."""
     tag = case["tag"]
     poles = [name for name in case["coordinates"] if name.endswith(("_mass", "_width"))]
     values = case["fit"]
@@ -99,21 +132,30 @@ def coupling_plot(case):
 
         style_axis(axis)
     axes[0].legend(fontsize=7, ncol=3)
-    axes[0].set_ylim(-0.05,2)
+    axes[0].set_ylim(-0.05, 2)
     axes[0].set_title(f"s={case['asymmetry']:+.2f}")
 
-    axes[1].set_ylim(-3.2,3.2)
+    axes[1].set_ylim(-3.2, 3.2)
     axes[-1].set(
         xticks=x, xticklabels=coupling_name(selected),xlabel="coupling", title=f"s={case['asymmetry']:+.2f}"
     )
     axes[-1].tick_params(axis="x", rotation=90)
     save_figure(figure, PLOTS / f"{tag}_couplings_5.pdf")
+
+
 def main():
-    cases = load_mass_scan(CASE)
+    global PLOTS
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output", type=Path, default=CASE,
+                        help="directory containing scan.root")
+    options = parser.parse_args()
+    PLOTS = options.output / "plots"
+    cases = load_mass_scan(options.output)
     intensity_plot(cases)
     for case in cases:
         pole_plot(case)
         coupling_plot(case)
+        moment_plots(case)
 
 
 if __name__ == "__main__":

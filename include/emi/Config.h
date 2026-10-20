@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <initializer_list>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -79,13 +80,20 @@ struct FitConfig {
 };
 
 // A real minimizer coordinate used by the mass-dependent model.  Bounds are
-// explicit because a pole mass or width must never wander into an unphysical
-// region while Minuit explores a coherent amplitude model.
+// optional. Unbounded positive shape parameters use free log coordinates,
+// retaining physical positivity without MINUIT limits.
 struct MassParameter {
   double initial = 0.0;
   double lower = -10.0;
   double upper = 10.0;
   bool fixed = false;
+  bool bounded = true;
+
+  // Keep the supplied initial value and fixed flag; ignore lower/upper limits.
+  MassParameter& Unbounded() {
+    bounded = false;
+    return *this;
+  }
 };
 
 // Identifies one complex partial wave in a mass model.  The key has the same
@@ -98,8 +106,23 @@ struct MassWave {
   int k = 0;
 };
 
-// A constant-width relativistic Breit-Wigner contribution, multiplied by a
-// fitted complex production coupling, to one partial wave.
+enum class MassLineShape {
+  ConstantWidthBreitWigner,
+  Flatte,
+};
+
+// One S-wave two-body Flatte channel. Daughter masses are fixed in GeV;
+// couplingSquared is the coefficient g_i^2 in GeV^2 multiplying rho_i=2q_i/m.
+// Channel names identify shared fitted coordinates across projections/sectors.
+struct MassDecayChannel {
+  std::string name;
+  double firstMassGeV = 0.0;
+  double secondMassGeV = 0.0;
+  MassParameter couplingSquared{0.1, 1.e-6, 4.0, false};
+};
+
+// A selectable line shape times a complex production coupling. The default
+// retains the constant-width relativistic BW used by existing steering cards.
 struct MassResonanceConfig {
   std::string name;
   MassWave wave;
@@ -108,6 +131,20 @@ struct MassResonanceConfig {
   // Same polar convention as ordinary EMI amplitudes.
   MassParameter couplingMagnitude{1.0, 0.0, 10.0, false};
   MassParameter couplingPhase{0.0, -3.141592653589793, 3.141592653589793, false};
+  MassLineShape lineShape = MassLineShape::ConstantWidthBreitWigner;
+  // Flatte uses poleMass and these channels; width is unused and not fitted.
+  // F(m) = (1 GeV^2)/(m0^2-m^2-i sum_i g_i^2 rho_i(m)).
+  std::vector<MassDecayChannel> channels;
+  // Empty uses the angular-momentum sector l. Set a common explicit group for
+  // resonances sharing further quantum numbers absent from this wave schema.
+  // A shared resonance name must use the same l and group in every amplitude.
+  std::string massOrderingGroup;
+
+  MassResonanceConfig& UseFlatte(std::initializer_list<MassDecayChannel> values) {
+    lineShape = MassLineShape::Flatte;
+    channels.assign(values);
+    return *this;
+  }
 };
 
 // A coherent complex constant term. It is useful for non-resonant production
@@ -119,9 +156,9 @@ struct MassBackgroundConfig {
   MassParameter imag{0.0, -10.0, 10.0, false};
 };
 
-// Optional phase-reference coupling. Without this override EMI uses the
-// resonance on the highest-(l,m) positive-reflectivity transverse wave.
-// Its phase is held at the configured initial value, preserving relative phases.
+// Phase-reference coupling held at its configured initial value. Single-k
+// fits default to the highest-(l,m) transverse resonance in each populated
+// reflectivity sector; explicit-k fits use one overall reference (a by default).
 struct MassPhaseGauge {
   std::string resonance;
   MassWave wave;
@@ -130,7 +167,29 @@ struct MassPhaseGauge {
 struct MassModelConfig {
   std::vector<MassResonanceConfig> resonances;
   std::vector<MassBackgroundConfig> backgrounds;
+  // Legacy single-reference override; SetPhaseGauge overrides it for the same
+  // reflectivity. Retained for existing steering cards.
   std::optional<MassPhaseGauge> phaseGauge;
+  std::vector<MassPhaseGauge> phaseGauges;
+  // Strict minimum adjacent mass separation in each ordering group (GeV).
+  // This removes equality, without assigning a physical resonance separation.
+  double minimumMassGapGeV = 1.e-6;
+
+  // Select a reference resonance independently in a and b for k=0. The phase
+  // value comes from that resonance's couplingPhase.initial. Explicit-k fits
+  // have only one overall phase freedom and accept only one override.
+  MassModelConfig& SetPhaseGauge(std::string resonance, MassWave wave) {
+    if (wave.reflectivity != 'a' && wave.reflectivity != 'b')
+      throw std::invalid_argument("Mass phase gauge reflectivity must be a or b");
+    for (auto& gauge : phaseGauges) {
+      if (gauge.wave.reflectivity == wave.reflectivity) {
+        gauge = {std::move(resonance), wave};
+        return *this;
+      }
+    }
+    phaseGauges.push_back({std::move(resonance), wave});
+    return *this;
+  }
 };
 
 // Fits selected entries of one moment tree together. `fit.bin` is deliberately
@@ -155,6 +214,9 @@ struct FitMassModelConfig {
   // A finite budget makes high-dimensional multistart scans predictable. A
   // start that reaches this limit is retained with its Minuit status.
   unsigned maxFunctionCalls = 100000;
+  // Dense best-model curves, evaluated from resonance parameters, not by
+  // interpolating the fitted data points. Zero disables this additional tree.
+  unsigned curvePoints = 1001;
   MassModelConfig model;
 };
 

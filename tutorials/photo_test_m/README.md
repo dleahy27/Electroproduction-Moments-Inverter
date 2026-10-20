@@ -1,53 +1,75 @@
-# PhotoTest mass-dependent studies
+# Mass-dependent fits
 
-* [closure](closure/README.md): the one-wave Breit-Wigner closure. Its analysis
-  checks mass, width, magnitude and moment predictions, and plots parameters,
-  spectra, residuals and starts.
-* [full_closure](full_closure/README.md): the four-resonance PhotoTest closure
-  with explicit k=+/-1.
-* [single_k_test](single_k_test/README.md): generate two-k truth and fit an
-  effective k=0 model.
-  This is a model-mismatch study. Effective couplings need not equal either
-  injected sector, and general two-k truth need not have an exact k=0 solution.
+These studies generate exact moments and fit all mass points simultaneously.
+The assigned moment errors set chi-square weights; they do not add noise.
+Each case has a settings header, a runner and an analysis script.
 
-Run from the repository root after `python build.py`:
+| Case | What it checks |
+| --- | --- |
+| [closure](closure/README.md) | One BW, with displaced mass, width and magnitude starts |
+| [full_closure](full_closure/README.md) | Full four-resonance PhotoTest model with explicit k=±1, starting at truth |
+| [single_k_test](single_k_test/README.md) | Effective k=0 fits to two-k truth at s=0 and s=1 |
+| [flatte](flatte/README.md) | S-wave f0(980) Flatté plus D-wave f2(1270) BW, starting away from truth |
+
+From the repository root, after building EMI:
 
 ```bash
 python -m tutorials.photo_test_m.closure.run
 python -m tutorials.photo_test_m.closure.analyse --check
 python -m tutorials.photo_test_m.full_closure.run
-python -m tutorials.photo_test_m.full_closure.analyse
-python -m tutorials.photo_test_m.single_k_test.run
-python -m tutorials.photo_test_m.single_k_test.analyse
+python -m tutorials.photo_test_m.full_closure.analyse --check
+python -m tutorials.photo_test_m.flatte.run
+python -m tutorials.photo_test_m.flatte.analyse
 ```
 
-Physics choices and defaults belong in each checked-in `settings.h`. The
-runner never edits headers. EMI loads that header with ROOT's interpreter,
-then applies the scan coordinates. Edit `ASYMMETRIES` at the top of
-`single_k_test/run.py` to choose the scan. For a short run, reduce
-`config.fit.starts` in its `settings.h`. The default single-k scan uses s=0
-and s=1, 50,000 starts per asymmetry, 14 workers, and 20 mass points.
+The single-k defaults are a larger study: 10,000 starts per asymmetry on 10
+workers. For a short run that preserves the main output:
 
-The first global fit start preserves every configured initial coordinate.
-Later starts randomize free coupling magnitudes/phases within their bounds;
-pole masses and widths always start from the header. The reference coupling
-phase stays at its configured value. Each start uses a fresh Minuit2/Migrad
-instance. `--max-calls` sets its budget; failed starts remain in the results
-but are excluded from best-fit predictions. HESSE runs only after convergence.
+```bash
+python -m tutorials.photo_test_m.single_k_test.run \
+  --starts 20 --workers 10 --output /tmp/photo_single_check
+python -m tutorials.photo_test_m.single_k_test.analyse --output /tmp/photo_single_check
+```
 
-Mass-generation scan overrides include `--mass-bins`, `--mass-min`,
-`--mass-max`, and, with `--photo-test`, `--k-asymmetry`. `--polarization both`
-selects explicit k sectors; `none` selects k=0. `--photo-test`
-rebuilds the resonance table, so omit it when fitting a custom table.
+Each runner leaves ROOT files and plots in its ignored `output/` directory.
+`analysis.py` provides shared readers and parameter labels. `verify.py` checks
+individual fit files without rerunning minimizations:
 
-All analyses use ROOT RDataFrames, NumPy, and Matplotlib. Use a Python
-interpreter matching the Python version of the installed ROOT build.
-All inputs are noiseless; positive assigned uncertainties define fit weights.
-A small chi-square alone is insufficient evidence of parameter recovery.
+```bash
+python -m tutorials.photo_test_m.verify \
+  tutorials/photo_test_m/closure/output/fit.root --starts 8 --workers 2 \
+  --require-covariance
+```
 
-Parameter markers show the best accepted fit. The bars span the minimum and
-maximum values among the best 0.1% of converged fits, ranked by chi-square for
-each scan case. The count is rounded up, with at least one fit retained. These
-are ranges across minimizations, not statistical error estimates. The mass-fit
-plots use the stored coupling phases; the mass-independent amplitude plots
-use phases in [-pi, pi], so a range can cross that interval's boundary.
+It checks start/worker indices, fixed phase references, positive shapes, mass
+ordering, finite predictions and the full covariance map when available. Closure
+analyses also test injected parameter and moment recovery. The single-k study
+can be a model mismatch, so its effective production couplings are not checked
+against either generated sector.
+
+## Model settings
+
+Named resonances share shape parameters across their contributions; production
+couplings remain specific to each wave. Start zero uses the supplied values.
+Later starts randomize free production couplings while retaining configured
+shape starts and phase references. `--max-calls` sets the per-start call budget.
+HESSE is optional; failed starts remain available in the result tree.
+
+For effective k=0, each populated reflectivity has an independent reference
+phase. Explicit-k fits have one overall reference. Override a reference with
+`MassModelConfig::SetPhaseGauge(name, wave)`; its `couplingPhase.initial` is
+held fixed. `Unbounded()` removes finite shape windows while retaining physical
+positivity. See [ordered masses](ordered_masses.md) for the mapping, constraints
+and covariance output, and [Flatté model notes](flatte/model.md) for conventions.
+
+`generate-mass-model --polarization none` supports configured k=0 models.
+`MakePhotoTestMassModel(0.0, false)` supplies the unsplit PhotoTest table.
+`--photo-test` rebuilds that table, so omit it when generating or fitting custom
+resonances or preserving custom references. Generation accepts `--mass-bins`,
+`--mass-min` and `--mass-max`; the PhotoTest scan also accepts `--k-asymmetry`.
+
+Best-fit markers use accepted finite minima. Where parameter plots include
+ranges, the case README states the selected fraction: the single-k plots use
+5%, and the BW closures use 0.1%. These show variation across starts, not
+statistical uncertainty. Moment overlays in the single-k and Flatté studies
+show generated points and dense model curves without uncertainty bars.

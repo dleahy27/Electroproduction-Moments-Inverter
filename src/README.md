@@ -4,6 +4,22 @@ The public C++ interface is in `include/emi/Config.h` and `Runner.h`. The CLI
 in `app/main.C` loads a settings header through `RuntimeSettings.C`, applies
 explicit CLI overrides, and calls the library. The source files below `src/` implement the library operations.
 
+The library can also be called directly from C++:
+
+```cpp
+#include "emi/Runner.h"
+
+emi::ModelConfig model;
+model.SetWaves({{1, -1}, {1, 0}, {1, 1}}).UseReflectivities(true, false);
+emi::FitConfig fit;
+fit.input = "moments.root";
+fit.output = "fit.root";
+fit.SetStarts(100).SetWorkers(1).SetSeed(123);
+emi::RunFit(fit, model);
+```
+
+Link against `emi_core` and the ROOT targets used by the project CMake build.
+
 ## Ordinary amplitude fits
 
 1. `Input.C` discovers moment branches and reads the requested bin. Published
@@ -36,9 +52,13 @@ the numerical tables and conversion factors are in those source files.
 `MassModels/` contains deterministic line shapes and the PhotoTest truth model.
 
 `MassFit.C` reuses the angular bilinears and replaces binwise amplitudes with
-coherent Breit–Wigner/background functions across a mass grid. It builds shared
-pole coordinates, chooses the phase reference, evaluates the mass chi-square and
-gradient, and writes predictions from the best accepted global start. Generation,
+coherent Breit–Wigner, Flatté and background functions across a mass grid.
+`MassModels/OrderedMasses.h` maps fit coordinates to shared physical masses,
+including positive log parameters and ordered gaps, and supplies their Jacobian.
+`MassFit.C` registers the phase references, accumulates analytic derivatives in
+amplitude space and caches full gradients at unchanged fit coordinates. It
+propagates the full covariance and writes original-grid and dense predictions
+from the best accepted start. Generation,
 gradients, and saved predictions share the H0 + epsilon H4 response contraction.
 The first global start keeps the supplied coordinates; later starts randomize
 free couplings using the existing worker seed sequence.

@@ -126,7 +126,7 @@ EMI fixes the phase of the resonance on the highest-(l,m),
 positive-reflectivity transverse wave. Here that is `D2_a_2_1_phase`, held at its configured initial
 value. The reference phase defines the convention; its magnitude remains free.
 In this one-wave test there are no other coupling phases. Set
-`MassModelConfig::phaseGauge` to a named resonance/wave pair to override the
+`MassModelConfig::SetPhaseGauge(name, wave)` to override the
 default; choose the coupling expected to have the largest magnitude.
 
 The held phase is a convention and cannot be measured in this one-wave test.

@@ -32,11 +32,22 @@ inline FitMassModelConfig MassFit() {
   FitMassModelConfig config;
   config.fit.photoproduction = true;
   config.fit.tree = "massMoments";
-  config.fit.starts = 50000;
-  config.fit.workers = 14;
+  config.fit.starts = 10000;
+  config.fit.workers = 10;
   config.fit.seed = 1441;
   config.fit.hesse = false;
   config.model = MakePhotoTestMassModel(0.0, false);
+  // Explicit, independent references for the effective single-k sectors.
+  // Both selected coupling phases start at zero in the supplied model.
+  config.model.SetPhaseGauge("a2_1320", {'a', 'T', 2, 2, 0})
+              .SetPhaseGauge("a2_1320", {'b', 'T', 2, 2, 0});
+  // the ordered mass gaps retain the canonical tensor-resonance labels.
+  // Initial masses and widths remain close to the supplied resonance values.
+  for (auto& resonance : config.model.resonances) {
+    resonance.poleMass.Unbounded();
+    resonance.width.Unbounded();
+  }
+  config.curvePoints = 1001;
   return config;
 }
 
